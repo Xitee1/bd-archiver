@@ -15,7 +15,6 @@ Dependencies:
 
 import argparse
 import hashlib
-import json
 import re
 import shutil
 import subprocess
@@ -26,10 +25,9 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-VERSION = "3.0.0"
+VERSION = "4.0.0"
 
 MiB = 1024 * 1024
-METADATA_FILE = "bd-archive.json"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -369,24 +367,6 @@ def verify_disc(disc_path: Path, label: str = "",
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Metadata — persisted in workdir so burn knows what create prepared
-# ════════════════════════════════════════════════════════════════════════════
-
-def save_metadata(work_dir: Path, **kwargs):
-    meta_path = work_dir / METADATA_FILE
-    meta_path.write_text(json.dumps(kwargs, indent=2) + "\n")
-
-
-def load_metadata(work_dir: Path) -> dict:
-    meta_path = work_dir / METADATA_FILE
-    if not meta_path.exists():
-        log.error(f"No {METADATA_FILE} found in {work_dir}")
-        log.info("Run 'create' first to prepare the archive.")
-        sys.exit(1)
-    return json.loads(meta_path.read_text())
-
-
-# ════════════════════════════════════════════════════════════════════════════
 # cmd_create — prepare archive + staging (no burning)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -511,23 +491,9 @@ def cmd_create(args):
             log.error(f"Disc {i} exceeds capacity!")
             sys.exit(1)
 
-    # ── Save metadata ───────────────────────────────────────────────────
+    # ── Compute source size for summary ─────────────────────────────────
     source_size = sum(f.stat().st_size for f in source.rglob("*")
                       if f.is_file())
-    save_metadata(
-        work_dir,
-        version=VERSION,
-        archive_name=args.name,
-        source=str(source),
-        source_size=source_size,
-        archive_size=total_archive,
-        disc_count=slice_count,
-        disc_bytes=disc_bytes,
-        redundancy=args.redundancy,
-        compression=args.compression,
-        comp_level=args.level,
-        created=datetime.now().isoformat(),
-    )
 
     # ── Summary ─────────────────────────────────────────────────────────
     ratio = total_archive * 100 // max(source_size, 1)
