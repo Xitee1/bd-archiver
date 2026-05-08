@@ -548,16 +548,38 @@ def cmd_create(args):
 # ════════════════════════════════════════════════════════════════════════════
 
 def cmd_burn(args):
-    check_deps("growisofs")
+    check_deps("growisofs", "dvd+rw-mediainfo")
 
     work_dir = Path(args.workdir)
-    meta = load_metadata(work_dir)
+    staging_root = work_dir / "staging"
 
-    disc_count = meta["disc_count"]
-    disc_size = meta["disc_size"]
-    archive_name = meta["archive_name"]
+    if not staging_root.is_dir():
+        log.error(f"No staging directory found at {staging_root}")
+        log.info("Run 'create' first to prepare the archive.")
+        sys.exit(1)
+
+    disc_dirs = sorted(
+        d for d in staging_root.iterdir()
+        if d.is_dir() and d.name.startswith("disc_")
+    )
+    disc_count = len(disc_dirs)
+    if disc_count == 0:
+        log.error(f"No disc_* subdirectories under {staging_root}")
+        log.info("Run 'create' first to prepare the archive.")
+        sys.exit(1)
+
+    # Derive archive name from the first non-catalog .dar in disc_1.
+    # Filename is "<name>.NNN.dar"; strip the slice number.
+    first_disc = staging_root / "disc_1"
+    try:
+        first_dar = next(p for p in first_disc.glob("*.dar")
+                         if "-catalog" not in p.name)
+    except StopIteration:
+        log.error(f"No dar slice found in {first_disc}")
+        sys.exit(1)
+    archive_name = first_dar.stem.rsplit(".", 1)[0]
+
     start = args.start
-
     if start < 1 or start > disc_count:
         log.error(f"--start must be between 1 and {disc_count}")
         sys.exit(1)
@@ -566,13 +588,13 @@ def cmd_burn(args):
 
     log.step("Burn staged discs")
     log.info(f"Archive:  {archive_name}")
-    log.info(f"Discs:    {disc_count} x BD-{disc_size}")
+    log.info(f"Discs:    {disc_count}")
     log.info(f"Device:   {args.device}")
     if start > 1:
         log.info(f"Resuming from disc {start}")
 
     for i in range(start, disc_count + 1):
-        stage = work_dir / "staging" / f"disc_{i}"
+        stage = staging_root / f"disc_{i}"
         if not stage.exists():
             log.error(f"Staging directory not found: {stage}")
             log.info("Run 'create' first to prepare the archive.")
@@ -580,13 +602,39 @@ def cmd_burn(args):
 
         log.step(f"Disc {i}/{disc_count}")
 
-        # Show contents
         stage_size = sum(f.stat().st_size for f in stage.iterdir()
                          if f.is_file())
         log.info(f"Size: {human_bytes(stage_size)}")
 
-        prompt_disc(f"Insert blank BD-{disc_size} — "
-                    f"Disc {i}/{disc_count}", args.device)
+        prompt_disc(f"Insert blank disc {i}/{disc_count}", args.device)
+
+        # Pre-burn fit check
+        if not args.skip_fit_check:
+            actual = detect_disc_capacity(args.device)
+            if actual is None:
+                log.warn("Could not detect disc capacity — skipping fit check")
+            elif actual < stage_size:
+                log.error(
+                    f"Disc too small: {human_bytes(actual)} < "
+                    f"staging {human_bytes(stage_size)}"
+                )
+                log.info(f"Resume later with: bd-archive.py burn "
+                         f"-w {work_dir} --start {i}")
+                sys.exit(1)
+            elif actual > stage_size * 1.05:
+                log.error(
+                    f"Disc too large: {human_bytes(actual)} > "
+                    f"{human_bytes(stage_size)} + 5% — refusing to "
+                    f"waste space"
+                )
+                log.info("Insert a smaller disc, or pass --skip-fit-check "
+                         "to override.")
+                log.info(f"Resume later with: bd-archive.py burn "
+                         f"-w {work_dir} --start {i}")
+                sys.exit(1)
+            else:
+                log.ok(f"Disc capacity {human_bytes(actual)} fits "
+                       f"staging {human_bytes(stage_size)}")
 
         # Burn
         log.info("Burning...")
@@ -619,15 +667,15 @@ def cmd_burn(args):
         dio.eject()
         log.ok(f"Disc {i}/{disc_count} done")
 
-        # Show resume hint if not last disc
         if i < disc_count:
             remaining = disc_count - i
             log.info(f"{remaining} disc(s) remaining. "
-                     f"Resume: bd-archive.py burn -w {work_dir} --start {i + 1}")
+                     f"Resume: bd-archive.py burn -w {work_dir} "
+                     f"--start {i + 1}")
 
     log.step("All discs burned")
     print(f"\n  Archive:  {archive_name}")
-    print(f"  Discs:    {disc_count} x BD-{disc_size}")
+    print(f"  Discs:    {disc_count}")
     print(f"  Cleanup:  rm -rf {work_dir}\n")
 
 
@@ -850,6 +898,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Start from disc N (default: 1)")
     bu.add_argument("--no-verify", action="store_true",
                     help="Skip post-burn verification")
+    bu.add_argument("--skip-fit-check", action="store_true",
+                    help="Skip pre-burn disc capacity check")
 
     # ── verify ──────────────────────────────────────────────────────────
     sub.add_parser("verify",
