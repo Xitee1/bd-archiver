@@ -568,13 +568,14 @@ def cmd_burn(args):
         log.info("Run 'create' first to prepare the archive.")
         sys.exit(1)
 
-    # Derive archive name from the first non-catalog .dar in disc_1.
+    # Derive archive name from the first non-catalog .dar in the first disc.
     # Filename is "<name>.NNN.dar"; strip the slice number.
-    first_disc = staging_root / "disc_1"
-    try:
-        first_dar = next(p for p in first_disc.glob("*.dar")
-                         if "-catalog" not in p.name)
-    except StopIteration:
+    first_disc = disc_dirs[0]
+    first_dar = next(
+        (p for p in first_disc.glob("*.dar") if "-catalog" not in p.name),
+        None,
+    )
+    if first_dar is None:
         log.error(f"No dar slice found in {first_disc}")
         sys.exit(1)
     archive_name = first_dar.stem.rsplit(".", 1)[0]
