@@ -136,10 +136,8 @@ def detect_disc_capacity(device: str) -> int | None:
     (hard error in create, soft warn in burn).
     """
     try:
-        r = subprocess.run(
-            ["dvd+rw-mediainfo", device],
-            capture_output=True, text=True,
-        )
+        r = run(["dvd+rw-mediainfo", device],
+                capture=True, check=False)
     except FileNotFoundError:
         return None
     if r.returncode != 0:
