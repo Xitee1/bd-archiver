@@ -28,16 +28,6 @@ from pathlib import Path
 
 VERSION = "3.0.0"
 
-# ════════════════════════════════════════════════════════════════════════════
-# Disc capacities (raw data area minus 2 MiB filesystem overhead)
-# ════════════════════════════════════════════════════════════════════════════
-
-DISC_CAPACITY = {
-    25:  25_025_314_816 - 2 * 1024 * 1024,
-    50:  50_050_629_632 - 2 * 1024 * 1024,
-    100: 100_101_259_264 - 2 * 1024 * 1024,
-}
-
 MiB = 1024 * 1024
 METADATA_FILE = "bd-archive.json"
 
@@ -401,14 +391,15 @@ def load_metadata(work_dir: Path) -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 
 def generate_readme(stage_dir: Path, archive_name: str, disc_num: int,
-                    total_discs: int, slice_name: str, disc_size: int,
+                    total_discs: int, slice_name: str, disc_bytes: int,
                     redundancy: int, compression: str,
                     comp_level: str | None):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     comp_str = compression + (f" ({comp_level})" if comp_level else "")
     (stage_dir / "README.txt").write_text(
         f"BD-ARCHIVE | {archive_name} | Disc {disc_num}/{total_discs}"
-        f" | {ts} | BD-{disc_size} | PAR2 {redundancy}% | {comp_str}\n\n"
+        f" | {ts} | Capacity {human_bytes(disc_bytes)}"
+        f" | PAR2 {redundancy}% | {comp_str}\n\n"
         f"RESTORE:  dar -x {archive_name} -R /target\n"
         f"VERIFY:   par2 verify {slice_name}.par2\n"
         f"REPAIR:   par2 repair {slice_name}.par2\n"
@@ -417,7 +408,7 @@ def generate_readme(stage_dir: Path, archive_name: str, disc_num: int,
 
 
 def cmd_create(args):
-    check_deps("dar", "par2")
+    check_deps("dar", "par2", "dvd+rw-mediainfo")
 
     source = Path(args.source).resolve()
     if not source.is_dir():
@@ -427,7 +418,20 @@ def cmd_create(args):
     work_dir = Path(args.workdir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    disc_bytes = DISC_CAPACITY[args.disc_size]
+    if args.bytes is not None:
+        raw_capacity = args.bytes
+        log.info(f"Using manual capacity: {human_bytes(raw_capacity)}")
+    else:
+        raw_capacity = detect_disc_capacity(args.device)
+        if raw_capacity is None:
+            log.error(f"No disc detected at {args.device}.")
+            log.info("Insert a blank disc, or specify capacity manually "
+                     "with -b/--bytes <int>.")
+            sys.exit(1)
+        log.info(f"Detected {human_bytes(raw_capacity)} free space, "
+                 f"splitting with this size")
+
+    disc_bytes = raw_capacity - 2 * MiB  # ISO/UDF filesystem overhead
 
     # slice + par2(slice) + overhead = disc
     overhead = 1 * MiB + 256 * 1024
@@ -439,12 +443,12 @@ def cmd_create(args):
     comp_str = args.compression + (f" (level {args.level})" if args.level else "")
 
     log.step("Configuration")
-    log.info(f"Disc type:    BD-{args.disc_size} ({human_bytes(disc_bytes)})")
-    log.info(f"Slice size:   {human_bytes(slice_bytes)}")
-    log.info(f"PAR2:         {args.redundancy}% (~{human_bytes(par2_est)})")
-    log.info(f"Compression:  {comp_str}")
-    log.info(f"Source:       {source}")
-    log.info(f"Workdir:      {work_dir}")
+    log.info(f"Disc capacity: {human_bytes(disc_bytes)}")
+    log.info(f"Slice size:    {human_bytes(slice_bytes)}")
+    log.info(f"PAR2:          {args.redundancy}% (~{human_bytes(par2_est)})")
+    log.info(f"Compression:   {comp_str}")
+    log.info(f"Source:        {source}")
+    log.info(f"Workdir:       {work_dir}")
 
     dar = DarArchive(args.name, work_dir)
 
@@ -489,7 +493,7 @@ def cmd_create(args):
 
         # README
         generate_readme(stage, args.name, i, slice_count, slice_name,
-                        args.disc_size, args.redundancy,
+                        disc_bytes, args.redundancy,
                         args.compression, args.level)
 
         # CHECKSUMS.sha256 (last — covers everything else)
@@ -500,7 +504,7 @@ def cmd_create(args):
                          if f.is_file())
         pct = stage_size * 100 // disc_bytes
         log.ok(f"Disc {i}/{slice_count}: {human_bytes(stage_size)} "
-               f"({pct}% of BD-{args.disc_size}), "
+               f"({pct}% of {human_bytes(disc_bytes)}), "
                f"{file_count} files")
 
         if stage_size > disc_bytes:
@@ -518,7 +522,7 @@ def cmd_create(args):
         source_size=source_size,
         archive_size=total_archive,
         disc_count=slice_count,
-        disc_size=args.disc_size,
+        disc_bytes=disc_bytes,
         redundancy=args.redundancy,
         compression=args.compression,
         comp_level=args.level,
@@ -531,7 +535,7 @@ def cmd_create(args):
     log.step("Summary")
     print(f"\n  Source:       {human_bytes(source_size)}")
     print(f"  Archive:      {human_bytes(total_archive)} ({ratio}%)")
-    print(f"  Discs:        {slice_count} x BD-{args.disc_size}")
+    print(f"  Discs:        {slice_count} x {human_bytes(disc_bytes)}")
     print(f"  PAR2:         {args.redundancy}% per disc")
     print(f"  Compression:  {comp_str}")
     print(f"  Staging:      {work_dir / 'staging'}")
@@ -821,9 +825,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Working directory for archive + staging")
     cr.add_argument("-r", "--redundancy", type=int, default=5,
                     help="PAR2 redundancy in %% (default: 5)")
-    cr.add_argument("-d", "--disc-size", type=int, default=25,
-                    choices=[25, 50, 100],
-                    help="Disc size in GB (default: 25)")
+    cr.add_argument("-D", "--device", default="/dev/sr0",
+                    help="Optical drive for capacity detection "
+                         "(default: /dev/sr0)")
+    cr.add_argument("-b", "--bytes", type=int, default=None,
+                    help="Manual disc capacity in raw bytes "
+                         "(overrides detection)")
     cr.add_argument("-c", "--compression", default="zstd",
                     choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
                     help="Compression algorithm (default: zstd)")
