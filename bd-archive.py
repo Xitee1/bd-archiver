@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -28,6 +29,19 @@ from pathlib import Path
 VERSION = "4.0.0"
 
 MiB = 1024 * 1024
+
+# Refuse to burn if disc capacity exceeds staging size by more than this
+# factor — guards against wasting a larger disc on a smaller archive
+# (e.g. a 50 GB BD-DL when the archive was sized for 25 GB BD-R).
+DISC_OVERSIZE_TOLERANCE = 1.05
+
+# Seconds to wait for a freshly burned disc to become mountable before
+# giving up (drive needs to finalise + re-read TOC).
+POST_BURN_MOUNT_TIMEOUT = 30
+
+# PAR2 recovery volumes are named "<base>.volNNN+NN.par2"; the index file
+# is plain "<base>.par2". This pattern matches recovery volumes only.
+PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -93,11 +107,12 @@ def human_bytes(n: int | float) -> str:
 def run(cmd: list[str], *, label: str = "", check: bool = True,
         capture: bool = False) -> subprocess.CompletedProcess:
     if capture:
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
     prefix = f"  [{label}] " if label else "  "
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
+    assert proc.stdout is not None
     for line in proc.stdout:
         print(f"{prefix}{line}", end="")
     proc.wait()
@@ -114,6 +129,11 @@ def check_deps(*commands: str):
         print("  Arch:   pacman -Syu dar par2cmdline dvd+rw-tools cdrtools")
         print("  Debian: apt install dar par2 growisofs genisoimage")
         sys.exit(1)
+
+
+def is_par2_index(path: Path) -> bool:
+    """True for the PAR2 index file, False for recovery volumes."""
+    return path.suffix == ".par2" and not PAR2_RECOVERY_RE.search(path.name)
 
 
 def detect_disc_capacity(device: str) -> int | None:
@@ -165,19 +185,34 @@ class DiscIO:
             ["mount", "-o", "ro", self.device, str(mount_dir)],
             ["sudo", "mount", "-o", "ro", self.device, str(mount_dir)],
         ):
-            if subprocess.run(cmd, capture_output=True).returncode == 0:
+            if run(cmd, capture=True, check=False).returncode == 0:
                 return True
         return False
+
+    def mount_with_retry(self, mount_dir: Path,
+                         timeout: int = POST_BURN_MOUNT_TIMEOUT) -> bool:
+        """Poll the device until it is mountable or timeout expires.
+
+        Useful right after a burn, where the drive needs a few seconds
+        to finalise the disc and re-read the TOC.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.mount(mount_dir):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(1)
 
     def umount(self, mount_dir: Path):
         for cmd in (["umount", str(mount_dir)],
                     ["sudo", "umount", str(mount_dir)]):
-            if subprocess.run(cmd, capture_output=True).returncode == 0:
+            if run(cmd, capture=True, check=False).returncode == 0:
                 return
         log.warn(f"Could not unmount {mount_dir}")
 
     def eject(self):
-        subprocess.run(["eject", self.device], capture_output=True)
+        run(["eject", self.device], capture=True, check=False)
 
     def burn(self, source_dir: Path, volume_label: str,
              speed: str | None = None):
@@ -197,6 +232,15 @@ class DiscIO:
 
 class Checksums:
     FILENAME = "CHECKSUMS.sha256"
+    CHUNK_SIZE = 65536
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(Checksums.CHUNK_SIZE), b""):
+                h.update(chunk)
+        return h.hexdigest()
 
     @staticmethod
     def generate(directory: Path) -> int:
@@ -204,11 +248,7 @@ class Checksums:
         lines = []
         for p in sorted(directory.iterdir()):
             if p.is_file() and p.name != Checksums.FILENAME:
-                h = hashlib.sha256()
-                with open(p, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        h.update(chunk)
-                lines.append(f"{h.hexdigest()}  {p.name}")
+                lines.append(f"{Checksums._hash_file(p)}  {p.name}")
         checksum_file.write_text("\n".join(lines) + "\n")
         return len(lines)
 
@@ -226,11 +266,7 @@ class Checksums:
                 log.error(f"  Missing: {filename}")
                 fail += 1
                 continue
-            h = hashlib.sha256()
-            with open(filepath, "rb") as f:
-                for chunk in iter(lambda: f.read(65536), b""):
-                    h.update(chunk)
-            if h.hexdigest() == expected:
+            if Checksums._hash_file(filepath) == expected:
                 ok += 1
             else:
                 log.error(f"  Corrupted: {filename}")
@@ -338,7 +374,7 @@ def verify_disc(disc_path: Path, label: str = "",
 
     # PAR2
     par2_indices = [p for p in sorted(disc_path.glob("*.par2"))
-                    if ".vol" not in p.name]
+                    if is_par2_index(p)]
     for par2_index in par2_indices:
         if not quiet:
             log.info(f"PAR2 check: {par2_index.name}")
@@ -370,17 +406,27 @@ def verify_disc(disc_path: Path, label: str = "",
 # cmd_create — prepare archive + staging (no burning)
 # ════════════════════════════════════════════════════════════════════════════
 
-def generate_readme(stage_dir: Path, archive_name: str, disc_num: int,
-                    total_discs: int, slice_name: str, disc_bytes: int,
-                    redundancy: int, compression: str,
-                    comp_level: str | None):
+@dataclass
+class ArchiveConfig:
+    name: str
+    disc_bytes: int
+    redundancy: int
+    compression: str
+    comp_level: str | None
+
+    @property
+    def comp_str(self) -> str:
+        return self.compression + (f" ({self.comp_level})" if self.comp_level else "")
+
+
+def generate_readme(stage_dir: Path, cfg: ArchiveConfig,
+                    disc_num: int, total_discs: int, slice_name: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    comp_str = compression + (f" ({comp_level})" if comp_level else "")
     (stage_dir / "README.txt").write_text(
-        f"BD-ARCHIVE | {archive_name} | Disc {disc_num}/{total_discs}"
-        f" | {ts} | Capacity {human_bytes(disc_bytes)}"
-        f" | PAR2 {redundancy}% | {comp_str}\n\n"
-        f"RESTORE:  dar -x {archive_name} -R /target\n"
+        f"BD-ARCHIVE | {cfg.name} | Disc {disc_num}/{total_discs}"
+        f" | {ts} | Capacity {human_bytes(cfg.disc_bytes)}"
+        f" | PAR2 {cfg.redundancy}% | {cfg.comp_str}\n\n"
+        f"RESTORE:  dar -x {cfg.name} -R /target\n"
         f"VERIFY:   par2 verify {slice_name}.par2\n"
         f"REPAIR:   par2 repair {slice_name}.par2\n"
         f"DEPENDS:  pacman -S dar par2cmdline  |  apt install dar par2\n"
@@ -420,21 +466,27 @@ def cmd_create(args):
     slice_bytes = (slice_bytes // MiB) * MiB
 
     par2_est = slice_bytes * args.redundancy // 100
-    comp_str = args.compression + (f" (level {args.level})" if args.level else "")
+    cfg = ArchiveConfig(
+        name=args.name,
+        disc_bytes=disc_bytes,
+        redundancy=args.redundancy,
+        compression=args.compression,
+        comp_level=args.level,
+    )
 
     log.step("Configuration")
     log.info(f"Disc capacity: {human_bytes(disc_bytes)}")
     log.info(f"Slice size:    {human_bytes(slice_bytes)}")
-    log.info(f"PAR2:          {args.redundancy}% (~{human_bytes(par2_est)})")
-    log.info(f"Compression:   {comp_str}")
+    log.info(f"PAR2:          {cfg.redundancy}% (~{human_bytes(par2_est)})")
+    log.info(f"Compression:   {cfg.comp_str}")
     log.info(f"Source:        {source}")
     log.info(f"Workdir:       {work_dir}")
 
-    dar = DarArchive(args.name, work_dir)
+    dar = DarArchive(cfg.name, work_dir)
 
     # ── Create dar archive ──────────────────────────────────────────────
     log.step("Creating dar archive")
-    dar.create(source, slice_bytes, args.compression, args.level)
+    dar.create(source, slice_bytes, cfg.compression, cfg.comp_level)
 
     slices = dar.slices
     slice_count = len(slices)
@@ -468,13 +520,11 @@ def cmd_create(args):
             shutil.copy2(cat, stage)
 
         # PAR2
-        log.info(f"Disc {i}/{slice_count}: generating PAR2 ({args.redundancy}%)...")
-        Par2.create(stage / slice_name, args.redundancy)
+        log.info(f"Disc {i}/{slice_count}: generating PAR2 ({cfg.redundancy}%)...")
+        Par2.create(stage / slice_name, cfg.redundancy)
 
         # README
-        generate_readme(stage, args.name, i, slice_count, slice_name,
-                        disc_bytes, args.redundancy,
-                        args.compression, args.level)
+        generate_readme(stage, cfg, i, slice_count, slice_name)
 
         # CHECKSUMS.sha256 (last — covers everything else)
         file_count = Checksums.generate(stage)
@@ -502,8 +552,8 @@ def cmd_create(args):
     print(f"\n  Source:       {human_bytes(source_size)}")
     print(f"  Archive:      {human_bytes(total_archive)} ({ratio}%)")
     print(f"  Discs:        {slice_count} x {human_bytes(disc_bytes)}")
-    print(f"  PAR2:         {args.redundancy}% per disc")
-    print(f"  Compression:  {comp_str}")
+    print(f"  PAR2:         {cfg.redundancy}% per disc")
+    print(f"  Compression:  {cfg.comp_str}")
     print(f"  Staging:      {work_dir / 'staging'}")
     print(f"\n  Next step:    bd-archive.py burn -w {work_dir}")
     print(f"  Cleanup:      rm -rf {work_dir}\n")
@@ -588,11 +638,12 @@ def cmd_burn(args):
                 log.info(f"Resume later with: bd-archive.py burn "
                          f"-w {work_dir} --start {i}")
                 sys.exit(1)
-            elif actual > stage_size * 1.05:
+            elif actual > stage_size * DISC_OVERSIZE_TOLERANCE:
+                pct_over = int((DISC_OVERSIZE_TOLERANCE - 1) * 100)
                 log.error(
                     f"Disc too large: {human_bytes(actual)} > "
-                    f"{human_bytes(stage_size)} + 5% — refusing to "
-                    f"waste space"
+                    f"{human_bytes(stage_size)} + {pct_over}% — refusing "
+                    f"to waste space"
                 )
                 log.info("Insert a smaller disc, or pass --skip-fit-check "
                          "to override.")
@@ -611,9 +662,8 @@ def cmd_burn(args):
         # Post-burn verify
         if not args.no_verify:
             log.info("Post-burn verification...")
-            time.sleep(5)
             mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
-            if dio.mount(mount_dir):
+            if dio.mount_with_retry(mount_dir):
                 try:
                     result = verify_disc(mount_dir,
                                          f"Disc {i} (post-burn)", quiet=True)
@@ -703,29 +753,33 @@ def cmd_extract(args):
     disc_num = 0
 
     while True:
-        disc_num += 1
-        prompt_disc(f"Insert disc {disc_num}", args.device)
+        target = disc_num + 1
 
+        # Mount retry loop — keeps prompting until mount succeeds or user gives up.
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
-        if not dio.mount(mount_dir):
+        while True:
+            prompt_disc(f"Insert disc {target}", args.device)
+            if dio.mount(mount_dir):
+                break
             log.error("Could not mount disc")
-            mount_dir.rmdir()
-            if prompt_yn("Retry?"):
-                disc_num -= 1
-                continue
-            sys.exit(1)
+            if not prompt_yn("Retry?"):
+                mount_dir.rmdir()
+                sys.exit(1)
 
         try:
-            # Detect archive name
+            # Detect archive name on the first disc that has dar files.
+            # If the user inserted the wrong disc, retry without consuming
+            # the slot.
             if archive_name is None:
                 dar_files = [p for p in mount_dir.glob("*.dar")
                              if "-catalog" not in p.name]
                 if not dar_files:
-                    log.error("No dar files found on disc")
-                    disc_num -= 1
+                    log.error("No dar files found on disc — try another")
                     continue
                 archive_name = dar_files[0].stem.rsplit(".", 1)[0]
                 log.info(f"Archive detected: {archive_name}")
+
+            disc_num = target
 
             # Copy catalog
             for cat in mount_dir.glob(f"{archive_name}-catalog.*.dar"):
@@ -751,20 +805,22 @@ def cmd_extract(args):
                     log.warn(f"{sp.name}: damage detected — repairing...")
                     repair_dir = work_dir / f"repair_{disc_num}"
                     repair_dir.mkdir(exist_ok=True)
-                    shutil.copy2(sp, repair_dir)
-                    for pf in mount_dir.glob(f"{sp.name}.*par2"):
-                        shutil.copy2(pf, repair_dir)
+                    try:
+                        shutil.copy2(sp, repair_dir)
+                        for pf in mount_dir.glob(f"{sp.name}.*par2"):
+                            shutil.copy2(pf, repair_dir)
 
-                    par2_idx = [p for p in repair_dir.glob("*.par2")
-                                if ".vol" not in p.name]
-                    if par2_idx and Par2.repair(par2_idx[0]):
-                        shutil.copy2(repair_dir / sp.name, dest)
-                        log.ok(f"{sp.name}: repaired successfully")
-                    else:
-                        log.error(f"{sp.name}: repair failed!")
-                        if prompt_yn("Use anyway?", default_yes=False):
+                        par2_idx = [p for p in repair_dir.glob("*.par2")
+                                    if is_par2_index(p)]
+                        if par2_idx and Par2.repair(par2_idx[0]):
                             shutil.copy2(repair_dir / sp.name, dest)
-                    shutil.rmtree(repair_dir)
+                            log.ok(f"{sp.name}: repaired successfully")
+                        else:
+                            log.error(f"{sp.name}: repair failed!")
+                            if prompt_yn("Use anyway?", default_yes=False):
+                                shutil.copy2(repair_dir / sp.name, dest)
+                    finally:
+                        shutil.rmtree(repair_dir, ignore_errors=True)
 
                 elif result == VerifyResult.BROKEN:
                     log.error(f"{sp.name}: unrepairable damage!")
