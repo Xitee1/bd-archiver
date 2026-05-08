@@ -16,6 +16,7 @@ Dependencies:
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -125,6 +126,28 @@ def check_deps(*commands: str):
         print("  Arch:   pacman -Syu dar par2cmdline dvd+rw-tools cdrtools")
         print("  Debian: apt install dar par2 growisofs genisoimage")
         sys.exit(1)
+
+
+def detect_disc_capacity(device: str) -> int | None:
+    """Read raw writable bytes from the inserted disc via dvd+rw-mediainfo.
+
+    Returns None if no disc is present, the command fails, or the
+    output cannot be parsed. The caller decides how to handle that
+    (hard error in create, soft warn in burn).
+    """
+    try:
+        r = subprocess.run(
+            ["dvd+rw-mediainfo", device],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return None
+    if r.returncode != 0:
+        return None
+    m = re.search(r"Free Blocks:\s+(\d+)\*2KB", r.stdout)
+    if not m:
+        return None
+    return int(m.group(1)) * 2048
 
 
 def prompt_disc(label: str, device: str):
