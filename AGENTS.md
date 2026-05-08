@@ -9,13 +9,13 @@ Single-file Python tool (`bd-archive.py`, Python 3.10+ — uses `match` and `int
 ## Running
 
 ```bash
-./bd-archive.py create  -s <source> -n <name> -w <workdir> [-d 25|50|100] [-r %] [-c zstd|lzma|...] [-l <level>]
-./bd-archive.py burn    -w <workdir> [-D /dev/sr0] [--start N] [--no-verify] [-S <speed>]
+./bd-archive.py create  -s <source> -n <name> -w <workdir> [-D /dev/sr0] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>]
+./bd-archive.py burn    -w <workdir> [-D /dev/sr0] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
 ./bd-archive.py verify  <mountpoint|dir|/dev/sr0>
 ./bd-archive.py extract -o <output> [-D /dev/sr0] [-w <staging>]
 ```
 
-External binaries required at runtime: `dar`, `par2`, `growisofs`, plus `mount`/`umount`/`eject` for disc handling. `check_deps()` enforces this per-subcommand.
+External binaries required at runtime: `dar`, `par2`, `growisofs`, `dvd+rw-mediainfo`, plus `mount`/`umount`/`eject` for disc handling. `check_deps()` enforces this per-subcommand (both `create` and `burn` require `dvd+rw-mediainfo`).
 
 `verify` exits with `VerifyResult.value` (0=OK, 1=REPAIRABLE, 2=BROKEN) — useful for scripting.
 
@@ -23,8 +23,8 @@ External binaries required at runtime: `dar`, `par2`, `growisofs`, plus `mount`/
 
 Four subcommands form a pipeline, glued together by a workdir on disk:
 
-1. **`create`** runs `dar` to slice the source into per-disc-sized `.dar` files, then for each slice builds a staging directory `<workdir>/staging/disc_N/` containing: the slice, the isolated catalog, PAR2 recovery files, a `README.txt`, and `CHECKSUMS.sha256` (generated **last** so it covers everything else). Writes `bd-archive.json` metadata into the workdir.
-2. **`burn`** reads `bd-archive.json` and burns each `staging/disc_N/` with `growisofs`. Loop is resumable via `--start N`; the script prints the exact resume command after each disc and on post-burn-verify failure.
+1. **`create`** reads disc capacity via `detect_disc_capacity(args.device)` (or `args.bytes` as a manual override), then runs `dar` to slice the source into per-disc-sized `.dar` files. For each slice it builds a staging directory `<workdir>/staging/disc_N/` containing: the slice, the isolated catalog, PAR2 recovery files, a `README.txt`, and `CHECKSUMS.sha256` (generated **last** so it covers everything else).
+2. **`burn`** burns each `staging/disc_N/` with `growisofs`, deriving disc count from the sorted `disc_*/` directories and archive name from the first `*.dar` filename in `disc_1`. Performs a pre-burn fit check (rejects discs whose capacity is too small or more than 5% larger than the staging size; bypass with `--skip-fit-check`). Loop is resumable via `--start N`; the script prints the exact resume command after each disc and on post-burn-verify failure.
 3. **`verify`** dispatches on the target type (block device → mount; directory → check directly).
 4. **`extract`** prompts for discs in any order, copies slices into a staging dir, auto-repairs damaged slices via PAR2 when verify reports `REPAIRABLE`, then runs `dar -x` on the collected slices.
 
@@ -32,11 +32,11 @@ Four subcommands form a pipeline, glued together by a workdir on disk:
 
 ### Slice sizing (`cmd_create`)
 
-Disc capacities in `DISC_CAPACITY` already subtract 2 MiB for ISO/UDF filesystem overhead. `cmd_create` then subtracts a further `1 MiB + 256 KiB` overhead, divides the remainder by `(100 + redundancy)/100` to leave room for PAR2, and floors to a MiB boundary. Changing any of these constants risks discs that overflow at burn time — the staging size check at the end of `cmd_create` is the safety net.
+Raw capacity comes from `detect_disc_capacity(args.device)` (via `dvd+rw-mediainfo`) or `args.bytes`. `cmd_create` subtracts 2 MiB for ISO/UDF filesystem overhead, then a further `1 MiB + 256 KiB` overhead, divides the remainder by `(100 + redundancy)/100` to leave room for PAR2, and floors to a MiB boundary. Changing any of these constants risks discs that overflow at burn time — the staging size check at the end of `cmd_create` is the safety net.
 
-### Metadata contract
+### Staging contract
 
-`bd-archive.json` (constant `METADATA_FILE`) is the only thing connecting `create` to `burn`. Adding fields is safe; renaming/removing existing keys (`disc_count`, `disc_size`, `archive_name`) breaks `cmd_burn`.
+No metadata file connects `create` to `burn`. `cmd_burn` derives `disc_count` from the sorted `staging/disc_*/` directories and `archive_name` from the first non-catalog `*.dar` filename in `disc_1`. Renaming staging directories or `.dar` files breaks `cmd_burn`.
 
 ### Subprocess wrapper
 
