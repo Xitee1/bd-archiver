@@ -999,6 +999,7 @@ def cmd_burn(args):
         log.ok(f"Disc {i} burned")
 
         # Post-burn verify
+        verify_failed = False
         if not args.no_verify:
             log.info("Post-burn verification...")
             mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
@@ -1008,6 +1009,7 @@ def cmd_burn(args):
                     result = verify_disc(mounted,
                                          f"Disc {i} (post-burn)", quiet=True)
                     if result == VerifyResult.BROKEN:
+                        verify_failed = True
                         log.error("Post-burn verification failed!")
                         if not prompt_yn("Continue?", default_yes=False):
                             log.info(f"Resume later with: "
@@ -1023,7 +1025,10 @@ def cmd_burn(args):
             except OSError:
                 pass
 
-        dio.eject()
+        # Keep a broken disc in the drive for inspection; eject good
+        # discs so the user can swap in the next blank.
+        if not verify_failed:
+            dio.eject()
         log.ok(f"Disc {i}/{disc_count} done")
 
         if i < disc_count:
