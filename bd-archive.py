@@ -354,7 +354,15 @@ class DiscIO:
 
     def burn(self, source_dir: Path, volume_label: str,
              speed: str | None = None):
-        cmd = ["growisofs", "-Z", self.device, "-r", "-J",
+        # -iso-level 3 + -udf: dar slices are GiB-sized; ISO9660 level 1
+        # silently *drops* files >4 GiB ("ignoring"), producing a disc
+        # with only the small companion files and no archive payload.
+        # -use-the-force-luke=notray: skip growisofs's post-burn tray
+        # eject/reload (some drives physically pop the tray, requiring
+        # the user to re-insert before verify can run).
+        cmd = ["growisofs", "-use-the-force-luke=notray",
+               "-Z", self.device, "-r", "-J",
+               "-iso-level", "3", "-udf",
                "-V", volume_label,
                "-publisher", f"bd-archive v{VERSION}",
                "-input-charset", "utf-8"]
