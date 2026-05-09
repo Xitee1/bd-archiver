@@ -142,26 +142,46 @@ def is_par2_index(path: Path) -> bool:
     return path.suffix == ".par2" and not PAR2_RECOVERY_RE.search(path.name)
 
 
-def estimate_catalog_size(source: Path) -> tuple[int, int]:
-    """Estimate dar's isolated catalog size by walking the source tree.
+@dataclass
+class SourceScan:
+    total_bytes: int     # sum of regular file sizes
+    entry_count: int     # files + dirs + symlinks + ...
+    catalog_est: int     # estimated isolated dar catalog size
 
-    Each entry contributes ~256 B (metadata + sha512 hash + record
-    framing) plus its relative path length. Returns (estimated_bytes,
-    entry_count). Used to size per-disc overhead in cmd_create — the
-    actual catalog is measured after isolation.
+
+def scan_source(source: Path) -> SourceScan:
+    """Walk source once; return size, entry count, and catalog estimate.
+
+    Catalog estimate: dar's isolated catalog stores ~256 B per entry
+    (metadata + sha512 hash + record framing) plus the relative path
+    length. Used to size per-disc overhead and for capacity planning.
     """
     PER_ENTRY = 256
     HEADER = 64 * 1024
-    total = HEADER
+    catalog = HEADER
+    total = 0
     count = 0
     for p in source.rglob("*"):
         count += 1
         try:
             rel = p.relative_to(source).as_posix()
-            total += PER_ENTRY + len(rel.encode("utf-8"))
+            catalog += PER_ENTRY + len(rel.encode("utf-8"))
+            if p.is_file() and not p.is_symlink():
+                total += p.stat().st_size
         except (OSError, ValueError):
-            total += PER_ENTRY + 256
-    return total, count
+            catalog += PER_ENTRY + 256
+    return SourceScan(total_bytes=total, entry_count=count, catalog_est=catalog)
+
+
+def compute_slice_bytes(disc_bytes: int, catalog_est: int,
+                        redundancy: int) -> int:
+    """Largest slice that fits on a disc with overhead. Returns 0 if it doesn't fit."""
+    per_disc_overhead = catalog_est + PAR2_AND_MISC_OVERHEAD
+    if per_disc_overhead >= disc_bytes:
+        return 0
+    available = disc_bytes - per_disc_overhead
+    slice_bytes = (available * 100 // (100 + redundancy))
+    return (slice_bytes // MiB) * MiB
 
 
 def detect_disc_capacity(device: str) -> int | None:
@@ -489,17 +509,15 @@ def cmd_create(args):
     disc_bytes = raw_capacity - 2 * MiB  # ISO/UDF filesystem overhead
 
     log.info("Scanning source...")
-    catalog_est, entry_count = estimate_catalog_size(source)
+    scan = scan_source(source)
 
-    # slice + par2(slice) + catalog + par2_misc = disc_bytes
-    per_disc_overhead = catalog_est + PAR2_AND_MISC_OVERHEAD
-    if per_disc_overhead >= disc_bytes:
-        log.error(f"Per-disc overhead ({human_bytes(per_disc_overhead)}) "
+    slice_bytes = compute_slice_bytes(disc_bytes, scan.catalog_est,
+                                      args.redundancy)
+    if slice_bytes == 0:
+        log.error(f"Per-disc overhead "
+                  f"({human_bytes(scan.catalog_est + PAR2_AND_MISC_OVERHEAD)}) "
                   f"exceeds disc capacity ({human_bytes(disc_bytes)})")
         sys.exit(1)
-    available = disc_bytes - per_disc_overhead
-    slice_bytes = (available * 100 // (100 + args.redundancy))
-    slice_bytes = (slice_bytes // MiB) * MiB
 
     par2_est = slice_bytes * args.redundancy // 100
     cfg = ArchiveConfig(
@@ -514,8 +532,8 @@ def cmd_create(args):
     log.info(f"Disc capacity: {human_bytes(disc_bytes)}")
     log.info(f"Slice size:    {human_bytes(slice_bytes)}")
     log.info(f"PAR2:          {cfg.redundancy}% (~{human_bytes(par2_est)})")
-    log.info(f"Catalog:       ~{human_bytes(catalog_est)} "
-             f"({entry_count} entries, estimated)")
+    log.info(f"Catalog:       ~{human_bytes(scan.catalog_est)} "
+             f"({scan.entry_count} entries, estimated)")
     log.info(f"Compression:   {cfg.comp_str}")
     log.info(f"Source:        {source}")
     log.info(f"Workdir:       {work_dir}")
@@ -541,9 +559,9 @@ def cmd_create(args):
     dar.isolate_catalog()
     catalog_actual = sum(c.stat().st_size for c in dar.catalog_files)
     log.ok(f"Catalog isolated ({human_bytes(catalog_actual)})")
-    if catalog_actual > catalog_est:
+    if catalog_actual > scan.catalog_est:
         log.warn(f"Catalog exceeds estimate by "
-                 f"{human_bytes(catalog_actual - catalog_est)} — "
+                 f"{human_bytes(catalog_actual - scan.catalog_est)} — "
                  f"per-disc fit check may fail")
 
     # ── Stage each disc ─────────────────────────────────────────────────
@@ -591,15 +609,11 @@ def cmd_create(args):
             log.error(f"Disc {i} exceeds capacity!")
             sys.exit(1)
 
-    # ── Compute source size for summary ─────────────────────────────────
-    source_size = sum(f.stat().st_size for f in source.rglob("*")
-                      if f.is_file())
-
     # ── Summary ─────────────────────────────────────────────────────────
-    ratio = total_archive * 100 // max(source_size, 1)
+    ratio = total_archive * 100 // max(scan.total_bytes, 1)
 
     log.step("Summary")
-    print(f"\n  Source:       {human_bytes(source_size)}")
+    print(f"\n  Source:       {human_bytes(scan.total_bytes)}")
     print(f"  Archive:      {human_bytes(total_archive)} ({ratio}%)")
     print(f"  Discs:        {slice_count} x {human_bytes(disc_bytes)}")
     print(f"  PAR2:         {cfg.redundancy}% per disc")
@@ -607,6 +621,91 @@ def cmd_create(args):
     print(f"  Staging:      {work_dir / 'staging'}")
     print(f"\n  Next step:    bd-archive.py burn -w {work_dir}")
     print(f"  Cleanup:      rm -rf {work_dir}\n")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# cmd_estimate — estimate disc count + last-disc headroom (no archive created)
+# ════════════════════════════════════════════════════════════════════════════
+
+def cmd_estimate(args):
+    """Preview disc count and per-disc fill without running dar/par2.
+
+    Compression cannot be measured without actually running it, so the
+    archive size is estimated as source_size * --ratio. The default
+    (1.0) is the worst case (no compression); pass --ratio 0.5 to
+    estimate for ~50% reduction. Disc count and last-disc fill are
+    computed with the same slice-sizing math as cmd_create.
+    """
+    source = Path(args.source).resolve()
+    if not source.is_dir():
+        log.error(f"Does not exist: {source}")
+        sys.exit(1)
+
+    if args.bytes is not None:
+        raw_capacity = args.bytes
+    else:
+        check_deps("dvd+rw-mediainfo")
+        raw_capacity = detect_disc_capacity(args.device)
+        if raw_capacity is None:
+            log.error(f"No disc detected at {args.device}.")
+            log.info("Insert a blank disc, or specify capacity manually "
+                     "with -b/--bytes <int>.")
+            sys.exit(1)
+    disc_bytes = raw_capacity - 2 * MiB
+
+    log.info("Scanning source...")
+    scan = scan_source(source)
+
+    slice_bytes = compute_slice_bytes(disc_bytes, scan.catalog_est,
+                                      args.redundancy)
+    if slice_bytes == 0:
+        log.error(f"Per-disc overhead "
+                  f"({human_bytes(scan.catalog_est + PAR2_AND_MISC_OVERHEAD)}) "
+                  f"exceeds disc capacity ({human_bytes(disc_bytes)})")
+        sys.exit(1)
+
+    archive_est = int(scan.total_bytes * args.ratio)
+    n_discs = max(1, (archive_est + slice_bytes - 1) // slice_bytes)
+
+    # Slices 1..N-1 are exactly slice_bytes; the last slice is whatever
+    # remains. If the archive is an exact multiple, last_slice = slice_bytes.
+    last_slice = archive_est - (n_discs - 1) * slice_bytes
+    if last_slice == 0:
+        last_slice = slice_bytes
+
+    last_disc_content = (
+        last_slice
+        + last_slice * args.redundancy // 100
+        + scan.catalog_est
+        + PAR2_AND_MISC_OVERHEAD
+    )
+    last_disc_free = max(0, disc_bytes - last_disc_content)
+    # Convert archive-byte headroom back to raw source bytes via ratio.
+    last_disc_free_raw = int(last_disc_free / max(args.ratio, 0.001))
+
+    log.step("Source")
+    log.info(f"Path:             {source}")
+    log.info(f"Size:             {human_bytes(scan.total_bytes)} "
+             f"({scan.entry_count} entries)")
+    log.info(f"Catalog:          ~{human_bytes(scan.catalog_est)} (estimated)")
+
+    log.step("Disc layout")
+    log.info(f"Disc capacity:    {human_bytes(disc_bytes)}")
+    log.info(f"Slice size:       {human_bytes(slice_bytes)}")
+    log.info(f"PAR2 redundancy:  {args.redundancy}%")
+    log.info(f"Compression:      ratio {args.ratio:.2f}")
+    log.info(f"Estimated archive: {human_bytes(archive_est)}")
+
+    log.step("Result")
+    fill_pct = last_disc_content * 100 // disc_bytes
+    print(f"\n  Discs needed:    {n_discs}")
+    print(f"  Last disc fill:  {human_bytes(last_disc_content)} / "
+          f"{human_bytes(disc_bytes)}  ({fill_pct}%)")
+    print(f"  Free on last:    {human_bytes(last_disc_free)} archive")
+    if abs(args.ratio - 1.0) > 0.001:
+        print(f"                   ~{human_bytes(last_disc_free_raw)} raw "
+              f"(at ratio {args.ratio:.2f})")
+    print()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -972,6 +1071,23 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument("-l", "--level",
                     help="Compression level")
 
+    # ── estimate ────────────────────────────────────────────────────────
+    es = sub.add_parser("estimate",
+                        help="Estimate disc count + last-disc headroom")
+    es.add_argument("-s", "--source", required=True,
+                    help="Source directory")
+    es.add_argument("-r", "--redundancy", type=int, default=5,
+                    help="PAR2 redundancy in %% (default: 5)")
+    es.add_argument("-D", "--device", default="/dev/sr0",
+                    help="Optical drive for capacity detection "
+                         "(default: /dev/sr0)")
+    es.add_argument("-b", "--bytes", type=int, default=None,
+                    help="Manual disc capacity in raw bytes "
+                         "(overrides detection)")
+    es.add_argument("--ratio", type=float, default=1.0,
+                    help="Assumed compression ratio "
+                         "(1.0 = none, 0.5 = 50%% reduction, default: 1.0)")
+
     # ── burn ────────────────────────────────────────────────────────────
     bu = sub.add_parser("burn",
                         help="Burn staged discs (resumable)")
@@ -1018,6 +1134,7 @@ def main():
 
     match args.command:
         case "create":  cmd_create(args)
+        case "estimate": cmd_estimate(args)
         case "burn":    cmd_burn(args)
         case "verify":  cmd_verify(args)
         case "extract": cmd_extract(args)
