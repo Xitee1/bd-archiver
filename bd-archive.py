@@ -1165,7 +1165,8 @@ def build_parser() -> argparse.ArgumentParser:
     bu.add_argument("-D", "--device", default="/dev/sr0",
                     help="Optical drive device (default: /dev/sr0)")
     bu.add_argument("-S", "--speed",
-                    help="Burn speed")
+                    help="Burn speed as BD multiplier (e.g. 2, 4, 6); 1x = 4.5 MB/s "
+                         "(default: drive/media maximum)")
     bu.add_argument("--start", type=int, default=1,
                     help="Start from disc N (default: 1)")
     bu.add_argument("--no-verify", action="store_true",
