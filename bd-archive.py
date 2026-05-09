@@ -45,6 +45,12 @@ PAR2_AND_MISC_OVERHEAD = 4 * MiB
 # giving up (drive needs to finalise + re-read TOC).
 POST_BURN_MOUNT_TIMEOUT = 30
 
+# ISO9660 caps the Primary Volume Descriptor's Volume Identifier at 32
+# bytes. mkisofs/growisofs reject longer labels outright. Volume labels
+# here are "<archive_name>_NNNN", so archive_name must leave room for
+# the 5-char disc suffix.
+ISO9660_VOLUME_LABEL_MAX = 32
+
 # PAR2 recovery volumes are named "<base>.volNNN+NN.par2"; the index file
 # is plain "<base>.par2". This pattern matches recovery volumes only.
 PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
@@ -529,6 +535,13 @@ def generate_readme(stage_dir: Path, cfg: ArchiveConfig,
 def cmd_create(args):
     check_deps("dar", "par2", "dvd+rw-mediainfo")
 
+    max_name_len = ISO9660_VOLUME_LABEL_MAX - 5  # "_NNNN" suffix
+    if len(args.name) > max_name_len:
+        log.error(f"--name '{args.name}' is {len(args.name)} chars; "
+                  f"max {max_name_len} (ISO9660 volume label limit "
+                  f"{ISO9660_VOLUME_LABEL_MAX} minus 5-char disc suffix)")
+        sys.exit(1)
+
     source = Path(args.source).resolve()
     if not source.is_dir():
         log.error(f"Does not exist: {source}")
@@ -864,7 +877,13 @@ def cmd_burn(args):
 
         # Burn
         log.info("Burning...")
-        dio.burn(stage, f"{archive_name}_{i:04d}", args.speed)
+        suffix = f"_{i:04d}"
+        volume_label = f"{archive_name}{suffix}"
+        if len(volume_label) > ISO9660_VOLUME_LABEL_MAX:
+            volume_label = archive_name[:ISO9660_VOLUME_LABEL_MAX - len(suffix)] + suffix
+            log.warn(f"Volume label truncated to fit ISO9660 "
+                     f"{ISO9660_VOLUME_LABEL_MAX}-char limit: {volume_label}")
+        dio.burn(stage, volume_label, args.speed)
         log.ok(f"Disc {i} burned")
 
         # Post-burn verify
