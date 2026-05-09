@@ -23,8 +23,8 @@ External binaries required at runtime: `dar`, `par2`, `growisofs`, `dvd+rw-media
 
 Four subcommands form a pipeline, glued together by a workdir on disk:
 
-1. **`create`** reads disc capacity via `detect_disc_capacity(args.device)` (or `args.bytes` as a manual override), then runs `dar` to slice the source into per-disc-sized `.dar` files. For each slice it builds a staging directory `<workdir>/staging/disc_N/` containing: the slice, the isolated catalog, PAR2 recovery files, a `README.txt`, and `CHECKSUMS.sha256` (generated **last** so it covers everything else).
-2. **`burn`** burns each `staging/disc_N/` with `growisofs`, deriving disc count from the sorted `disc_*/` directories and archive name from the first `*.dar` filename in `disc_1`. Performs a pre-burn fit check (rejects discs whose capacity is too small or more than 5% larger than the staging size; bypass with `--skip-fit-check`). Loop is resumable via `--start N`; the script prints the exact resume command after each disc and on post-burn-verify failure.
+1. **`create`** reads disc capacity via `detect_disc_capacity(args.device)` (or `args.bytes` as a manual override), then runs `dar --hash sha512 --min-digits 4` to slice the source into per-disc-sized `.dar` files (dar emits a sibling `<slice>.sha512` per slice, sha512sum-compatible; `--min-digits 4` zero-pads slice numbers so lexical sort matches numerical order past 9 slices). For each slice it builds a staging directory `<workdir>/staging/disc_NNNN/` containing: the slice + its `.sha512`, the isolated catalog slices + their `.sha512` files, PAR2 recovery files (self-verifying), and a `README.txt`. PAR2 and README intentionally have no hash — PAR2 verifies itself, README is non-load-bearing.
+2. **`burn`** burns each `staging/disc_NNNN/` with `growisofs`, deriving disc count from the sorted `disc_*/` directories and archive name from the first `*.dar` filename in `disc_0001`. Volume label is `<archive_name>_<NNNN>` (also zero-padded for stable physical disc ordering). Performs a pre-burn fit check (rejects discs whose capacity is too small or more than 5% larger than the staging size; bypass with `--skip-fit-check`). Loop is resumable via `--start N`; the script prints the exact resume command after each disc and on post-burn-verify failure.
 3. **`verify`** dispatches on the target type (block device → mount; directory → check directly).
 4. **`extract`** prompts for discs in any order, copies slices into a staging dir, auto-repairs damaged slices via PAR2 when verify reports `REPAIRABLE`, then runs `dar -x` on the collected slices.
 
@@ -36,7 +36,7 @@ Raw capacity comes from `detect_disc_capacity(args.device)` (via `dvd+rw-mediain
 
 ### Staging contract
 
-No metadata file connects `create` to `burn`. `cmd_burn` derives `disc_count` from the sorted `staging/disc_*/` directories and `archive_name` from the first non-catalog `*.dar` filename in `disc_1`. Renaming staging directories or `.dar` files breaks `cmd_burn`.
+No metadata file connects `create` to `burn`. `cmd_burn` derives `disc_count` from the sorted `staging/disc_*/` directories (zero-padded to 4 digits, so lexical sort = numerical sort) and `archive_name` from the first non-catalog `*.dar` filename in `disc_0001`. Renaming staging directories or `.dar` files breaks `cmd_burn`.
 
 ### Subprocess wrapper
 

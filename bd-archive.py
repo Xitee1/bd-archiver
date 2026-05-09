@@ -26,7 +26,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 
 MiB = 1024 * 1024
 
@@ -227,51 +227,46 @@ class DiscIO:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Checksums — SHA-256 generate / verify (using hashlib, no shell-out)
+# SHA-512 hashes — verify dar's per-slice .sha512 files (sha512sum-compatible)
 # ════════════════════════════════════════════════════════════════════════════
 
-class Checksums:
-    FILENAME = "CHECKSUMS.sha256"
-    CHUNK_SIZE = 65536
+HASH_CHUNK_SIZE = 65536
 
-    @staticmethod
-    def _hash_file(path: Path) -> str:
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(Checksums.CHUNK_SIZE), b""):
-                h.update(chunk)
-        return h.hexdigest()
 
-    @staticmethod
-    def generate(directory: Path) -> int:
-        checksum_file = directory / Checksums.FILENAME
-        lines = []
-        for p in sorted(directory.iterdir()):
-            if p.is_file() and p.name != Checksums.FILENAME:
-                lines.append(f"{Checksums._hash_file(p)}  {p.name}")
-        checksum_file.write_text("\n".join(lines) + "\n")
-        return len(lines)
+def _hash_file_sha512(path: Path) -> str:
+    h = hashlib.sha512()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
-    @staticmethod
-    def verify(directory: Path) -> tuple[int, int]:
-        """Returns (ok_count, fail_count)."""
-        checksum_file = directory / Checksums.FILENAME
-        if not checksum_file.exists():
-            return 0, 0
-        ok = fail = 0
-        for line in checksum_file.read_text().strip().splitlines():
-            expected, filename = line.split("  ", 1)
-            filepath = directory / filename
-            if not filepath.exists():
-                log.error(f"  Missing: {filename}")
-                fail += 1
-                continue
-            if Checksums._hash_file(filepath) == expected:
-                ok += 1
-            else:
-                log.error(f"  Corrupted: {filename}")
-                fail += 1
-        return ok, fail
+
+def verify_dar_hashes(directory: Path) -> tuple[int, int]:
+    """Verify every *.sha512 file in directory against its target.
+
+    dar writes one sha512sum-format line per slice ("<hex>  <filename>")
+    into a sibling file named "<slice>.sha512". Returns (ok, fail);
+    missing or empty hash files count as fail.
+    """
+    ok = fail = 0
+    for hash_file in sorted(directory.glob("*.sha512")):
+        text = hash_file.read_text().strip()
+        if not text:
+            log.error(f"  Empty hash file: {hash_file.name}")
+            fail += 1
+            continue
+        expected, filename = text.splitlines()[0].split("  ", 1)
+        target = directory / filename
+        if not target.exists():
+            log.error(f"  Missing: {filename}")
+            fail += 1
+            continue
+        if _hash_file_sha512(target) == expected:
+            ok += 1
+        else:
+            log.error(f"  Corrupted: {filename}")
+            fail += 1
+    return ok, fail
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -334,7 +329,8 @@ class DarArchive:
     def create(self, source: Path, slice_bytes: int,
                compression: str, comp_level: str | None):
         cmd = ["dar", "-c", str(self.base_path),
-               "-R", str(source), "-s", str(slice_bytes), "-Q"]
+               "-R", str(source), "-s", str(slice_bytes),
+               "--hash", "sha512", "--min-digits", "4", "-Q"]
         if compression != "none":
             flag = f"-z{compression}"
             if comp_level:
@@ -344,7 +340,9 @@ class DarArchive:
 
     def isolate_catalog(self):
         run(["dar", "-C", str(self.base_path) + "-catalog",
-             "-A", str(self.base_path), "-Q"], label="dar", check=True)
+             "-A", str(self.base_path),
+             "--hash", "sha512", "--min-digits", "4", "-Q"],
+            label="dar", check=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -358,19 +356,21 @@ def verify_disc(disc_path: Path, label: str = "",
 
     worst = VerifyResult.OK
 
-    # SHA-256
-    cs_file = disc_path / Checksums.FILENAME
-    if cs_file.exists():
+    # SHA-512 — dar emits one .sha512 file per slice (and per catalog
+    # slice). PAR2 and README have no hash by design: PAR2 is
+    # self-verifying and README is non-load-bearing.
+    hash_files = sorted(disc_path.glob("*.sha512"))
+    if hash_files:
         if not quiet:
-            log.info("Checking SHA-256 checksums...")
-        ok_count, fail_count = Checksums.verify(disc_path)
+            log.info(f"Checking SHA-512 hashes ({len(hash_files)} file(s))...")
+        ok_count, fail_count = verify_dar_hashes(disc_path)
         if fail_count == 0:
-            log.ok(f"SHA-256: all {ok_count} files intact")
+            log.ok(f"SHA-512: all {ok_count} file(s) intact")
         else:
-            log.error(f"SHA-256: {fail_count} file(s) corrupted!")
+            log.error(f"SHA-512: {fail_count} file(s) corrupted!")
             worst = VerifyResult.BROKEN
     elif not quiet:
-        log.warn("No CHECKSUMS.sha256 found")
+        log.warn("No .sha512 hash files found")
 
     # PAR2
     par2_indices = [p for p in sorted(disc_path.glob("*.par2"))
@@ -427,7 +427,8 @@ def generate_readme(stage_dir: Path, cfg: ArchiveConfig,
         f" | {ts} | Capacity {human_bytes(cfg.disc_bytes)}"
         f" | PAR2 {cfg.redundancy}% | {cfg.comp_str}\n\n"
         f"RESTORE:  dar -x {cfg.name} -R /target\n"
-        f"VERIFY:   par2 verify {slice_name}.par2\n"
+        f"VERIFY:   sha512sum -c {slice_name}.sha512\n"
+        f"          par2 verify {slice_name}.par2\n"
         f"REPAIR:   par2 repair {slice_name}.par2\n"
         f"DEPENDS:  pacman -S dar par2cmdline  |  apt install dar par2\n"
     )
@@ -508,26 +509,33 @@ def cmd_create(args):
 
     for i, slice_file in enumerate(slices, 1):
         slice_name = slice_file.name
-        stage = work_dir / "staging" / f"disc_{i}"
+        stage = work_dir / "staging" / f"disc_{i:04d}"
 
         if stage.exists():
             shutil.rmtree(stage)
         stage.mkdir(parents=True)
 
-        # Slice + catalog
+        # Slice + its dar-generated SHA-512 hash file
         shutil.copy2(slice_file, stage)
+        slice_hash = Path(str(slice_file) + ".sha512")
+        if slice_hash.exists():
+            shutil.copy2(slice_hash, stage)
+
+        # Isolated catalog slices + their hash files
         for cat in dar.catalog_files:
             shutil.copy2(cat, stage)
+            cat_hash = Path(str(cat) + ".sha512")
+            if cat_hash.exists():
+                shutil.copy2(cat_hash, stage)
 
-        # PAR2
+        # PAR2 (covers slice; PAR2 files are self-verifying)
         log.info(f"Disc {i}/{slice_count}: generating PAR2 ({cfg.redundancy}%)...")
         Par2.create(stage / slice_name, cfg.redundancy)
 
         # README
         generate_readme(stage, cfg, i, slice_count, slice_name)
 
-        # CHECKSUMS.sha256 (last — covers everything else)
-        file_count = Checksums.generate(stage)
+        file_count = sum(1 for f in stage.iterdir() if f.is_file())
 
         # Size check
         stage_size = sum(f.stat().st_size for f in stage.iterdir()
@@ -611,7 +619,7 @@ def cmd_burn(args):
         log.info(f"Resuming from disc {start}")
 
     for i in range(start, disc_count + 1):
-        stage = staging_root / f"disc_{i}"
+        stage = staging_root / f"disc_{i:04d}"
         if not stage.exists():
             log.error(f"Staging directory not found: {stage}")
             log.info("Run 'create' first to prepare the archive.")
@@ -656,7 +664,7 @@ def cmd_burn(args):
 
         # Burn
         log.info("Burning...")
-        dio.burn(stage, f"{archive_name}_{i}", args.speed)
+        dio.burn(stage, f"{archive_name}_{i:04d}", args.speed)
         log.ok(f"Disc {i} burned")
 
         # Post-burn verify
@@ -851,14 +859,28 @@ def cmd_extract(args):
     log.info(f"Output: {output_dir}")
 
     dar_base = staging / archive_name
+    catalog_base = staging / f"{archive_name}-catalog"
+    has_catalog = any(staging.glob(f"{archive_name}-catalog.*.dar"))
+
+    cmd = ["dar", "-x", str(dar_base), "-R", str(output_dir), "-O", "-Q"]
+    if has_catalog:
+        # -A uses the isolated catalog as rescue source — handles
+        # corruption of the in-archive catalog (PAR2 covers slice bytes
+        # but the embedded catalog inside the slice can still be lost
+        # past PAR2's repair threshold).
+        cmd += ["-A", str(catalog_base)]
+
     try:
-        run(["dar", "-x", str(dar_base), "-R", str(output_dir), "-O", "-Q"],
-            label="dar")
+        run(cmd, label="dar")
         log.ok("Extraction complete!")
     except subprocess.CalledProcessError:
         log.error("dar extraction failed")
         log.info(f"Slices are in: {staging}")
-        log.info(f"Manual: dar -x {dar_base} -R {output_dir}")
+        if has_catalog:
+            log.info(f"Retry without rescue catalog: "
+                     f"dar -x {dar_base} -R {output_dir}")
+        else:
+            log.info(f"Manual: dar -x {dar_base} -R {output_dir}")
         sys.exit(1)
 
     total = sum(f.stat().st_size for f in output_dir.rglob("*") if f.is_file())
