@@ -10,7 +10,7 @@ Single-file Python tool (`bd-archive.py`, Python 3.10+ — uses `match` and `int
 
 ```bash
 python3 bd-archive.py create   -s <source> -n <name> -w <workdir> [-D /dev/sr0] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>]
-python3 bd-archive.py estimate -s <source> [-D /dev/sr0] [-b BYTES] [-r %] [--ratio <float>]
+python3 bd-archive.py estimate -s <source> [-D /dev/sr0] [-b BYTES] [-r %] [--ratio <float> | --sample <path> [-c <algo>] [-l <level>]]
 python3 bd-archive.py burn     -w <workdir> [-D /dev/sr0] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
 python3 bd-archive.py verify   <mountpoint|dir|/dev/sr0>
 python3 bd-archive.py extract  -o <output> [-D /dev/sr0] [-w <staging>]
@@ -28,7 +28,7 @@ Four subcommands form a pipeline, glued together by a workdir on disk; `estimate
 2. **`burn`** burns each `staging/disc_NNNN/` with `growisofs`, deriving disc count from the sorted `disc_*/` directories and archive name from the first `*.dar` filename in `disc_0001`. Volume label is `<archive_name>_<NNNN>` (also zero-padded for stable physical disc ordering). Performs a pre-burn fit check (rejects discs whose capacity is too small or more than 5% larger than the staging size; bypass with `--skip-fit-check`). Loop is resumable via `--start N`; the script prints the exact resume command after each disc and on post-burn-verify failure.
 3. **`verify`** dispatches on the target type (block device → mount; directory → check directly).
 4. **`extract`** prompts for discs in any order, copies slices into a staging dir, auto-repairs damaged slices via PAR2 when verify reports `REPAIRABLE`, then runs `dar -x` on the collected slices.
-5. **`estimate`** walks the source and applies the same `compute_slice_bytes` math as `create` to estimate disc count and last-disc fill, without invoking dar/par2. Compression cannot be measured without running it, so the user supplies `--ratio` (default 1.0 = worst-case no compression). Useful for adjusting source contents before committing to a real `create`.
+5. **`estimate`** walks the source and applies the same `compute_slice_bytes` math as `create` to predict disc count and last-disc fill, without burning anything. Compression ratio comes from one of three sources, in order of accuracy: `--sample <path>` runs dar with `-c`/`-l` on a representative subset and measures the actual output/input ratio (via `measure_compression_ratio`); `--ratio <float>` accepts a manual override; otherwise 1.0 (worst case). Useful for adjusting source contents before committing to a real `create`.
 
 `verify_disc()` is shared between all three verify paths (standalone `verify`, post-burn check inside `burn`, and per-disc check inside `extract`).
 

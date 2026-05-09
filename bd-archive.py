@@ -173,6 +173,50 @@ def scan_source(source: Path) -> SourceScan:
     return SourceScan(total_bytes=total, entry_count=count, catalog_est=catalog)
 
 
+def measure_compression_ratio(sample: Path, compression: str,
+                              level: str | None) -> float:
+    """Run dar on sample with the given compression; return output/input ratio.
+
+    Uses a temp directory for the test archive (cleaned up automatically).
+    The user picks a representative subset — the ratio is only meaningful
+    if the sample's file-type mix matches the full source. Small samples
+    (<50 MiB) inflate the ratio because the embedded dar catalog +
+    per-archive overhead become a noticeable fraction of the output.
+    """
+    if not sample.is_dir():
+        log.error(f"Sample must be a directory: {sample}")
+        sys.exit(1)
+
+    sample_size = sum(p.stat().st_size for p in sample.rglob("*")
+                      if p.is_file() and not p.is_symlink())
+    if sample_size == 0:
+        log.error(f"Sample {sample} contains no files")
+        sys.exit(1)
+    if sample_size < 50 * MiB:
+        log.warn(f"Small sample ({human_bytes(sample_size)}) — ratio "
+                 f"likely inflated by per-archive overhead")
+
+    label = compression + (f":{level}" if level else "")
+    log.info(f"Test-compressing {human_bytes(sample_size)} sample with {label}...")
+
+    with tempfile.TemporaryDirectory(prefix="bd-sample-") as tmp:
+        archive = Path(tmp) / "sample"
+        cmd = ["dar", "-c", str(archive), "-R", str(sample),
+               "--hash", "sha512", "-Q"]
+        if compression != "none":
+            flag = f"-z{compression}"
+            if level:
+                flag += f":{level}"
+            cmd += [flag, "-am"]
+        run(cmd, label="dar")
+        output_size = sum(p.stat().st_size for p in Path(tmp).glob("*.dar"))
+
+    ratio = output_size / sample_size
+    log.ok(f"Measured ratio {ratio:.3f}: "
+           f"{human_bytes(sample_size)} → {human_bytes(output_size)}")
+    return ratio
+
+
 def compute_slice_bytes(disc_bytes: int, catalog_est: int,
                         redundancy: int) -> int:
     """Largest slice that fits on a disc with overhead. Returns 0 if it doesn't fit."""
@@ -630,12 +674,16 @@ def cmd_create(args):
 def cmd_estimate(args):
     """Preview disc count and per-disc fill without running dar/par2.
 
-    Compression cannot be measured without actually running it, so the
-    archive size is estimated as source_size * --ratio. The default
-    (1.0) is the worst case (no compression); pass --ratio 0.5 to
-    estimate for ~50% reduction. Disc count and last-disc fill are
-    computed with the same slice-sizing math as cmd_create.
+    Compression ratio comes from one of three sources, in order of
+    accuracy: --sample <path> runs dar with the given compression on a
+    representative subset and measures the actual ratio; --ratio <float>
+    uses a manually supplied ratio; otherwise 1.0 (worst case, no
+    compression). Disc count and last-disc fill are computed with the
+    same slice-sizing math as cmd_create.
     """
+    if args.sample:
+        check_deps("dar")
+
     source = Path(args.source).resolve()
     if not source.is_dir():
         log.error(f"Does not exist: {source}")
@@ -664,7 +712,18 @@ def cmd_estimate(args):
                   f"exceeds disc capacity ({human_bytes(disc_bytes)})")
         sys.exit(1)
 
-    archive_est = int(scan.total_bytes * args.ratio)
+    if args.sample:
+        ratio = measure_compression_ratio(
+            Path(args.sample).resolve(), args.compression, args.level)
+        ratio_source = f"measured from {args.sample}"
+    elif args.ratio is not None:
+        ratio = args.ratio
+        ratio_source = "manual"
+    else:
+        ratio = 1.0
+        ratio_source = "default (no compression assumed)"
+
+    archive_est = int(scan.total_bytes * ratio)
     n_discs = max(1, (archive_est + slice_bytes - 1) // slice_bytes)
 
     # Slices 1..N-1 are exactly slice_bytes; the last slice is whatever
@@ -681,7 +740,7 @@ def cmd_estimate(args):
     )
     last_disc_free = max(0, disc_bytes - last_disc_content)
     # Convert archive-byte headroom back to raw source bytes via ratio.
-    last_disc_free_raw = int(last_disc_free / max(args.ratio, 0.001))
+    last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))
 
     log.step("Source")
     log.info(f"Path:             {source}")
@@ -693,7 +752,7 @@ def cmd_estimate(args):
     log.info(f"Disc capacity:    {human_bytes(disc_bytes)}")
     log.info(f"Slice size:       {human_bytes(slice_bytes)}")
     log.info(f"PAR2 redundancy:  {args.redundancy}%")
-    log.info(f"Compression:      ratio {args.ratio:.2f}")
+    log.info(f"Compression:      ratio {ratio:.3f} ({ratio_source})")
     log.info(f"Estimated archive: {human_bytes(archive_est)}")
 
     log.step("Result")
@@ -702,9 +761,9 @@ def cmd_estimate(args):
     print(f"  Last disc fill:  {human_bytes(last_disc_content)} / "
           f"{human_bytes(disc_bytes)}  ({fill_pct}%)")
     print(f"  Free on last:    {human_bytes(last_disc_free)} archive")
-    if abs(args.ratio - 1.0) > 0.001:
+    if abs(ratio - 1.0) > 0.001:
         print(f"                   ~{human_bytes(last_disc_free_raw)} raw "
-              f"(at ratio {args.ratio:.2f})")
+              f"(at ratio {ratio:.3f})")
     print()
 
 
@@ -1084,9 +1143,19 @@ def build_parser() -> argparse.ArgumentParser:
     es.add_argument("-b", "--bytes", type=int, default=None,
                     help="Manual disc capacity in raw bytes "
                          "(overrides detection)")
-    es.add_argument("--ratio", type=float, default=1.0,
-                    help="Assumed compression ratio "
-                         "(1.0 = none, 0.5 = 50%% reduction, default: 1.0)")
+    ratio_group = es.add_mutually_exclusive_group()
+    ratio_group.add_argument("--ratio", type=float, default=None,
+                             help="Manual compression ratio "
+                                  "(1.0 = none, 0.5 = 50%% reduction). "
+                                  "Default: 1.0 if --sample also omitted")
+    ratio_group.add_argument("--sample", default=None,
+                             help="Run dar on this directory with -c/-l "
+                                  "and use the measured output/input ratio")
+    es.add_argument("-c", "--compression", default="zstd",
+                    choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
+                    help="Compression algorithm for --sample (default: zstd)")
+    es.add_argument("-l", "--level",
+                    help="Compression level for --sample")
 
     # ── burn ────────────────────────────────────────────────────────────
     bu = sub.add_parser("burn",
