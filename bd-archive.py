@@ -35,6 +35,12 @@ MiB = 1024 * 1024
 # (e.g. a 50 GB BD-DL when the archive was sized for 25 GB BD-R).
 DISC_OVERSIZE_TOLERANCE = 1.05
 
+# Per-disc overhead beyond slice + par2 recovery: par2 index file, par2
+# packet headers, par2 block rounding, sha512 hash files, README. The
+# isolated dar catalog (usually the dominant item) scales with file
+# count and is computed separately by estimate_catalog_size().
+PAR2_AND_MISC_OVERHEAD = 4 * MiB
+
 # Seconds to wait for a freshly burned disc to become mountable before
 # giving up (drive needs to finalise + re-read TOC).
 POST_BURN_MOUNT_TIMEOUT = 30
@@ -134,6 +140,28 @@ def check_deps(*commands: str):
 def is_par2_index(path: Path) -> bool:
     """True for the PAR2 index file, False for recovery volumes."""
     return path.suffix == ".par2" and not PAR2_RECOVERY_RE.search(path.name)
+
+
+def estimate_catalog_size(source: Path) -> tuple[int, int]:
+    """Estimate dar's isolated catalog size by walking the source tree.
+
+    Each entry contributes ~256 B (metadata + sha512 hash + record
+    framing) plus its relative path length. Returns (estimated_bytes,
+    entry_count). Used to size per-disc overhead in cmd_create — the
+    actual catalog is measured after isolation.
+    """
+    PER_ENTRY = 256
+    HEADER = 64 * 1024
+    total = HEADER
+    count = 0
+    for p in source.rglob("*"):
+        count += 1
+        try:
+            rel = p.relative_to(source).as_posix()
+            total += PER_ENTRY + len(rel.encode("utf-8"))
+        except (OSError, ValueError):
+            total += PER_ENTRY + 256
+    return total, count
 
 
 def detect_disc_capacity(device: str) -> int | None:
@@ -460,9 +488,16 @@ def cmd_create(args):
 
     disc_bytes = raw_capacity - 2 * MiB  # ISO/UDF filesystem overhead
 
-    # slice + par2(slice) + overhead = disc
-    overhead = 1 * MiB + 256 * 1024
-    available = disc_bytes - overhead
+    log.info("Scanning source...")
+    catalog_est, entry_count = estimate_catalog_size(source)
+
+    # slice + par2(slice) + catalog + par2_misc = disc_bytes
+    per_disc_overhead = catalog_est + PAR2_AND_MISC_OVERHEAD
+    if per_disc_overhead >= disc_bytes:
+        log.error(f"Per-disc overhead ({human_bytes(per_disc_overhead)}) "
+                  f"exceeds disc capacity ({human_bytes(disc_bytes)})")
+        sys.exit(1)
+    available = disc_bytes - per_disc_overhead
     slice_bytes = (available * 100 // (100 + args.redundancy))
     slice_bytes = (slice_bytes // MiB) * MiB
 
@@ -479,6 +514,8 @@ def cmd_create(args):
     log.info(f"Disc capacity: {human_bytes(disc_bytes)}")
     log.info(f"Slice size:    {human_bytes(slice_bytes)}")
     log.info(f"PAR2:          {cfg.redundancy}% (~{human_bytes(par2_est)})")
+    log.info(f"Catalog:       ~{human_bytes(catalog_est)} "
+             f"({entry_count} entries, estimated)")
     log.info(f"Compression:   {cfg.comp_str}")
     log.info(f"Source:        {source}")
     log.info(f"Workdir:       {work_dir}")
@@ -502,7 +539,12 @@ def cmd_create(args):
 
     log.info("Isolating catalog...")
     dar.isolate_catalog()
-    log.ok("Catalog isolated")
+    catalog_actual = sum(c.stat().st_size for c in dar.catalog_files)
+    log.ok(f"Catalog isolated ({human_bytes(catalog_actual)})")
+    if catalog_actual > catalog_est:
+        log.warn(f"Catalog exceeds estimate by "
+                 f"{human_bytes(catalog_actual - catalog_est)} — "
+                 f"per-disc fit check may fail")
 
     # ── Stage each disc ─────────────────────────────────────────────────
     log.step("Preparing disc staging directories")
