@@ -273,6 +273,46 @@ def prompt_yn(question: str, default_yes: bool = True) -> bool:
 # DiscIO — mount / unmount / eject / burn
 # ════════════════════════════════════════════════════════════════════════════
 
+class DeviceBusyError(Exception):
+    """growisofs couldn't grab the associated sg device — typically held
+    by a tool like MakeMKV, K3b, or a desktop auto-mount probe."""
+    def __init__(self, device: str):
+        super().__init__(device)
+        self.device = device
+
+
+def find_sg_device(block_device: str) -> str | None:
+    """Map /dev/srX → /dev/sgY via sysfs. Returns None if not found."""
+    name = Path(block_device).name
+    sg_dir = Path(f"/sys/block/{name}/device/scsi_generic")
+    if sg_dir.is_dir():
+        for entry in sg_dir.iterdir():
+            return f"/dev/{entry.name}"
+    return None
+
+
+def find_device_holders(*devices: str) -> list[str]:
+    """Return 'PID COMMAND' lines for processes holding any of the given
+    devices open. Empty if lsof is unavailable or finds nothing."""
+    if shutil.which("lsof") is None:
+        return []
+    paths = [d for d in devices if d and Path(d).exists()]
+    if not paths:
+        return []
+    r = run(["lsof", "-Fpc", "--", *paths], capture=True, check=False)
+    if r.returncode != 0 or not r.stdout:
+        return []
+    holders = []
+    pid = None
+    for line in r.stdout.splitlines():
+        if line.startswith("p"):
+            pid = line[1:]
+        elif line.startswith("c") and pid:
+            holders.append(f"{pid} {line[1:]}")
+            pid = None
+    return holders
+
+
 class DiscIO:
     def __init__(self, device: str):
         self.device = device
@@ -321,7 +361,22 @@ class DiscIO:
         if speed:
             cmd += [f"-speed={speed}"]
         cmd.append(str(source_dir) + "/")
-        run(cmd, label="burn", check=True)
+
+        # Stream output while watching for the "device busy" marker so
+        # the caller can retry without re-running the whole script.
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        assert proc.stdout is not None
+        sg_locked = False
+        for line in proc.stdout:
+            print(f"  [burn] {line}", end="")
+            if "failed to grab associated sg device" in line:
+                sg_locked = True
+        proc.wait()
+        if proc.returncode != 0:
+            if sg_locked:
+                raise DeviceBusyError(self.device)
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -883,7 +938,30 @@ def cmd_burn(args):
             volume_label = archive_name[:ISO9660_VOLUME_LABEL_MAX - len(suffix)] + suffix
             log.warn(f"Volume label truncated to fit ISO9660 "
                      f"{ISO9660_VOLUME_LABEL_MAX}-char limit: {volume_label}")
-        dio.burn(stage, volume_label, args.speed)
+        while True:
+            try:
+                dio.burn(stage, volume_label, args.speed)
+                break
+            except DeviceBusyError:
+                log.error(f"Optical device {args.device} is locked by "
+                          f"another process (growisofs couldn't grab "
+                          f"the associated sg device).")
+                sg = find_sg_device(args.device)
+                holders = find_device_holders(args.device, sg)
+                if holders:
+                    log.info("Holding processes:")
+                    for h in holders:
+                        log.info(f"  {h}")
+                else:
+                    log.info("Common culprits: MakeMKV, K3b, Brasero, "
+                             "or a desktop auto-mount probe.")
+                resp = input("\033[1;33mClose the program, then press "
+                             "Enter to retry (q = cancel): \033[0m")
+                if resp.strip().lower() == "q":
+                    log.warn("Cancelled by user")
+                    log.info(f"Resume later with: bd-archive.py burn "
+                             f"-w {work_dir} --start {i}")
+                    sys.exit(1)
         log.ok(f"Disc {i} burned")
 
         # Post-burn verify
