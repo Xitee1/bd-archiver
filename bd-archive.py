@@ -317,18 +317,39 @@ class DiscIO:
     def __init__(self, device: str):
         self.device = device
 
-    def mount(self, mount_dir: Path) -> bool:
-        mount_dir.mkdir(parents=True, exist_ok=True)
-        for cmd in (
-            ["mount", "-o", "ro", self.device, str(mount_dir)],
-            ["sudo", "mount", "-o", "ro", self.device, str(mount_dir)],
-        ):
-            if run(cmd, capture=True, check=False).returncode == 0:
-                return True
-        return False
+    def mount(self, preferred_dir: Path) -> Path | None:
+        """Mount the disc read-only. Returns the actual mount path, or
+        None on failure.
 
-    def mount_with_retry(self, mount_dir: Path,
-                         timeout: int = POST_BURN_MOUNT_TIMEOUT) -> bool:
+        Tries plain `mount` first (works if the user has permission via
+        fstab or sudoers NOPASSWD). Falls back to `udisksctl mount`,
+        which uses Polkit and works for the active desktop user without
+        a password — but picks its own mount path under /run/media/...
+        so the returned path may differ from preferred_dir.
+
+        Never uses interactive sudo: an unattended verify pass shouldn't
+        block on a password prompt.
+        """
+        preferred_dir.mkdir(parents=True, exist_ok=True)
+        if run(["mount", "-o", "ro", self.device, str(preferred_dir)],
+               capture=True, check=False).returncode == 0:
+            return preferred_dir
+
+        if shutil.which("udisksctl"):
+            r = run(["udisksctl", "mount", "-b", self.device,
+                     "--no-user-interaction"],
+                    capture=True, check=False)
+            if r.returncode == 0:
+                # udisksctl prints "Mounted /dev/sr0 at /run/media/.../LABEL."
+                m = re.search(r"^Mounted .+? at (.+?)\.?\s*$",
+                              (r.stdout or "").strip(),
+                              re.MULTILINE)
+                if m:
+                    return Path(m.group(1))
+        return None
+
+    def mount_with_retry(self, preferred_dir: Path,
+                         timeout: int = POST_BURN_MOUNT_TIMEOUT) -> Path | None:
         """Poll the device until it is mountable or timeout expires.
 
         Useful right after a burn, where the drive needs a few seconds
@@ -336,18 +357,23 @@ class DiscIO:
         """
         deadline = time.monotonic() + timeout
         while True:
-            if self.mount(mount_dir):
-                return True
+            mounted = self.mount(preferred_dir)
+            if mounted is not None:
+                return mounted
             if time.monotonic() >= deadline:
-                return False
+                return None
             time.sleep(1)
 
-    def umount(self, mount_dir: Path):
-        for cmd in (["umount", str(mount_dir)],
-                    ["sudo", "umount", str(mount_dir)]):
-            if run(cmd, capture=True, check=False).returncode == 0:
+    def umount(self, mount_path: Path):
+        if run(["umount", str(mount_path)],
+               capture=True, check=False).returncode == 0:
+            return
+        if shutil.which("udisksctl"):
+            if run(["udisksctl", "unmount", "-b", self.device,
+                    "--no-user-interaction"],
+                   capture=True, check=False).returncode == 0:
                 return
-        log.warn(f"Could not unmount {mount_dir}")
+        log.warn(f"Could not unmount {mount_path}")
 
     def eject(self):
         run(["eject", self.device], capture=True, check=False)
@@ -976,9 +1002,10 @@ def cmd_burn(args):
         if not args.no_verify:
             log.info("Post-burn verification...")
             mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
-            if dio.mount_with_retry(mount_dir):
+            mounted = dio.mount_with_retry(mount_dir)
+            if mounted is not None:
                 try:
-                    result = verify_disc(mount_dir,
+                    result = verify_disc(mounted,
                                          f"Disc {i} (post-burn)", quiet=True)
                     if result == VerifyResult.BROKEN:
                         log.error("Post-burn verification failed!")
@@ -988,11 +1015,13 @@ def cmd_burn(args):
                                      f"--start {i}")
                             sys.exit(1)
                 finally:
-                    dio.umount(mount_dir)
-                    mount_dir.rmdir()
+                    dio.umount(mounted)
             else:
                 log.warn("Could not mount — verify manually")
+            try:
                 mount_dir.rmdir()
+            except OSError:
+                pass
 
         dio.eject()
         log.ok(f"Disc {i}/{disc_count} done")
@@ -1020,15 +1049,19 @@ def cmd_verify(args):
     if target.is_block_device():
         dio = DiscIO(str(target))
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
-        if not dio.mount(mount_dir):
+        mounted = dio.mount(mount_dir)
+        if mounted is None:
             log.error(f"Could not mount {target}")
             mount_dir.rmdir()
             sys.exit(1)
         try:
-            result = verify_disc(mount_dir, f"Disc at {target}")
+            result = verify_disc(mounted, f"Disc at {target}")
         finally:
-            dio.umount(mount_dir)
-            mount_dir.rmdir()
+            dio.umount(mounted)
+            try:
+                mount_dir.rmdir()
+            except OSError:
+                pass
         sys.exit(result.value)
 
     elif target.is_dir():
@@ -1070,9 +1103,11 @@ def cmd_extract(args):
 
         # Mount retry loop — keeps prompting until mount succeeds or user gives up.
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
+        mounted: Path | None
         while True:
             prompt_disc(f"Insert disc {target}", args.device)
-            if dio.mount(mount_dir):
+            mounted = dio.mount(mount_dir)
+            if mounted is not None:
                 break
             log.error("Could not mount disc")
             if not prompt_yn("Retry?"):
@@ -1084,7 +1119,7 @@ def cmd_extract(args):
             # If the user inserted the wrong disc, retry without consuming
             # the slot.
             if archive_name is None:
-                dar_files = [p for p in mount_dir.glob("*.dar")
+                dar_files = [p for p in mounted.glob("*.dar")
                              if "-catalog" not in p.name]
                 if not dar_files:
                     log.error("No dar files found on disc — try another")
@@ -1095,17 +1130,17 @@ def cmd_extract(args):
             disc_num = target
 
             # Copy catalog
-            for cat in mount_dir.glob(f"{archive_name}-catalog.*.dar"):
+            for cat in mounted.glob(f"{archive_name}-catalog.*.dar"):
                 dest = staging / cat.name
                 if not dest.exists():
                     shutil.copy2(cat, dest)
 
             # Verify
             log.info(f"Checking disc {disc_num}...")
-            result = verify_disc(mount_dir, f"Disc {disc_num}", quiet=True)
+            result = verify_disc(mounted, f"Disc {disc_num}", quiet=True)
 
             # Copy slices
-            slices = sorted(mount_dir.glob(f"{archive_name}.[0-9]*.dar"))
+            slices = sorted(mounted.glob(f"{archive_name}.[0-9]*.dar"))
             slices = [s for s in slices if "-catalog" not in s.name]
 
             for sp in slices:
@@ -1120,7 +1155,7 @@ def cmd_extract(args):
                     repair_dir.mkdir(exist_ok=True)
                     try:
                         shutil.copy2(sp, repair_dir)
-                        for pf in mount_dir.glob(f"{sp.name}.*par2"):
+                        for pf in mounted.glob(f"{sp.name}.*par2"):
                             shutil.copy2(pf, repair_dir)
 
                         par2_idx = [p for p in repair_dir.glob("*.par2")
@@ -1145,8 +1180,11 @@ def cmd_extract(args):
                     log.ok(f"{sp.name} copied")
 
         finally:
-            dio.umount(mount_dir)
-            mount_dir.rmdir()
+            dio.umount(mounted)
+            try:
+                mount_dir.rmdir()
+            except OSError:
+                pass
             dio.eject()
 
         collected = sorted(staging.glob(f"{archive_name}.[0-9]*.dar"))
