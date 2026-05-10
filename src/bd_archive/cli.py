@@ -1,0 +1,121 @@
+import argparse
+
+from bd_archive import __version__
+from bd_archive.commands.burn import cmd_burn
+from bd_archive.commands.create import cmd_create
+from bd_archive.commands.estimate import cmd_estimate
+from bd_archive.commands.extract import cmd_extract
+from bd_archive.commands.verify import cmd_verify
+from bd_archive.ui.logger import Logger
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="bd-archive",
+        description="Archive data to Blu-ray discs with dar + par2",
+    )
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
+    sub = p.add_subparsers(dest="command", required=True,
+                           help="Available commands")
+
+    # ── create ──────────────────────────────────────────────────────────
+    cr = sub.add_parser("create",
+                        help="Prepare archive + staging (no burning)")
+    cr.add_argument("-s", "--source", required=True,
+                    help="Source directory")
+    cr.add_argument("-n", "--name", required=True,
+                    help="Archive name")
+    cr.add_argument("-w", "--workdir", required=True,
+                    help="Working directory for archive + staging")
+    cr.add_argument("-r", "--redundancy", type=int, default=5,
+                    help="PAR2 redundancy in %% (default: 5)")
+    cr.add_argument("-D", "--device", default="/dev/sr0",
+                    help="Optical drive for capacity detection "
+                         "(default: /dev/sr0)")
+    cr.add_argument("-b", "--bytes", type=int, default=None,
+                    help="Manual disc capacity in raw bytes "
+                         "(overrides detection)")
+    cr.add_argument("-c", "--compression", default="zstd",
+                    choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
+                    help="Compression algorithm (default: zstd)")
+    cr.add_argument("-l", "--level",
+                    help="Compression level")
+
+    # ── estimate ────────────────────────────────────────────────────────
+    es = sub.add_parser("estimate",
+                        help="Estimate disc count + last-disc headroom")
+    es.add_argument("-s", "--source", required=True,
+                    help="Source directory")
+    es.add_argument("-r", "--redundancy", type=int, default=5,
+                    help="PAR2 redundancy in %% (default: 5)")
+    es.add_argument("-D", "--device", default="/dev/sr0",
+                    help="Optical drive for capacity detection "
+                         "(default: /dev/sr0)")
+    es.add_argument("-b", "--bytes", type=int, default=None,
+                    help="Manual disc capacity in raw bytes "
+                         "(overrides detection)")
+    ratio_group = es.add_mutually_exclusive_group()
+    ratio_group.add_argument("--ratio", type=float, default=None,
+                             help="Manual compression ratio "
+                                  "(1.0 = none, 0.5 = 50%% reduction). "
+                                  "Default: 1.0 if --sample also omitted")
+    ratio_group.add_argument("--sample", default=None,
+                             help="Run dar on this directory with -c/-l "
+                                  "and use the measured output/input ratio")
+    es.add_argument("-c", "--compression", default="zstd",
+                    choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
+                    help="Compression algorithm for --sample (default: zstd)")
+    es.add_argument("-l", "--level",
+                    help="Compression level for --sample")
+    es.add_argument("-w", "--workdir", default=None,
+                    help="Directory for sample tempdir "
+                         "(default: $TMPDIR or /tmp — may be tmpfs/RAM)")
+
+    # ── burn ────────────────────────────────────────────────────────────
+    bu = sub.add_parser("burn",
+                        help="Burn staged discs (resumable)")
+    bu.add_argument("-w", "--workdir", required=True,
+                    help="Working directory from create step")
+    bu.add_argument("-D", "--device", default="/dev/sr0",
+                    help="Optical drive device (default: /dev/sr0)")
+    bu.add_argument("-S", "--speed",
+                    help="Burn speed as BD multiplier (e.g. 2, 4, 6); 1x = 4.5 MB/s "
+                         "(default: drive/media maximum)")
+    bu.add_argument("--start", type=int, default=1,
+                    help="Start from disc N (default: 1)")
+    bu.add_argument("--no-verify", action="store_true",
+                    help="Skip post-burn verification")
+    bu.add_argument("--skip-fit-check", action="store_true",
+                    help="Skip pre-burn disc capacity check")
+
+    # ── verify ──────────────────────────────────────────────────────────
+    sub.add_parser("verify",
+                   help="Check disc integrity").add_argument(
+        "target", help="Mount point, directory, or block device")
+
+    # ── extract ─────────────────────────────────────────────────────────
+    ex = sub.add_parser("extract",
+                        help="Restore archive from discs")
+    ex.add_argument("-o", "--output", required=True,
+                    help="Output directory")
+    ex.add_argument("-D", "--device", default="/dev/sr0",
+                    help="Optical drive device (default: /dev/sr0)")
+    ex.add_argument("-w", "--workdir",
+                    help="Staging directory (default: auto in /tmp)")
+
+    return p
+
+
+def main():
+    print(f"\n{Logger._c('bold')}bd-archive{Logger._c('reset')} v{__version__}\n")
+
+    parser = build_parser()
+    args = parser.parse_args()
+
+    match args.command:
+        case "create":   cmd_create(args)
+        case "estimate": cmd_estimate(args)
+        case "burn":     cmd_burn(args)
+        case "verify":   cmd_verify(args)
+        case "extract":  cmd_extract(args)
