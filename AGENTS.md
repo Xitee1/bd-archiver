@@ -9,11 +9,13 @@ Python package (`bd_archive`, Python 3.11+ — uses `match`, `int | None`, etc.)
 ## Running
 
 ```bash
-# editable install for development
+# editable install in a project-local venv (.venv/ is gitignored)
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e '.[dev]'
 
-# or invoke as a module without install
-PYTHONPATH=src python -m bd_archive ...
+# or invoke as a module without install (no venv needed for --help)
+PYTHONPATH=src python3 -m bd_archive ...
 ```
 
 ```bash

@@ -26,15 +26,17 @@ Optional: `lsof` (better diagnostics when the optical device is locked by anothe
 
 ### Python package
 
-Requires Python ≥ 3.11.
+Requires Python ≥ 3.11. Install into a project-local virtualenv (modern distros block bare `pip install` via PEP 668):
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'   # editable + dev tools (ruff)
+# or, runtime only:
 pip install .
-# or for development (editable + dev tools):
-pip install -e '.[dev]'
 ```
 
-After install, the `bd-archive` command is available globally.
+`.venv/` is gitignored. With the venv activated, the `bd-archive` command is on `PATH`. Re-activate later with `source .venv/bin/activate`.
 
 ## Usage
 
@@ -153,14 +155,17 @@ Layering: `commands/` → `archive/` → `tools/` → `shell/`. Lower layers nev
 Build backend: `hatchling`. Version is read dynamically from `src/bd_archive/__init__.py` (`__version__`).
 
 ```bash
+source .venv/bin/activate    # if not already active
 pip install build
-python -m build           # produces sdist + wheel in dist/
+python -m build              # produces sdist + wheel in dist/
 ```
 
 ### Lint
 
+The dev install (`pip install -e '.[dev]'`) puts `ruff` in the venv:
+
 ```bash
-pip install -e '.[dev]'
+source .venv/bin/activate    # if not already active
 ruff check src/
 ruff format src/
 ```
@@ -169,6 +174,8 @@ Config in `pyproject.toml`: line-length 100, target Python 3.11, rule selection 
 
 ### Run without install
 
+For a quick `--help` peek without setting up the venv (subcommands still need the system deps listed above):
+
 ```bash
-PYTHONPATH=src python -m bd_archive --help
+PYTHONPATH=src python3 -m bd_archive --help
 ```
