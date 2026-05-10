@@ -26,7 +26,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-VERSION = "4.1.0"
+VERSION = "5.0.0"
 
 MiB = 1024 * 1024
 
@@ -38,8 +38,14 @@ DISC_OVERSIZE_TOLERANCE = 1.05
 # Per-disc overhead beyond slice + par2 recovery: par2 index file, par2
 # packet headers, par2 block rounding, sha512 hash files, README. The
 # isolated dar catalog (usually the dominant item) scales with file
-# count and is computed separately by estimate_catalog_size().
+# count and is computed separately by scan_source.
 PAR2_AND_MISC_OVERHEAD = 4 * MiB
+
+# Tiny extra margin between the sizing target and the format-aware
+# writable capacity, to absorb ISO9660+UDF metadata growth that exceeds
+# the slice estimate. The hard limit remains the ISO file size check
+# against raw_capacity post-build.
+DISC_END_MARGIN = 1 * MiB
 
 # Seconds to wait for a freshly burned disc to become mountable before
 # giving up (drive needs to finalise + re-read TOC).
@@ -398,26 +404,21 @@ class DiscIO:
     def eject(self):
         run(["eject", self.device], capture=True, check=False)
 
-    def burn(self, source_dir: Path, volume_label: str,
-             speed: str | None = None):
-        # -udf: primary filesystem (native Unicode names, POSIX metadata,
-        # no file-size limit). Linux/Windows/macOS all read UDF.
-        # -iso-level 3: mkisofs always writes an ISO9660 bridge alongside
-        # UDF; level 3 lets that bridge also hold our GiB-sized dar
-        # slices via multi-extent. Without it, ISO9660 level 1 silently
-        # drops files >4 GiB.
-        # -use-the-force-luke=notray: skip growisofs's post-burn tray
-        # eject/reload (some drives physically pop the tray, requiring
-        # the user to re-insert before verify can run).
-        cmd = ["growisofs", "-use-the-force-luke=notray",
-               "-Z", self.device,
-               "-iso-level", "3", "-udf",
-               "-V", volume_label,
-               "-publisher", f"bd-archive v{VERSION}",
-               "-input-charset", "utf-8"]
+    def burn(self, iso_path: Path, speed: str | None = None):
+        # Burn a pre-built ISO file. growisofs's -Z dev=image syntax
+        # writes the ISO byte-for-byte to the disc — no on-the-fly
+        # mkisofs invocation, so what's in the ISO file is exactly what
+        # ends up on the disc. Volume label, publisher, file layout are
+        # all already in the file from the build step.
+        # -dvd-compat: pad the lead-out to make the disc readable by
+        # standalone players + older drives. Negligible space cost.
+        # -use-the-force-luke=notray: skip post-burn tray eject/reload
+        # (some drives physically pop the tray, requiring re-insert
+        # before verify can run).
+        cmd = ["growisofs", "-use-the-force-luke=notray", "-dvd-compat",
+               "-Z", f"{self.device}={iso_path}"]
         if speed:
             cmd += [f"-speed={speed}"]
-        cmd.append(str(source_dir) + "/")
 
         # Stream output while watching for the "device busy" marker so
         # the caller can retry without re-running the whole script.
@@ -523,26 +524,62 @@ class Par2:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Iso — build ISO9660+UDF images via mkisofs (no staging copies)
+# ════════════════════════════════════════════════════════════════════════════
+
+class Iso:
+    @staticmethod
+    def build(iso_path: Path, source_files: list[Path], volume_label: str):
+        """Build an ISO9660+UDF image at iso_path containing every file
+        in source_files at the ISO root.
+
+        -graft-points lets us map each input file from its real path to
+        /<basename> in the ISO root, so we don't need to copy files into
+        a staging directory first. UDF preserves the full filename
+        case+length; ISO9660 level 3 lets the bridge filesystem hold
+        GiB-sized dar slices via multi-extent allocation. mkisofs
+        always writes both filesystems on the same data blocks — the
+        kernel mounts whichever is preferred (UDF on modern Linux).
+        """
+        if len(volume_label.encode("utf-8")) > ISO9660_VOLUME_LABEL_MAX:
+            raise ValueError(
+                f"Volume label '{volume_label}' exceeds "
+                f"{ISO9660_VOLUME_LABEL_MAX}-byte ISO9660 limit"
+            )
+
+        graft_args = [f"/{src.name}={src}" for src in source_files]
+        cmd = ["mkisofs",
+               "-iso-level", "3", "-udf",
+               "-V", volume_label,
+               "-publisher", f"bd-archive v{VERSION}",
+               "-input-charset", "utf-8",
+               "-graft-points",
+               "-o", str(iso_path),
+               *graft_args]
+        run(cmd, label="mkisofs")
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # DarArchive — create / extract / isolate catalog
 # ════════════════════════════════════════════════════════════════════════════
 
 class DarArchive:
     def __init__(self, name: str, work_dir: Path):
         self.name = name
-        self.dar_dir = work_dir / "dar"
-        self.dar_dir.mkdir(parents=True, exist_ok=True)
-        self.base_path = self.dar_dir / name
+        self.tmp_dir = work_dir / "tmp"
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        self.base_path = self.tmp_dir / name
 
     @property
     def slices(self) -> list[Path]:
         return sorted(
-            p for p in self.dar_dir.glob(f"{self.name}.[0-9]*.dar")
+            p for p in self.tmp_dir.glob(f"{self.name}.[0-9]*.dar")
             if "-catalog" not in p.name
         )
 
     @property
     def catalog_files(self) -> list[Path]:
-        return sorted(self.dar_dir.glob(f"{self.name}-catalog.*.dar"))
+        return sorted(self.tmp_dir.glob(f"{self.name}-catalog.*.dar"))
 
     def create(self, source: Path, slice_bytes: int,
                compression: str, comp_level: str | None):
@@ -637,10 +674,10 @@ class ArchiveConfig:
         return self.compression + (f" ({self.comp_level})" if self.comp_level else "")
 
 
-def generate_readme(stage_dir: Path, cfg: ArchiveConfig,
-                    disc_num: int, total_discs: int, slice_name: str):
+def write_readme(readme_path: Path, cfg: ArchiveConfig,
+                 disc_num: int, total_discs: int, slice_name: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    (stage_dir / "README.txt").write_text(
+    readme_path.write_text(
         f"BD-ARCHIVE | {cfg.name} | Disc {disc_num}/{total_discs}"
         f" | {ts} | Capacity {human_bytes(cfg.disc_bytes)}"
         f" | PAR2 {cfg.redundancy}% | {cfg.comp_str}\n\n"
@@ -653,7 +690,7 @@ def generate_readme(stage_dir: Path, cfg: ArchiveConfig,
 
 
 def cmd_create(args):
-    check_deps("dar", "par2", "dvd+rw-mediainfo")
+    check_deps("dar", "par2", "mkisofs", "dvd+rw-mediainfo")
 
     max_name_len = ISO9660_VOLUME_LABEL_MAX - 5  # "_NNNN" suffix
     if len(args.name) > max_name_len:
@@ -669,6 +706,8 @@ def cmd_create(args):
 
     work_dir = Path(args.workdir)
     work_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = work_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
 
     if args.bytes is not None:
         raw_capacity = args.bytes
@@ -680,33 +719,38 @@ def cmd_create(args):
             log.info("Insert a blank disc, or specify capacity manually "
                      "with -b/--bytes <int>.")
             sys.exit(1)
-        log.info(f"Detected {human_bytes(raw_capacity)} free space, "
-                 f"splitting with this size")
+        log.info(f"Detected {human_bytes(raw_capacity)} writable, "
+                 f"sizing ISOs accordingly")
 
-    disc_bytes = raw_capacity - 2 * MiB  # ISO/UDF filesystem overhead
+    # raw_capacity is the format-aware writable extent (post-OSA
+    # reservation). DISC_END_MARGIN reserves a tiny bit more to absorb
+    # ISO9660+UDF metadata growth that exceeds compute_slice_bytes's
+    # estimate; the ISO file size is then re-checked against the full
+    # raw_capacity below as the hard limit.
+    sizing_target = raw_capacity - DISC_END_MARGIN
 
     log.info("Scanning source...")
     scan = scan_source(source)
 
-    slice_bytes = compute_slice_bytes(disc_bytes, scan.catalog_est,
+    slice_bytes = compute_slice_bytes(sizing_target, scan.catalog_est,
                                       args.redundancy)
     if slice_bytes == 0:
         log.error(f"Per-disc overhead "
                   f"({human_bytes(scan.catalog_est + PAR2_AND_MISC_OVERHEAD)}) "
-                  f"exceeds disc capacity ({human_bytes(disc_bytes)})")
+                  f"exceeds disc capacity ({human_bytes(raw_capacity)})")
         sys.exit(1)
 
     par2_est = slice_bytes * args.redundancy // 100
     cfg = ArchiveConfig(
         name=args.name,
-        disc_bytes=disc_bytes,
+        disc_bytes=raw_capacity,
         redundancy=args.redundancy,
         compression=args.compression,
         comp_level=args.level,
     )
 
     log.step("Configuration")
-    log.info(f"Disc capacity: {human_bytes(disc_bytes)}")
+    log.info(f"Disc capacity: {human_bytes(raw_capacity)} (writable)")
     log.info(f"Slice size:    {human_bytes(slice_bytes)}")
     log.info(f"PAR2:          {cfg.redundancy}% (~{human_bytes(par2_est)})")
     log.info(f"Catalog:       ~{human_bytes(scan.catalog_est)} "
@@ -716,6 +760,7 @@ def cmd_create(args):
     log.info(f"Workdir:       {work_dir}")
 
     dar = DarArchive(cfg.name, work_dir)
+    tmp_dir = dar.tmp_dir
 
     # ── Create dar archive ──────────────────────────────────────────────
     log.step("Creating dar archive")
@@ -741,50 +786,66 @@ def cmd_create(args):
                  f"{human_bytes(catalog_actual - scan.catalog_est)} — "
                  f"per-disc fit check may fail")
 
-    # ── Stage each disc ─────────────────────────────────────────────────
-    log.step("Preparing disc staging directories")
+    # ── Build per-disc ISOs (sequential, deletes raw files as we go) ────
+    log.step("Building disc images")
 
     for i, slice_file in enumerate(slices, 1):
         slice_name = slice_file.name
-        stage = work_dir / "staging" / f"disc_{i:04d}"
+        slice_size = slice_file.stat().st_size
+        log.info(f"Disc {i}/{slice_count}: {slice_name} "
+                 f"({human_bytes(slice_size)})")
 
-        if stage.exists():
-            shutil.rmtree(stage)
-        stage.mkdir(parents=True)
+        # PAR2 writes recovery files alongside the slice in tmp_dir
+        log.info(f"  par2 ({cfg.redundancy}% redundancy)...")
+        Par2.create(slice_file, cfg.redundancy)
+        par2_files = sorted(tmp_dir.glob(f"{slice_name}.*par2"))
 
-        # Slice + its dar-generated SHA-512 hash file
-        shutil.copy2(slice_file, stage)
+        # README, regenerated per disc with current disc_num/total
+        readme_path = tmp_dir / "README.txt"
+        write_readme(readme_path, cfg, i, slice_count, slice_name)
+
+        # Files to include in this disc's ISO
         slice_hash = Path(str(slice_file) + ".sha512")
+        sources = [slice_file]
         if slice_hash.exists():
-            shutil.copy2(slice_hash, stage)
-
-        # Isolated catalog slices + their hash files
+            sources.append(slice_hash)
         for cat in dar.catalog_files:
-            shutil.copy2(cat, stage)
+            sources.append(cat)
             cat_hash = Path(str(cat) + ".sha512")
             if cat_hash.exists():
-                shutil.copy2(cat_hash, stage)
+                sources.append(cat_hash)
+        sources.extend(par2_files)
+        sources.append(readme_path)
 
-        # PAR2 (covers slice; PAR2 files are self-verifying)
-        log.info(f"Disc {i}/{slice_count}: generating PAR2 ({cfg.redundancy}%)...")
-        Par2.create(stage / slice_name, cfg.redundancy)
+        # Build ISO directly from in-place files (no staging copies)
+        volume_label = f"{cfg.name}_{i:04d}"
+        iso_path = images_dir / f"disc_{i:04d}.iso"
+        log.info(f"  building {iso_path.name}...")
+        Iso.build(iso_path, sources, volume_label)
 
-        # README
-        generate_readme(stage, cfg, i, slice_count, slice_name)
-
-        file_count = sum(1 for f in stage.iterdir() if f.is_file())
-
-        # Size check
-        stage_size = sum(f.stat().st_size for f in stage.iterdir()
-                         if f.is_file())
-        pct = stage_size * 100 // disc_bytes
-        log.ok(f"Disc {i}/{slice_count}: {human_bytes(stage_size)} "
-               f"({pct}% of {human_bytes(disc_bytes)}), "
-               f"{file_count} files")
-
-        if stage_size > disc_bytes:
-            log.error(f"Disc {i} exceeds capacity!")
+        # Hard fit check — the ISO file IS what gets written to disc.
+        # raw_capacity is the format-aware writable extent.
+        iso_size = iso_path.stat().st_size
+        pct = iso_size * 100 // raw_capacity
+        log.ok(f"  Disc {i}/{slice_count}: ISO {human_bytes(iso_size)} "
+               f"({pct}% of {human_bytes(raw_capacity)})")
+        if iso_size > raw_capacity:
+            log.error(f"Disc {i} ISO ({human_bytes(iso_size)}) exceeds "
+                      f"writable capacity ({human_bytes(raw_capacity)})")
+            iso_path.unlink()
             sys.exit(1)
+
+        # Cleanup this disc's intermediate files. Catalog + dar's
+        # remaining files are dropped by the rmtree below.
+        slice_file.unlink()
+        if slice_hash.exists():
+            slice_hash.unlink()
+        for pf in par2_files:
+            pf.unlink()
+        readme_path.unlink(missing_ok=True)
+
+    # Final cleanup: drop the entire tmp/ tree (catalog, dar internals)
+    shutil.rmtree(tmp_dir)
 
     # ── Summary ─────────────────────────────────────────────────────────
     ratio = total_archive * 100 // max(scan.total_bytes, 1)
@@ -792,10 +853,10 @@ def cmd_create(args):
     log.step("Summary")
     print(f"\n  Source:       {human_bytes(scan.total_bytes)}")
     print(f"  Archive:      {human_bytes(total_archive)} ({ratio}%)")
-    print(f"  Discs:        {slice_count} x {human_bytes(disc_bytes)}")
+    print(f"  Discs:        {slice_count} x {human_bytes(raw_capacity)}")
     print(f"  PAR2:         {cfg.redundancy}% per disc")
     print(f"  Compression:  {cfg.comp_str}")
-    print(f"  Staging:      {work_dir / 'staging'}")
+    print(f"  Images:       {images_dir}")
     print(f"\n  Next step:    bd-archive.py burn -w {work_dir}")
     print(f"  Cleanup:      rm -rf {work_dir}\n")
 
@@ -908,34 +969,19 @@ def cmd_burn(args):
     check_deps("growisofs", "dvd+rw-mediainfo")
 
     work_dir = Path(args.workdir)
-    staging_root = work_dir / "staging"
+    images_dir = work_dir / "images"
 
-    if not staging_root.is_dir():
-        log.error(f"No staging directory found at {staging_root}")
-        log.info("Run 'create' first to prepare the archive.")
+    if not images_dir.is_dir():
+        log.error(f"No images directory at {images_dir}")
+        log.info("Run 'create' first to build the disc images.")
         sys.exit(1)
 
-    disc_dirs = sorted(
-        d for d in staging_root.iterdir()
-        if d.is_dir() and d.name.startswith("disc_")
-    )
-    disc_count = len(disc_dirs)
+    isos = sorted(images_dir.glob("disc_*.iso"))
+    disc_count = len(isos)
     if disc_count == 0:
-        log.error(f"No disc_* subdirectories under {staging_root}")
-        log.info("Run 'create' first to prepare the archive.")
+        log.error(f"No disc_*.iso files in {images_dir}")
+        log.info("Run 'create' first to build the disc images.")
         sys.exit(1)
-
-    # Derive archive name from the first non-catalog .dar in the first disc.
-    # Filename is "<name>.NNN.dar"; strip the slice number.
-    first_disc = disc_dirs[0]
-    first_dar = next(
-        (p for p in first_disc.glob("*.dar") if "-catalog" not in p.name),
-        None,
-    )
-    if first_dar is None:
-        log.error(f"No dar slice found in {first_disc}")
-        sys.exit(1)
-    archive_name = first_dar.stem.rsplit(".", 1)[0]
 
     start = args.start
     if start < 1 or start > disc_count:
@@ -944,46 +990,45 @@ def cmd_burn(args):
 
     dio = DiscIO(args.device)
 
-    log.step("Burn staged discs")
-    log.info(f"Archive:  {archive_name}")
+    log.step("Burn disc images")
     log.info(f"Discs:    {disc_count}")
     log.info(f"Device:   {args.device}")
     if start > 1:
         log.info(f"Resuming from disc {start}")
 
     for i in range(start, disc_count + 1):
-        stage = staging_root / f"disc_{i:04d}"
-        if not stage.exists():
-            log.error(f"Staging directory not found: {stage}")
-            log.info("Run 'create' first to prepare the archive.")
+        iso = images_dir / f"disc_{i:04d}.iso"
+        if not iso.exists():
+            log.error(f"ISO not found: {iso}")
+            log.info("Run 'create' first to build the disc images.")
             sys.exit(1)
 
         log.step(f"Disc {i}/{disc_count}")
-
-        stage_size = sum(f.stat().st_size for f in stage.iterdir()
-                         if f.is_file())
-        log.info(f"Size: {human_bytes(stage_size)}")
+        iso_size = iso.stat().st_size
+        log.info(f"ISO: {iso.name} ({human_bytes(iso_size)})")
 
         prompt_disc(f"Insert blank disc {i}/{disc_count}", args.device)
 
-        # Pre-burn fit check
+        # Pre-burn fit check — iso_size is the exact byte count growisofs
+        # will write. detect_disc_capacity returns the format-aware
+        # writable extent.
         if not args.skip_fit_check:
             actual = detect_disc_capacity(args.device)
             if actual is None:
                 log.warn("Could not detect disc capacity — skipping fit check")
-            elif actual < stage_size:
+            elif actual < iso_size:
                 log.error(
                     f"Disc too small: {human_bytes(actual)} < "
-                    f"staging {human_bytes(stage_size)}"
+                    f"ISO {human_bytes(iso_size)}"
                 )
                 log.info(f"Resume later with: bd-archive.py burn "
                          f"-w {work_dir} --start {i}")
                 sys.exit(1)
-            elif actual > stage_size * DISC_OVERSIZE_TOLERANCE:
+            elif actual > iso_size * DISC_OVERSIZE_TOLERANCE:
                 pct_over = int((DISC_OVERSIZE_TOLERANCE - 1) * 100)
                 log.error(
                     f"Disc too large: {human_bytes(actual)} > "
-                    f"{human_bytes(stage_size)} + {pct_over}% — refusing "
+                    f"{human_bytes(iso_size)} + {pct_over}% — refusing "
                     f"to waste space"
                 )
                 log.info("Insert a smaller disc, or pass --skip-fit-check "
@@ -993,19 +1038,13 @@ def cmd_burn(args):
                 sys.exit(1)
             else:
                 log.ok(f"Disc capacity {human_bytes(actual)} fits "
-                       f"staging {human_bytes(stage_size)}")
+                       f"ISO {human_bytes(iso_size)}")
 
-        # Burn
+        # Burn (with sg-busy retry)
         log.info("Burning...")
-        suffix = f"_{i:04d}"
-        volume_label = f"{archive_name}{suffix}"
-        if len(volume_label) > ISO9660_VOLUME_LABEL_MAX:
-            volume_label = archive_name[:ISO9660_VOLUME_LABEL_MAX - len(suffix)] + suffix
-            log.warn(f"Volume label truncated to fit ISO9660 "
-                     f"{ISO9660_VOLUME_LABEL_MAX}-char limit: {volume_label}")
         while True:
             try:
-                dio.burn(stage, volume_label, args.speed)
+                dio.burn(iso, args.speed)
                 break
             except DeviceBusyError:
                 log.error(f"Optical device {args.device} is locked by "
@@ -1069,8 +1108,7 @@ def cmd_burn(args):
                      f"--start {i + 1}")
 
     log.step("All discs burned")
-    print(f"\n  Archive:  {archive_name}")
-    print(f"  Discs:    {disc_count}")
+    print(f"\n  Discs:    {disc_count}")
     print(f"  Cleanup:  rm -rf {work_dir}\n")
 
 
@@ -1082,7 +1120,45 @@ def cmd_verify(args):
     check_deps("par2")
     target = Path(args.target)
 
-    if target.is_block_device():
+    if target.is_file() and target.suffix.lower() == ".iso":
+        # Loop-mount the ISO via udisksctl (no privileges needed),
+        # run the same verify_disc on the mount, then tear down.
+        # Lets users verify pre-built images before burning.
+        check_deps("udisksctl")
+        r = run(["udisksctl", "loop-setup", "-f", str(target.resolve())],
+                capture=True, check=False)
+        if r.returncode != 0:
+            log.error(f"loop-setup failed: {(r.stdout or r.stderr).strip()}")
+            sys.exit(1)
+        m = re.search(r"as (/dev/loop\d+)", r.stdout or "")
+        if not m:
+            log.error("Could not parse loop device from udisksctl output")
+            sys.exit(1)
+        loop_dev = m.group(1)
+
+        time.sleep(0.5)  # let udev settle so the loop device is ready
+        dio = DiscIO(loop_dev)
+        mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
+        result = VerifyResult.BROKEN
+        try:
+            mounted = dio.mount(mount_dir)
+            if mounted is None:
+                log.error(f"Could not mount {loop_dev}")
+                sys.exit(1)
+            try:
+                result = verify_disc(mounted, f"ISO {target.name}")
+            finally:
+                dio.umount(mounted)
+                try:
+                    mount_dir.rmdir()
+                except OSError:
+                    pass
+        finally:
+            run(["udisksctl", "loop-delete", "-b", loop_dev],
+                capture=True, check=False)
+        sys.exit(result.value)
+
+    elif target.is_block_device():
         dio = DiscIO(str(target))
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
         mounted = dio.mount(mount_dir)
