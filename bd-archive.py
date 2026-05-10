@@ -235,11 +235,20 @@ def compute_slice_bytes(disc_bytes: int, catalog_est: int,
 
 
 def detect_disc_capacity(device: str) -> int | None:
-    """Read raw writable bytes from the inserted disc via dvd+rw-mediainfo.
+    """Read writable BD-R/BD-RE capacity, accounting for the drive's
+    default Outer Spare Area reservation.
 
-    Returns None if no disc is present, the command fails, or the
-    output cannot be parsed. The caller decides how to handle that
-    (hard error in create, soft warn in burn).
+    `Free Blocks` reports the disc's nominal/unformatted capacity. For
+    BD-R written sequentially, the drive applies a default minimum-spare
+    formatting (typically 256 MiB on a 25 GB disc) for defect
+    management; that reservation is NOT in `Free Blocks` but IS listed
+    in `READ FORMAT CAPACITIES` under MMC-6 format-type 32h ("BD-R
+    Format") descriptors. The largest 32h capacity ≤ Free Blocks is
+    the actual writable extent for growisofs's default `-Z` mode.
+
+    Falls back to Free Blocks if no 32h descriptors are present
+    (older drive firmware, non-BD media). Returns None if no disc,
+    command fails, or output unparseable.
     """
     try:
         r = run(["dvd+rw-mediainfo", device],
@@ -248,10 +257,21 @@ def detect_disc_capacity(device: str) -> int | None:
         return None
     if r.returncode != 0:
         return None
-    m = re.search(r"Free Blocks:\s+(\d+)\*2KB", r.stdout)
-    if not m:
+
+    free_match = re.search(r"Free Blocks:\s+(\d+)\*2KB", r.stdout)
+    if not free_match:
         return None
-    return int(m.group(1)) * 2048
+    free_bytes = int(free_match.group(1)) * 2048
+
+    bd_r_caps = [
+        int(m.group(1)) * 2048
+        for m in re.finditer(r"32h\(\d+\):\s+(\d+)\*2048", r.stdout)
+    ]
+    candidates = [c for c in bd_r_caps if 0 < c <= free_bytes]
+    if candidates:
+        return max(candidates)
+
+    return free_bytes
 
 
 def prompt_disc(label: str, device: str):
@@ -451,7 +471,15 @@ def verify_dar_hashes(directory: Path) -> tuple[int, int]:
             log.error(f"  Missing: {filename}")
             fail += 1
             continue
-        if _hash_file_sha512(target) == expected:
+        try:
+            actual = _hash_file_sha512(target)
+        except OSError as e:
+            # Truncated/unreadable disc sectors raise OSError mid-read.
+            # Treat as a verification failure rather than crashing.
+            log.error(f"  Read error: {filename} ({e})")
+            fail += 1
+            continue
+        if actual == expected:
             ok += 1
         else:
             log.error(f"  Corrupted: {filename}")
