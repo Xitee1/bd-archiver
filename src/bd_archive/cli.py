@@ -26,8 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Source directory")
     cr.add_argument("-n", "--name", required=True,
                     help="Archive name")
-    cr.add_argument("-w", "--workdir", required=True,
-                    help="Working directory for archive + staging")
+    cr.add_argument("-o", "--output", required=True,
+                    help="Output directory for ISO images")
+    cr.add_argument("-w", "--workdir", default=None,
+                    help="Workdir for transient build files "
+                         "(default: <output>/.bd-archive-work/; specify a "
+                         "tmpfs path here to keep scratch off disk)")
     cr.add_argument("-r", "--redundancy", type=int, default=5,
                     help="PAR2 redundancy in %% (default: 5)")
     cr.add_argument("-D", "--device", default="/dev/sr0",
@@ -75,8 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── burn ────────────────────────────────────────────────────────────
     bu = sub.add_parser("burn",
                         help="Burn staged discs (resumable)")
-    bu.add_argument("-w", "--workdir", required=True,
-                    help="Working directory from create step")
+    bu.add_argument("-i", "--input", required=True,
+                    help="Input directory from create step "
+                         "(contains images/disc_*.iso)")
     bu.add_argument("-D", "--device", default="/dev/sr0",
                     help="Optical drive device (default: /dev/sr0)")
     bu.add_argument("-S", "--speed",
@@ -101,8 +106,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Output directory")
     ex.add_argument("-D", "--device", default="/dev/sr0",
                     help="Optical drive device (default: /dev/sr0)")
-    ex.add_argument("-w", "--workdir",
-                    help="Staging directory (default: auto in /tmp)")
+    ex.add_argument("-w", "--workdir", default=None,
+                    help="Workdir for staged slices (default: "
+                         "<output>/.bd-archive-work/; specify a tmpfs "
+                         "path here to keep scratch off disk)")
 
     return p
 

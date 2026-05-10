@@ -48,3 +48,27 @@ def verify_dar_hashes(directory: Path) -> tuple[int, int]:
             log.error(f"  Corrupted: {filename}")
             fail += 1
     return ok, fail
+
+
+def verify_slice(slice_path: Path) -> bool:
+    """Verify a single file against its sibling .sha512 sidecar.
+
+    Returns False if the sidecar is missing/empty, the target read fails,
+    or the hash mismatches. Used by `extract` for per-slice integrity
+    checks on staging without invoking the disc-wide verify_disc.
+    """
+    hash_file = slice_path.parent / f"{slice_path.name}.sha512"
+    if not hash_file.exists():
+        return False
+    try:
+        text = hash_file.read_text().strip()
+    except OSError:
+        return False
+    if not text:
+        return False
+    expected = text.splitlines()[0].split("  ", 1)[0]
+    try:
+        actual = _hash_file_sha512(slice_path)
+    except OSError:
+        return False
+    return actual == expected

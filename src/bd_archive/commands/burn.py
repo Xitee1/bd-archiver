@@ -18,8 +18,8 @@ from bd_archive.ui.prompts import prompt_disc, prompt_yn
 def cmd_burn(args):
     check_deps("growisofs", "dvd+rw-mediainfo")
 
-    work_dir = Path(args.workdir)
-    images_dir = work_dir / "images"
+    input_dir = Path(args.input)
+    images_dir = input_dir / "images"
 
     if not images_dir.is_dir():
         log.error(f"No images directory at {images_dir}")
@@ -72,7 +72,7 @@ def cmd_burn(args):
                     f"ISO {human_bytes(iso_size)}"
                 )
                 log.info(f"Resume later with: bd-archive burn "
-                         f"-w {work_dir} --start {i}")
+                         f"-i {input_dir} --start {i}")
                 sys.exit(1)
             elif actual > iso_size * DISC_OVERSIZE_TOLERANCE:
                 pct_over = int((DISC_OVERSIZE_TOLERANCE - 1) * 100)
@@ -84,7 +84,7 @@ def cmd_burn(args):
                 log.info("Insert a smaller disc, or pass --skip-fit-check "
                          "to override.")
                 log.info(f"Resume later with: bd-archive burn "
-                         f"-w {work_dir} --start {i}")
+                         f"-i {input_dir} --start {i}")
                 sys.exit(1)
             else:
                 log.ok(f"Disc capacity {human_bytes(actual)} fits "
@@ -114,7 +114,7 @@ def cmd_burn(args):
                 if resp.strip().lower() == "q":
                     log.warn("Cancelled by user")
                     log.info(f"Resume later with: bd-archive burn "
-                             f"-w {work_dir} --start {i}")
+                             f"-i {input_dir} --start {i}")
                     sys.exit(1)
         log.ok(f"Disc {i} burned")
 
@@ -133,7 +133,7 @@ def cmd_burn(args):
                         log.error("Post-burn verification failed!")
                         if not prompt_yn("Continue?", default_yes=False):
                             log.info(f"Resume later with: "
-                                     f"bd-archive burn -w {work_dir} "
+                                     f"bd-archive burn -i {input_dir} "
                                      f"--start {i}")
                             sys.exit(1)
                 finally:
@@ -154,9 +154,9 @@ def cmd_burn(args):
         if i < disc_count:
             remaining = disc_count - i
             log.info(f"{remaining} disc(s) remaining. "
-                     f"Resume: bd-archive burn -w {work_dir} "
+                     f"Resume: bd-archive burn -i {input_dir} "
                      f"--start {i + 1}")
 
     log.step("All discs burned")
     print(f"\n  Discs:    {disc_count}")
-    print(f"  Cleanup:  rm -rf {work_dir}\n")
+    print(f"  Cleanup:  rm -rf {input_dir}\n")

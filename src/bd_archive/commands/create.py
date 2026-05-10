@@ -34,10 +34,15 @@ def cmd_create(args):
         log.error(f"Does not exist: {source}")
         sys.exit(1)
 
-    work_dir = Path(args.workdir)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    images_dir = work_dir / "images"
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
+
+    workdir_is_default = args.workdir is None
+    work_dir = (Path(args.workdir) if args.workdir
+                else output_dir / ".bd-archive-work")
+    work_dir.mkdir(parents=True, exist_ok=True)
 
     if args.bytes is not None:
         raw_capacity = args.bytes
@@ -87,7 +92,9 @@ def cmd_create(args):
              f"({scan.entry_count} entries, estimated)")
     log.info(f"Compression:   {cfg.comp_str}")
     log.info(f"Source:        {source}")
-    log.info(f"Workdir:       {work_dir}")
+    log.info(f"Output:        {output_dir}")
+    log.info(f"Workdir:       {work_dir}"
+             f"{' (default)' if workdir_is_default else ' (custom)'}")
 
     dar_archive = DarArchive(cfg.name, work_dir)
     tmp_dir = dar_archive.tmp_dir
@@ -176,8 +183,17 @@ def cmd_create(args):
             pf.unlink()
         readme_path.unlink(missing_ok=True)
 
-    # Final cleanup: drop the entire tmp/ tree (catalog, dar internals)
+    # Final cleanup: drop the entire tmp/ tree (catalog, dar internals).
+    # If workdir is the default hidden one, also remove it — the only
+    # thing inside was tmp/, so leaving it would just be cruft. A
+    # user-supplied workdir is left alone so they can keep tmpfs mounts
+    # etc. exactly as configured.
     shutil.rmtree(tmp_dir)
+    if workdir_is_default:
+        try:
+            work_dir.rmdir()
+        except OSError:
+            pass
 
     # ── Summary ─────────────────────────────────────────────────────────
     ratio = total_archive * 100 // max(scan.total_bytes, 1)
@@ -189,5 +205,5 @@ def cmd_create(args):
     print(f"  PAR2:         {cfg.redundancy}% per disc")
     print(f"  Compression:  {cfg.comp_str}")
     print(f"  Images:       {images_dir}")
-    print(f"\n  Next step:    bd-archive burn -w {work_dir}")
-    print(f"  Cleanup:      rm -rf {work_dir}\n")
+    print(f"\n  Next step:    bd-archive burn -i {output_dir}")
+    print(f"  Cleanup:      rm -rf {output_dir}\n")
