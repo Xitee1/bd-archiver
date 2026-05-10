@@ -16,29 +16,34 @@ python3 bd-archive.py verify   <mountpoint|dir|/dev/sr0>
 python3 bd-archive.py extract  -o <output> [-D /dev/sr0] [-w <staging>]
 ```
 
-External binaries required at runtime: `dar`, `par2`, `growisofs`, `dvd+rw-mediainfo`, plus `mount`/`umount`/`eject` for disc handling. `check_deps()` enforces this per-subcommand (both `create` and `burn` require `dvd+rw-mediainfo`).
+External binaries required at runtime: `dar`, `par2`, `mkisofs`, `growisofs`, `dvd+rw-mediainfo`, `udisksctl` (for ISO loop-mount in `verify`), plus `mount`/`umount`/`eject` for disc handling. `check_deps()` enforces these per-subcommand.
 
 `verify` exits with `VerifyResult.value` (0=OK, 1=REPAIRABLE, 2=BROKEN) — useful for scripting.
 
-## Architecture
+## Architecture (v5: build-then-burn separation)
 
-Four subcommands form a pipeline, glued together by a workdir on disk; `estimate` is a side-tool that previews the same math without running dar/par2.
+Four subcommands form a pipeline; `estimate` is a side-tool that previews the same math without running anything.
 
-1. **`create`** reads disc capacity via `detect_disc_capacity(args.device)` (or `args.bytes` as a manual override), then runs `dar --hash sha512 --min-digits 4` to slice the source into per-disc-sized `.dar` files (dar emits a sibling `<slice>.sha512` per slice, sha512sum-compatible; `--min-digits 4` zero-pads slice numbers so lexical sort matches numerical order past 9 slices). For each slice it builds a staging directory `<workdir>/staging/disc_NNNN/` containing: the slice + its `.sha512`, the isolated catalog slices + their `.sha512` files, PAR2 recovery files (self-verifying), and a `README.txt`. PAR2 and README intentionally have no hash — PAR2 verifies itself, README is non-load-bearing.
-2. **`burn`** burns each `staging/disc_NNNN/` with `growisofs`, deriving disc count from the sorted `disc_*/` directories and archive name from the first `*.dar` filename in `disc_0001`. Volume label is `<archive_name>_<NNNN>` (also zero-padded for stable physical disc ordering). Performs a pre-burn fit check (rejects discs whose capacity is too small or more than 5% larger than the staging size; bypass with `--skip-fit-check`). Loop is resumable via `--start N`; the script prints the exact resume command after each disc and on post-burn-verify failure.
-3. **`verify`** dispatches on the target type (block device → mount; directory → check directly).
+1. **`create`** reads disc capacity via `detect_disc_capacity(args.device)` (or `args.bytes`), runs `dar --hash sha512 --min-digits 4` to slice the source into per-disc-sized `.dar` files in `<workdir>/tmp/`, then isolates the catalog. For each slice in order: generates PAR2 recovery (alongside the slice in `tmp/`), regenerates `README.txt` with the right disc number, and calls `Iso.build` (mkisofs `-iso-level 3 -udf -graft-points`) to assemble `<workdir>/images/disc_NNNN.iso` directly from in-place files (no staging copies). The ISO file size is checked against the format-aware writable capacity as a hard limit. After each ISO is built, the slice + par2 are deleted from `tmp/`; once all slices are processed, `tmp/` is wiped entirely. Final workdir contains only `images/disc_*.iso`.
+2. **`burn`** iterates `<workdir>/images/disc_*.iso` lexically and burns each via `growisofs -dvd-compat -Z dev=image.iso` — a byte-for-byte ISO write, no on-the-fly mkisofs, so what's in the ISO file is exactly what ends up on disc. Volume label, publisher, file layout are all already in the file. Pre-burn fit check compares `iso_size` to `detect_disc_capacity` of the inserted blank. Resumable via `--start N`.
+3. **`verify`** dispatches on target type: block device → mount; directory → check directly; **`.iso` file → loop-mount via `udisksctl loop-setup` + check + tear down**. The ISO branch makes pre-burn dry-run trivial: run `create`, then `verify images/disc_0001.iso` to confirm the image is internally consistent before touching media.
 4. **`extract`** prompts for discs in any order, copies slices into a staging dir, auto-repairs damaged slices via PAR2 when verify reports `REPAIRABLE`, then runs `dar -x` on the collected slices.
-5. **`estimate`** walks the source and applies the same `compute_slice_bytes` math as `create` to predict disc count and last-disc fill, without burning anything. Compression ratio comes from one of three sources, in order of accuracy: `--sample <path>` runs dar with `-c`/`-l` on a representative subset and measures the actual output/input ratio (via `measure_compression_ratio`); `--ratio <float>` accepts a manual override; otherwise 1.0 (worst case). Useful for adjusting source contents before committing to a real `create`.
+5. **`estimate`** walks the source and applies the same `compute_slice_bytes` math as `create` to predict disc count and last-disc fill, without invoking dar/par2/mkisofs. Compression ratio comes from one of three sources: `--sample <path>` runs dar on a representative subset and measures the actual ratio; `--ratio <float>` is a manual override; otherwise 1.0 (worst case).
 
-`verify_disc()` is shared between all three verify paths (standalone `verify`, post-burn check inside `burn`, and per-disc check inside `extract`).
+The build-then-burn separation makes mid-burn sizing failures **constructively impossible**: the ISO exists and is size-checked before any drive is touched. `burn` is a pure file-to-device copy.
+
+`verify_disc()` is shared between all four verify paths (standalone `verify` on block device / dir / ISO file, post-burn check inside `burn`, and per-disc check inside `extract`).
 
 ### Slice sizing (`cmd_create`, `cmd_estimate`)
 
-Raw capacity comes from `detect_disc_capacity(args.device)` (via `dvd+rw-mediainfo`) or `args.bytes`. After subtracting 2 MiB for ISO/UDF filesystem overhead, `compute_slice_bytes` reserves `catalog_est + PAR2_AND_MISC_OVERHEAD` per disc, divides the remainder by `(100 + redundancy)/100` to leave room for PAR2, and floors to a MiB boundary. `catalog_est` comes from `scan_source` (single filesystem walk: per entry ~256 B + path length), so the reservation scales with file count rather than relying on a fixed margin. `PAR2_AND_MISC_OVERHEAD` (4 MiB) covers the par2 index file, packet/block-rounding overhead, sha512 hash files, and README. The staging size check at the end of `cmd_create` is the final safety net.
+Raw capacity from `detect_disc_capacity` is the format-aware writable extent: it parses MMC-6 format-type 32h descriptors from `dvd+rw-mediainfo` and returns the largest 32h capacity ≤ Free Blocks (= what the drive will actually accept after its default Outer Spare Area reservation, ~256 MiB on a 25 GB BD-R). `compute_slice_bytes` then subtracts `catalog_est + PAR2_AND_MISC_OVERHEAD` per disc (catalog scales with file count via `scan_source`; `PAR2_AND_MISC_OVERHEAD = 4 MiB` covers par2 index/packet/block-rounding overhead) plus `DISC_END_MARGIN = 1 MiB` for ISO9660+UDF metadata growth that exceeds the slice estimate, then divides by `(100 + redundancy)/100` and floors to a MiB boundary. The post-build ISO size check against `raw_capacity` is the hard final gate.
 
-### Staging contract
+### Workdir layout
 
-No metadata file connects `create` to `burn`. `cmd_burn` derives `disc_count` from the sorted `staging/disc_*/` directories (zero-padded to 4 digits, so lexical sort = numerical sort) and `archive_name` from the first non-catalog `*.dar` filename in `disc_0001`. Renaming staging directories or `.dar` files breaks `cmd_burn`.
+- `<workdir>/tmp/` — ephemeral working dir for dar slices, par2 files, README. Wiped before `cmd_create` returns.
+- `<workdir>/images/disc_NNNN.iso` — persisted ISO9660+UDF images, the canonical "what gets burned" artifact. `cmd_burn` reads from here.
+
+No metadata file connects `create` to `burn`. `cmd_burn` derives disc count from sorted `images/disc_*.iso` (zero-padded so lexical = numerical sort). Renaming ISOs breaks `cmd_burn`.
 
 ### Subprocess wrapper
 
