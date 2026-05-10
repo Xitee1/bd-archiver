@@ -10,6 +10,7 @@ from bd_archive.shell.format import human_bytes
 from bd_archive.tools import dar, par2
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
 from bd_archive.ui.logger import log
+from bd_archive.ui.progress import Progress, copy_with_progress
 from bd_archive.ui.prompts import prompt_disc, prompt_yn
 
 
@@ -48,8 +49,7 @@ def _copy_disc_data(mounted: Path, archive_name: str, staging: Path,
             log.info(f"  {sp.name} already in staging — skipping copy")
             copied.append(dest)
             continue
-        log.info(f"  Copying {sp.name} ({human_bytes(sp.stat().st_size)})...")
-        shutil.copy2(sp, dest)
+        copy_with_progress(sp, dest, label=f"copy {sp.name}")
         sha = sp.parent / f"{sp.name}.sha512"
         if sha.exists():
             shutil.copy2(sha, staging / sha.name)
@@ -82,7 +82,7 @@ def _repair_slice(slice_path: Path, mounted: Path, staging: Path) -> bool:
         return False
     log.info(f"  Fetching par2 ({len(par2_files)} file(s))...")
     for pf in par2_files:
-        shutil.copy2(pf, staging / pf.name)
+        copy_with_progress(pf, staging / pf.name, label=f"copy {pf.name}")
 
     idx_candidates = [staging / pf.name for pf in par2_files
                       if is_par2_index(staging / pf.name)]
@@ -183,7 +183,11 @@ def cmd_extract(args):
 
         # ── 4. Verify slices on staging via sha512 ───────────────────────
         log.info(f"Verifying disc {disc_num} slices on staging...")
-        failed = [sp for sp in copied if not verify_slice(sp)]
+        failed = []
+        for sp in copied:
+            with Progress(f"sha512 {sp.name}", sp.stat().st_size) as p:
+                if not verify_slice(sp, progress=p.advance):
+                    failed.append(sp)
         if not failed:
             log.ok(f"  All {len(copied)} slice(s) intact")
         else:

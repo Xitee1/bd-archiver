@@ -38,7 +38,7 @@ External binaries required at runtime: `dar`, `par2`, `mkisofs`, `growisofs`, `d
 src/bd_archive/
 ├── cli.py              # argparse + dispatch
 ├── constants.py        # MiB, DISC_*, ISO9660_VOLUME_LABEL_MAX, PAR2_RECOVERY_RE, ...
-├── ui/                 # logger, prompts (interactive)
+├── ui/                 # logger, prompts (interactive), progress (byte-counted)
 ├── shell/              # run(), check_deps(), human_bytes()
 ├── tools/              # one thin wrapper per external CLI
 │   ├── dar.py          # dar create_sliced/isolate_catalog/compress/extract_sequential

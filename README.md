@@ -127,7 +127,7 @@ Per-disc flow: copy slice + sha512 sidecar to staging in a single read pass, eje
 src/bd_archive/
 ├── cli.py              # argparse + dispatch
 ├── constants.py        # disc capacities, ISO9660 limits, regex
-├── ui/                 # logger, prompts (interactive)
+├── ui/                 # logger, prompts (interactive), progress reporter
 ├── shell/              # run(), check_deps(), human_bytes()
 ├── tools/              # one thin wrapper per external CLI
 │   ├── dar.py          # dar create/extract/isolate/sample-compress
