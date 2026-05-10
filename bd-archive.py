@@ -187,7 +187,8 @@ def scan_source(source: Path) -> SourceScan:
 
 
 def measure_compression_ratio(sample: Path, compression: str,
-                              level: str | None) -> float:
+                              level: str | None,
+                              tmpdir: Path | None = None) -> float:
     """Run dar on sample with the given compression; return output/input ratio.
 
     Uses a temp directory for the test archive (cleaned up automatically).
@@ -212,10 +213,12 @@ def measure_compression_ratio(sample: Path, compression: str,
     label = compression + (f":{level}" if level else "")
     log.info(f"Test-compressing {human_bytes(sample_size)} sample with {label}...")
 
-    with tempfile.TemporaryDirectory(prefix="bd-sample-") as tmp:
+    if tmpdir is not None:
+        tmpdir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="bd-sample-",
+                                     dir=str(tmpdir) if tmpdir else None) as tmp:
         archive = Path(tmp) / "sample"
-        cmd = ["dar", "-c", str(archive), "-R", str(sample),
-               "--hash", "sha512", "-Q"]
+        cmd = ["dar", "-c", str(archive), "-R", str(sample), "-Q"]
         if compression != "none":
             flag = f"-z{compression}"
             if level:
@@ -927,7 +930,8 @@ def cmd_estimate(args):
 
     if args.sample:
         ratio = measure_compression_ratio(
-            Path(args.sample).resolve(), args.compression, args.level)
+            Path(args.sample).resolve(), args.compression, args.level,
+            Path(args.workdir).resolve() if args.workdir else None)
         ratio_source = f"measured from {args.sample}"
     elif args.ratio is not None:
         ratio = args.ratio
@@ -1456,6 +1460,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Compression algorithm for --sample (default: zstd)")
     es.add_argument("-l", "--level",
                     help="Compression level for --sample")
+    es.add_argument("-w", "--workdir", default=None,
+                    help="Directory for sample tempdir "
+                         "(default: $TMPDIR or /tmp — may be tmpfs/RAM)")
 
     # ── burn ────────────────────────────────────────────────────────────
     bu = sub.add_parser("burn",
