@@ -71,7 +71,7 @@ def cmd_burn(args):
                     f"Disc too small: {human_bytes(actual)} < "
                     f"ISO {human_bytes(iso_size)}"
                 )
-                log.info(f"Resume later with: bd-archive.py burn "
+                log.info(f"Resume later with: bd-archive burn "
                          f"-w {work_dir} --start {i}")
                 sys.exit(1)
             elif actual > iso_size * DISC_OVERSIZE_TOLERANCE:
@@ -83,7 +83,7 @@ def cmd_burn(args):
                 )
                 log.info("Insert a smaller disc, or pass --skip-fit-check "
                          "to override.")
-                log.info(f"Resume later with: bd-archive.py burn "
+                log.info(f"Resume later with: bd-archive burn "
                          f"-w {work_dir} --start {i}")
                 sys.exit(1)
             else:
@@ -113,7 +113,7 @@ def cmd_burn(args):
                              "Enter to retry (q = cancel): \033[0m")
                 if resp.strip().lower() == "q":
                     log.warn("Cancelled by user")
-                    log.info(f"Resume later with: bd-archive.py burn "
+                    log.info(f"Resume later with: bd-archive burn "
                              f"-w {work_dir} --start {i}")
                     sys.exit(1)
         log.ok(f"Disc {i} burned")
@@ -133,7 +133,7 @@ def cmd_burn(args):
                         log.error("Post-burn verification failed!")
                         if not prompt_yn("Continue?", default_yes=False):
                             log.info(f"Resume later with: "
-                                     f"bd-archive.py burn -w {work_dir} "
+                                     f"bd-archive burn -w {work_dir} "
                                      f"--start {i}")
                             sys.exit(1)
                 finally:
@@ -154,7 +154,7 @@ def cmd_burn(args):
         if i < disc_count:
             remaining = disc_count - i
             log.info(f"{remaining} disc(s) remaining. "
-                     f"Resume: bd-archive.py burn -w {work_dir} "
+                     f"Resume: bd-archive burn -w {work_dir} "
                      f"--start {i + 1}")
 
     log.step("All discs burned")

@@ -189,5 +189,5 @@ def cmd_create(args):
     print(f"  PAR2:         {cfg.redundancy}% per disc")
     print(f"  Compression:  {cfg.comp_str}")
     print(f"  Images:       {images_dir}")
-    print(f"\n  Next step:    bd-archive.py burn -w {work_dir}")
+    print(f"\n  Next step:    bd-archive burn -w {work_dir}")
     print(f"  Cleanup:      rm -rf {work_dir}\n")
