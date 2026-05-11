@@ -6,8 +6,15 @@ from bd_archive.shell.runner import run
 
 
 def create_sliced(base_path: Path, source: Path, slice_bytes: int,
-                  compression: str, comp_level: str | None):
-    """Create a sliced dar archive with sha512 hashes."""
+                  compression: str, comp_level: str | None,
+                  execute_hook: str | None = None):
+    """Create a sliced dar archive with sha512 hashes.
+
+    If execute_hook is set, dar invokes it via -E once each slice has
+    been completed (verified against dar 2.7.17). This is used by
+    cmd_create to run par2 on each slice while its bytes are still in
+    the OS page cache.
+    """
     cmd = ["dar", "-c", str(base_path),
            "-R", str(source), "-s", str(slice_bytes),
            "--hash", "sha512", "--min-digits", "4", "-Q"]
@@ -16,6 +23,8 @@ def create_sliced(base_path: Path, source: Path, slice_bytes: int,
         if comp_level:
             flag += f":{comp_level}"
         cmd += [flag, "-am"]
+    if execute_hook is not None:
+        cmd += ["-E", execute_hook]
     run(cmd, label="dar")
 
 
