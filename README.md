@@ -43,24 +43,25 @@ pip install .
 ### create
 
 ```bash
-bd-archive create -s /path/to/source -n my-archive -w /path/to/workdir [options]
+bd-archive create -s /path/to/source -n my-archive -o /path/to/output [options]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `-s, --source`     | required          | Source directory |
 | `-n, --name`       | required          | Archive name (≤ 27 chars; ISO9660 volume label limit minus 5-char disc suffix) |
-| `-w, --workdir`    | required          | Working directory for archive + staged ISOs |
+| `-o, --output`     | required          | Output directory for ISO images |
+| `-w, --workdir`    | `<output>/.bd-archive-work/` | Scratch dir for transient build files (dar slices, par2). Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
 | `-r, --redundancy` | `5`               | PAR2 redundancy in % |
 | `-D, --device`     | `/dev/sr0`        | Optical drive used for capacity detection |
 | `-b, --bytes`      | auto-detected     | Manual disc capacity in raw bytes |
 | `-c, --compression`| `zstd`            | `zstd`, `lzma`, `lz4`, `gzip`, `bzip2`, `none` |
 | `-l, --level`      | —                 | Compression level |
 
-After completion, ISOs sit in `<workdir>/images/disc_NNNN.iso`. Verify them before burning:
+After completion, ISOs sit in `<output>/images/disc_NNNN.iso`. Verify them before burning:
 
 ```bash
-bd-archive verify <workdir>/images/disc_0001.iso
+bd-archive verify <output>/images/disc_0001.iso
 ```
 
 ### estimate
@@ -77,12 +78,12 @@ Compression ratio source (mutually exclusive):
 ### burn
 
 ```bash
-bd-archive burn -w /path/to/workdir [options]
+bd-archive burn -i /path/to/input [options]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `-w, --workdir`      | required        | Working directory from `create` |
+| `-i, --input`        | required        | Directory `create` wrote to (contains `images/disc_*.iso`) |
 | `-D, --device`       | `/dev/sr0`      | Optical drive |
 | `-S, --speed`        | drive max       | BD speed multiplier (e.g. `2`, `4`, `6`; 1× ≈ 4.5 MB/s) |
 | `--start N`          | `1`             | Resume from disc N |
@@ -110,7 +111,13 @@ Exit codes: `0` OK, `1` repairable, `2` broken.
 bd-archive extract -o /path/to/output [-D /dev/sr0] [-w /path/to/workdir]
 ```
 
-Prompts for each disc; auto-repairs damaged slices via PAR2 when possible. Uses `dar --sequential-read` so missing slices auto-skip rather than aborting the whole restore.
+| Flag | Default | Description |
+|---|---|---|
+| `-o, --output`   | required                       | Where extracted files land |
+| `-D, --device`   | `/dev/sr0`                     | Optical drive |
+| `-w, --workdir`  | `<output>/.bd-archive-work/`   | Staging dir for slices. Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
+
+Per-disc flow: copy slice + sha512 sidecar to staging in a single read pass, eject, then verify via SHA-512 on the local copy. PAR2 files are **not** copied unless a slice fails verification — at which point the disc is re-mounted, just the par2 for the affected slice is fetched, and `par2 repair` runs in staging. Once all discs are processed, `dar --sequential-read` does the final extraction; missing slices auto-skip rather than aborting the whole restore.
 
 ## Development
 
@@ -120,7 +127,7 @@ Prompts for each disc; auto-repairs damaged slices via PAR2 when possible. Uses 
 src/bd_archive/
 ├── cli.py              # argparse + dispatch
 ├── constants.py        # disc capacities, ISO9660 limits, regex
-├── ui/                 # logger, prompts (interactive)
+├── ui/                 # logger, prompts (interactive), progress reporter
 ├── shell/              # run(), check_deps(), human_bytes()
 ├── tools/              # one thin wrapper per external CLI
 │   ├── dar.py          # dar create/extract/isolate/sample-compress
