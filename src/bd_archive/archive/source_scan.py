@@ -4,9 +4,9 @@ from pathlib import Path
 
 @dataclass
 class SourceScan:
-    total_bytes: int     # sum of regular file sizes
-    entry_count: int     # files + dirs + symlinks + ...
-    catalog_est: int     # estimated isolated dar catalog size
+    total_bytes: int  # sum of regular file sizes
+    entry_count: int  # files + dirs + symlinks + ...
+    catalog_est: int  # estimated isolated dar catalog size
 
 
 def scan_source(source: Path) -> SourceScan:

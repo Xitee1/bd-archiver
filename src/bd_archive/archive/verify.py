@@ -6,8 +6,7 @@ from bd_archive.tools.par2 import VerifyResult, is_par2_index
 from bd_archive.ui.logger import log
 
 
-def verify_disc(disc_path: Path, label: str = "",
-                quiet: bool = False) -> VerifyResult:
+def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> VerifyResult:
     if not quiet:
         log.step(f"Verifying: {label or disc_path}")
 
@@ -30,8 +29,7 @@ def verify_disc(disc_path: Path, label: str = "",
         log.warn("No .sha512 hash files found")
 
     # PAR2
-    par2_indices = [p for p in sorted(disc_path.glob("*.par2"))
-                    if is_par2_index(p)]
+    par2_indices = [p for p in sorted(disc_path.glob("*.par2")) if is_par2_index(p)]
     for par2_index in par2_indices:
         if not quiet:
             log.info(f"PAR2 check: {par2_index.name}")

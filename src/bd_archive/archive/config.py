@@ -18,8 +18,9 @@ class ArchiveConfig:
         return self.compression + (f" ({self.comp_level})" if self.comp_level else "")
 
 
-def write_readme(readme_path: Path, cfg: ArchiveConfig,
-                 disc_num: int, total_discs: int, slice_name: str):
+def write_readme(
+    readme_path: Path, cfg: ArchiveConfig, disc_num: int, total_discs: int, slice_name: str
+):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     readme_path.write_text(
         f"BD-ARCHIVE | {cfg.name} | Disc {disc_num}/{total_discs}"

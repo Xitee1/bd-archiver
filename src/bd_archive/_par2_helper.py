@@ -19,6 +19,7 @@ will abort the backup (and surface a non-zero status from
 dar.create_sliced). cmd_create additionally checks for the
 presence of .par2 files before building each ISO in phase 3.
 """
+
 import sys
 from pathlib import Path
 
@@ -27,8 +28,7 @@ from bd_archive.tools import par2
 
 def main():
     if len(sys.argv) != 5:
-        print(f"usage: {sys.argv[0]} <path> <basename> <num> <redundancy>",
-              file=sys.stderr)
+        print(f"usage: {sys.argv[0]} <path> <basename> <num> <redundancy>", file=sys.stderr)
         sys.exit(2)
     path = Path(sys.argv[1])
     basename = sys.argv[2]
@@ -37,8 +37,7 @@ def main():
 
     slice_path = path / f"{basename}.{num}.dar"
     if not slice_path.exists():
-        print(f"_par2_helper: slice not found: {slice_path}",
-              file=sys.stderr)
+        print(f"_par2_helper: slice not found: {slice_path}", file=sys.stderr)
         sys.exit(1)
     par2.create(slice_path, redundancy)
 

@@ -26,9 +26,11 @@ def cmd_create(args):
 
     max_name_len = ISO9660_VOLUME_LABEL_MAX - 5  # "_NNNN" suffix
     if len(args.name) > max_name_len:
-        log.error(f"--name '{args.name}' is {len(args.name)} chars; "
-                  f"max {max_name_len} (ISO9660 volume label limit "
-                  f"{ISO9660_VOLUME_LABEL_MAX} minus 5-char disc suffix)")
+        log.error(
+            f"--name '{args.name}' is {len(args.name)} chars; "
+            f"max {max_name_len} (ISO9660 volume label limit "
+            f"{ISO9660_VOLUME_LABEL_MAX} minus 5-char disc suffix)"
+        )
         sys.exit(1)
 
     source = Path(args.source).resolve()
@@ -42,8 +44,7 @@ def cmd_create(args):
     images_dir.mkdir(parents=True, exist_ok=True)
 
     workdir_is_default = args.workdir is None
-    work_dir = (Path(args.workdir) if args.workdir
-                else output_dir / ".bd-archive-work")
+    work_dir = Path(args.workdir) if args.workdir else output_dir / ".bd-archive-work"
     work_dir.mkdir(parents=True, exist_ok=True)
 
     if args.bytes is not None:
@@ -53,11 +54,9 @@ def cmd_create(args):
         raw_capacity = detect_disc_capacity(args.device)
         if raw_capacity is None:
             log.error(f"No disc detected at {args.device}.")
-            log.info("Insert a blank disc, or specify capacity manually "
-                     "with -b/--bytes <int>.")
+            log.info("Insert a blank disc, or specify capacity manually with -b/--bytes <int>.")
             sys.exit(1)
-        log.info(f"Detected {human_bytes(raw_capacity)} writable, "
-                 f"sizing ISOs accordingly")
+        log.info(f"Detected {human_bytes(raw_capacity)} writable, sizing ISOs accordingly")
 
     # raw_capacity is the format-aware writable extent (post-OSA
     # reservation). DISC_END_MARGIN reserves a tiny bit more to absorb
@@ -69,12 +68,13 @@ def cmd_create(args):
     log.info("Scanning source...")
     scan = scan_source(source)
 
-    slice_bytes = compute_slice_bytes(sizing_target, scan.catalog_est,
-                                      args.redundancy)
+    slice_bytes = compute_slice_bytes(sizing_target, scan.catalog_est, args.redundancy)
     if slice_bytes == 0:
-        log.error(f"Per-disc overhead "
-                  f"({human_bytes(scan.catalog_est + PAR2_AND_MISC_OVERHEAD)}) "
-                  f"exceeds disc capacity ({human_bytes(raw_capacity)})")
+        log.error(
+            f"Per-disc overhead "
+            f"({human_bytes(scan.catalog_est + PAR2_AND_MISC_OVERHEAD)}) "
+            f"exceeds disc capacity ({human_bytes(raw_capacity)})"
+        )
         sys.exit(1)
 
     par2_est = slice_bytes * args.redundancy // 100
@@ -90,13 +90,13 @@ def cmd_create(args):
     log.info(f"Disc capacity: {human_bytes(raw_capacity)} (writable)")
     log.info(f"Slice size:    {human_bytes(slice_bytes)}")
     log.info(f"PAR2:          {cfg.redundancy}% (~{human_bytes(par2_est)})")
-    log.info(f"Catalog:       ~{human_bytes(scan.catalog_est)} "
-             f"({scan.entry_count} entries, estimated)")
+    log.info(
+        f"Catalog:       ~{human_bytes(scan.catalog_est)} ({scan.entry_count} entries, estimated)"
+    )
     log.info(f"Compression:   {cfg.comp_str}")
     log.info(f"Source:        {source}")
     log.info(f"Output:        {output_dir}")
-    log.info(f"Workdir:       {work_dir}"
-             f"{' (default)' if workdir_is_default else ' (custom)'}")
+    log.info(f"Workdir:       {work_dir}{' (default)' if workdir_is_default else ' (custom)'}")
 
     dar_archive = DarArchive(cfg.name, work_dir)
     tmp_dir = dar_archive.tmp_dir
@@ -111,11 +111,9 @@ def cmd_create(args):
     # quote the macros here. %N is always digits, no quoting needed.
     log.step("Creating dar archive")
     par2_hook = (
-        f'{shlex.quote(sys.executable)} -m bd_archive._par2_helper '
-        f'"%p" "%b" %N {cfg.redundancy}'
+        f'{shlex.quote(sys.executable)} -m bd_archive._par2_helper "%p" "%b" %N {cfg.redundancy}'
     )
-    dar_archive.create(source, slice_bytes, cfg.compression,
-                       cfg.comp_level, par2_hook=par2_hook)
+    dar_archive.create(source, slice_bytes, cfg.compression, cfg.comp_level, par2_hook=par2_hook)
 
     slices = dar_archive.slices
     slice_count = len(slices)
@@ -133,9 +131,11 @@ def cmd_create(args):
     catalog_actual = sum(c.stat().st_size for c in dar_archive.catalog_files)
     log.ok(f"Catalog isolated ({human_bytes(catalog_actual)})")
     if catalog_actual > scan.catalog_est:
-        log.warn(f"Catalog exceeds estimate by "
-                 f"{human_bytes(catalog_actual - scan.catalog_est)} — "
-                 f"per-disc fit check may fail")
+        log.warn(
+            f"Catalog exceeds estimate by "
+            f"{human_bytes(catalog_actual - scan.catalog_est)} — "
+            f"per-disc fit check may fail"
+        )
 
     # ── Build per-disc ISOs (sequential, deletes raw files as we go) ────
     log.step("Building disc images")
@@ -145,16 +145,17 @@ def cmd_create(args):
     for i, slice_file in enumerate(slices, 1):
         slice_name = slice_file.name
         slice_size = slice_file.stat().st_size
-        log.info(f"Disc {i}/{slice_count}: {slice_name} "
-                 f"({human_bytes(slice_size)})")
+        log.info(f"Disc {i}/{slice_count}: {slice_name} ({human_bytes(slice_size)})")
 
         # par2 was already produced via the -E hook during dar create
         # (above). Verify the files are present — a missing file means
         # the helper silently failed on this slice.
         par2_files = sorted(tmp_dir.glob(f"{slice_name}.*par2"))
         if not par2_files:
-            log.error(f"par2 files missing for {slice_name} "
-                      f"(_par2_helper likely failed during dar create)")
+            log.error(
+                f"par2 files missing for {slice_name} "
+                f"(_par2_helper likely failed during dar create)"
+            )
             sys.exit(1)
 
         # README, regenerated per disc with current disc_num/total
@@ -184,11 +185,15 @@ def cmd_create(args):
         # raw_capacity is the format-aware writable extent.
         iso_size = iso_path.stat().st_size
         pct = iso_size * 100 // raw_capacity
-        log.ok(f"  Disc {i}/{slice_count}: ISO {human_bytes(iso_size)} "
-               f"({pct}% of {human_bytes(raw_capacity)})")
+        log.ok(
+            f"  Disc {i}/{slice_count}: ISO {human_bytes(iso_size)} "
+            f"({pct}% of {human_bytes(raw_capacity)})"
+        )
         if iso_size > raw_capacity:
-            log.error(f"Disc {i} ISO ({human_bytes(iso_size)}) exceeds "
-                      f"writable capacity ({human_bytes(raw_capacity)})")
+            log.error(
+                f"Disc {i} ISO ({human_bytes(iso_size)}) exceeds "
+                f"writable capacity ({human_bytes(raw_capacity)})"
+            )
             iso_path.unlink()
             sys.exit(1)
 

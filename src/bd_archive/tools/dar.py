@@ -10,13 +10,17 @@ from bd_archive.shell.runner import run
 # and **continues**, writing the partial/corrupt bytes to disk and exiting
 # with code 0 anyway — so we cannot rely on the exit code to detect
 # corruption. We parse the message instead.
-_BAD_CRC_RE = re.compile(
-    r"Error while restoring (.+?) : Bad CRC")
+_BAD_CRC_RE = re.compile(r"Error while restoring (.+?) : Bad CRC")
 
 
-def create_sliced(base_path: Path, source: Path, slice_bytes: int,
-                  compression: str, comp_level: str | None,
-                  execute_hook: str | None = None):
+def create_sliced(
+    base_path: Path,
+    source: Path,
+    slice_bytes: int,
+    compression: str,
+    comp_level: str | None,
+    execute_hook: str | None = None,
+):
     """Create a sliced dar archive with sha512 hashes.
 
     If execute_hook is set, dar invokes it via -E once each slice has
@@ -24,9 +28,20 @@ def create_sliced(base_path: Path, source: Path, slice_bytes: int,
     cmd_create to run par2 on each slice while its bytes are still in
     the OS page cache.
     """
-    cmd = ["dar", "-c", str(base_path),
-           "-R", str(source), "-s", str(slice_bytes),
-           "--hash", "sha512", "--min-digits", "4", "-Q"]
+    cmd = [
+        "dar",
+        "-c",
+        str(base_path),
+        "-R",
+        str(source),
+        "-s",
+        str(slice_bytes),
+        "--hash",
+        "sha512",
+        "--min-digits",
+        "4",
+        "-Q",
+    ]
     if compression != "none":
         flag = f"-z{compression}"
         if comp_level:
@@ -39,14 +54,25 @@ def create_sliced(base_path: Path, source: Path, slice_bytes: int,
 
 def isolate_catalog(base_path: Path):
     """Isolate the catalog into a separate dar archive with sha512 hashes."""
-    run(["dar", "-C", str(base_path) + "-catalog",
-         "-A", str(base_path),
-         "--hash", "sha512", "--min-digits", "4", "-Q"],
-        label="dar", check=True)
+    run(
+        [
+            "dar",
+            "-C",
+            str(base_path) + "-catalog",
+            "-A",
+            str(base_path),
+            "--hash",
+            "sha512",
+            "--min-digits",
+            "4",
+            "-Q",
+        ],
+        label="dar",
+        check=True,
+    )
 
 
-def compress(archive_path: Path, source: Path,
-             compression: str, comp_level: str | None):
+def compress(archive_path: Path, source: Path, compression: str, comp_level: str | None):
     """Create an unsliced dar archive (used for compression-ratio sampling)."""
     cmd = ["dar", "-c", str(archive_path), "-R", str(source), "-Q"]
     if compression != "none":
@@ -57,9 +83,11 @@ def compress(archive_path: Path, source: Path,
     run(cmd, label="dar")
 
 
-def extract_sequential(base_path: Path, output_dir: Path,
-                       catalog_base: Path | None = None,
-                       ) -> tuple[int, list[str]]:
+def extract_sequential(
+    base_path: Path,
+    output_dir: Path,
+    catalog_base: Path | None = None,
+) -> tuple[int, list[str]]:
     """Extract a dar archive with --sequential-read.
 
     Feeds ESC bytes on stdin in a background thread so dar's
@@ -74,8 +102,7 @@ def extract_sequential(base_path: Path, output_dir: Path,
     dar 2.7 exits with code 0 even when CRC errors occurred, so
     the caller must check this list, not just the exit code.
     """
-    cmd = ["dar", "-x", str(base_path), "-R", str(output_dir),
-           "-O", "--sequential-read"]
+    cmd = ["dar", "-x", str(base_path), "-R", str(output_dir), "-O", "--sequential-read"]
     if catalog_base is not None:
         # -A uses the isolated catalog as rescue source — handles
         # corruption of the in-archive catalog (PAR2 covers slice
@@ -83,9 +110,9 @@ def extract_sequential(base_path: Path, output_dir: Path,
         # be lost past PAR2's repair threshold).
         cmd += ["-A", str(catalog_base)]
 
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
     assert proc.stdin is not None and proc.stdout is not None
 
     def _feed_esc():

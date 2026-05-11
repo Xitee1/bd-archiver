@@ -18,13 +18,13 @@ def is_par2_index(path: Path) -> bool:
 
 def create(target_file: Path, redundancy: int):
     par2_base = target_file.parent / f"{target_file.name}.par2"
-    run(["par2", "create", f"-r{redundancy}", "-n1",
-         str(par2_base), str(target_file)], label="par2")
+    run(
+        ["par2", "create", f"-r{redundancy}", "-n1", str(par2_base), str(target_file)], label="par2"
+    )
 
 
 def verify(par2_index: Path) -> VerifyResult:
-    r = run(["par2", "verify", str(par2_index)],
-            check=False, capture=True)
+    r = run(["par2", "verify", str(par2_index)], check=False, capture=True)
     out = r.stdout + r.stderr
     if "All files are correct" in out:
         return VerifyResult.OK
@@ -34,6 +34,5 @@ def verify(par2_index: Path) -> VerifyResult:
 
 
 def repair(par2_index: Path) -> bool:
-    r = run(["par2", "repair", str(par2_index)],
-            label="par2", check=False)
+    r = run(["par2", "repair", str(par2_index)], label="par2", check=False)
     return r.returncode == 0
