@@ -19,7 +19,7 @@ PYTHONPATH=src python3 -m bd_archive ...
 ```
 
 ```bash
-bd-archive create   -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/sr0] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>] [--ratio R | --sample <path>] [-y]
+bd-archive create   -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/sr0] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [-y]
 bd-archive burn     -i <input> [-D /dev/sr0] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
 bd-archive verify   <mountpoint|dir|/dev/sr0|*.iso>
 bd-archive extract  -o <output> [-D /dev/sr0] [-w <workdir>]
