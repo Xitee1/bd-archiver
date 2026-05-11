@@ -13,20 +13,24 @@ class DarArchive:
     @property
     def slices(self) -> list[Path]:
         return sorted(
-            p for p in self.tmp_dir.glob(f"{self.name}.[0-9]*.dar")
-            if "-catalog" not in p.name
+            p for p in self.tmp_dir.glob(f"{self.name}.[0-9]*.dar") if "-catalog" not in p.name
         )
 
     @property
     def catalog_files(self) -> list[Path]:
         return sorted(self.tmp_dir.glob(f"{self.name}-catalog.*.dar"))
 
-    def create(self, source: Path, slice_bytes: int,
-               compression: str, comp_level: str | None,
-               par2_hook: str | None = None):
-        dar.create_sliced(self.base_path, source, slice_bytes,
-                          compression, comp_level,
-                          execute_hook=par2_hook)
+    def create(
+        self,
+        source: Path,
+        slice_bytes: int,
+        compression: str,
+        comp_level: str | None,
+        par2_hook: str | None = None,
+    ):
+        dar.create_sliced(
+            self.base_path, source, slice_bytes, compression, comp_level, execute_hook=par2_hook
+        )
 
     def isolate_catalog(self):
         dar.isolate_catalog(self.base_path)

@@ -1,6 +1,6 @@
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from bd_archive.ui.logger import log
 from bd_archive.ui.progress import Progress
@@ -8,8 +8,7 @@ from bd_archive.ui.progress import Progress
 HASH_CHUNK_SIZE = 65536
 
 
-def _hash_file_sha512(path: Path,
-                      progress: Callable[[int], None] | None = None) -> str:
+def _hash_file_sha512(path: Path, progress: Callable[[int], None] | None = None) -> str:
     h = hashlib.sha512()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b""):
@@ -57,8 +56,7 @@ def verify_dar_hashes(directory: Path) -> tuple[int, int]:
     return ok, fail
 
 
-def verify_slice(slice_path: Path,
-                 progress: Callable[[int], None] | None = None) -> bool:
+def verify_slice(slice_path: Path, progress: Callable[[int], None] | None = None) -> bool:
     """Verify a single file against its sibling .sha512 sidecar.
 
     Returns False if the sidecar is missing/empty, the target read fails,

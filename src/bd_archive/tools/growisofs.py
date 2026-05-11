@@ -5,6 +5,7 @@ from pathlib import Path
 class DeviceBusyError(Exception):
     """growisofs couldn't grab the associated sg device — typically held
     by a tool like MakeMKV, K3b, or a desktop auto-mount probe."""
+
     def __init__(self, device: str):
         super().__init__(device)
         self.device = device
@@ -28,15 +29,13 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
     Raises DeviceBusyError if growisofs reports the sg device is
     locked; CalledProcessError on any other non-zero exit.
     """
-    cmd = ["growisofs", "-use-the-force-luke=notray", "-dvd-compat",
-           "-Z", f"{device}={iso_path}"]
+    cmd = ["growisofs", "-use-the-force-luke=notray", "-dvd-compat", "-Z", f"{device}={iso_path}"]
     if speed:
         cmd += [f"-speed={speed}"]
 
     # Stream output while watching for the "device busy" marker so
     # the caller can retry without re-running the whole script.
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert proc.stdout is not None
     sg_locked = False
     for line in proc.stdout:
