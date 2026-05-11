@@ -135,9 +135,7 @@ def cmd_burn(args):
                         log.error("Could not mount disc for verification")
                     else:
                         try:
-                            result = verify_disc(
-                                mounted, f"Disc {i} (post-burn)", quiet=True
-                            )
+                            result = verify_disc(mounted, f"Disc {i} (post-burn)", quiet=True)
                             if result == VerifyResult.BROKEN:
                                 log.error("Post-burn verification failed!")
                             else:
@@ -155,9 +153,7 @@ def cmd_burn(args):
                 )
                 if resp.strip().lower() == "q":
                     log.warn("Cancelled by user")
-                    log.info(
-                        f"Resume later with: bd-archive burn -i {input_dir} --start {i}"
-                    )
+                    log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
                     sys.exit(1)
 
         dio.eject()
