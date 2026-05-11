@@ -24,15 +24,22 @@ def create(target_file: Path, redundancy: int):
 
 
 def verify(par2_index: Path) -> VerifyResult:
-    r = run(["par2", "verify", str(par2_index)], check=False, capture=True)
-    out = r.stdout + r.stderr
-    if "All files are correct" in out:
+    # par2cmdline exit codes: 0 = all files OK, 1 = repair possible,
+    # 2 = repair not possible. Maps directly onto VerifyResult, so we
+    # use passthrough to let par2 paint its "Scanning: X%" progress
+    # straight to the terminal — verify takes ~20 min on a 25 GB BD-R
+    # and is otherwise a black screen.
+    r = run(["par2", "verify", str(par2_index)], check=False, passthrough=True)
+    if r.returncode == 0:
         return VerifyResult.OK
-    if "Repair is required" in out:
+    if r.returncode == 1:
         return VerifyResult.REPAIRABLE
     return VerifyResult.BROKEN
 
 
 def repair(par2_index: Path) -> bool:
-    r = run(["par2", "repair", str(par2_index)], label="par2", check=False)
+    # Same passthrough rationale as verify: repair's Loading /
+    # Constructing / Verifying steps all use \r-updated progress that
+    # the line-buffered streamer would swallow.
+    r = run(["par2", "repair", str(par2_index)], check=False, passthrough=True)
     return r.returncode == 0
