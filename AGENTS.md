@@ -106,3 +106,7 @@ No metadata file connects `create` to `burn`. `cmd_burn` derives disc count from
 - Interactive prompts use `ui.prompts.prompt_disc()` (insert-disc gate, supports `q` to cancel) and `prompt_yn()`. Keep them — the tool is interactive by design.
 - `bd_archive.__version__` is the single source of truth, embedded in the burned ISO's publisher field and read dynamically by hatch from `src/bd_archive/__init__.py`. Bump when changing on-disc layout.
 - Tool wrappers in `tools/` should be thin: build the argv, call `run()`, parse minimally. Domain decisions belong in `archive/` or `commands/`.
+
+## Working on this project
+
+Always use the project-local venv at `.venv/` for any Python invocation — `python`, `pip`, `ruff`, `bd-archive`, etc. Activate it (`source .venv/bin/activate`) or call the binary directly (`.venv/bin/python`, `.venv/bin/ruff`, `.venv/bin/bd-archive`). Never run `pip install` or `python3` against the system interpreter. If `.venv/` does not exist, create it per the "Running" section above before doing anything else.
