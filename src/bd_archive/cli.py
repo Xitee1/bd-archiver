@@ -1,6 +1,9 @@
+# PYTHON_ARGCOMPLETE_OK
 import argparse
 import subprocess
 import sys
+
+import argcomplete
 
 from bd_archive import __version__
 from bd_archive.commands.burn import cmd_burn
@@ -148,6 +151,7 @@ def main():
     print(f"\n{Logger._c('bold')}bd-archive{Logger._c('reset')} v{__version__}\n")
 
     parser = build_parser()
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
     try:

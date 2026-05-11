@@ -37,6 +37,26 @@ pip install .
 
 `.venv/` is gitignored. With the venv activated, the `bd-archive` command is on `PATH`. Re-activate later with `source .venv/bin/activate`.
 
+### Shell completion (optional)
+
+`bd-archive` ships with [`argcomplete`](https://github.com/kislyuk/argcomplete) support for bash/zsh tab-completion of subcommands, flags, and path arguments. Pick one:
+
+**Per-user (recommended):** add to `~/.bashrc` (or `~/.zshrc`):
+
+```bash
+eval "$(register-python-argcomplete bd-archive)"
+```
+
+Reload the shell (`exec bash`) and `bd-archive <TAB>` works.
+
+**System-wide:** if you use several argcomplete-based tools, activate the global hook once instead:
+
+```bash
+sudo activate-global-python-argcomplete
+```
+
+This enables completion for **every** argcomplete-enabled Python CLI on the system, not just `bd-archive`. No per-user setup needed afterwards.
+
 ## Usage
 
 ### create
