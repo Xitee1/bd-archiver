@@ -9,6 +9,8 @@ Four subcommands form a build-then-burn pipeline:
 - `verify`   — Check disc / directory / ISO integrity (SHA-512 + PAR2). Exit code reflects state.
 - `extract`  — Restore archive from discs with auto-repair via PAR2.
 
+Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
+
 ## Installation
 
 ### System dependencies
@@ -30,7 +32,7 @@ Requires Python ≥ 3.11. Install into a project-local virtualenv (modern distro
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'   # editable + dev tools (ruff)
+pip install -e '.[dev]'   # editable + dev tools (ruff, pre-commit)
 # or, runtime only:
 pip install .
 ```
@@ -101,7 +103,7 @@ bd-archive burn -i /path/to/input [options]
 | `-S, --speed`        | drive max       | BD speed multiplier (e.g. `2`, `4`, `6`; 1× ≈ 4.5 MB/s) |
 | `--start N`          | `1`             | Resume from disc N |
 | `--no-verify`        | off             | Skip post-burn verification |
-| `--skip-fit-check`   | off             | Skip pre-burn capacity check |
+| `--skip-fit-check`   | off             | Skip the pre-burn capacity check (covers both *too small* and *too large by >5%*, the latter guards against wasting a 50 GB BD-DL on a 25 GB-sized archive) |
 
 If burning fails on disc N, resume with `--start N` after fixing the issue.
 
@@ -114,7 +116,7 @@ bd-archive verify [target]
 `[target]` is optional and may be:
 - Omitted — auto-detect an optical drive (prompts if multiple)
 - A mountpoint directory (already-mounted disc or extracted slices)
-- A block device (e.g. `/dev/sr0`) — mounted automatically
+- A block device (e.g. `/dev/srN`) — mounted automatically
 - An `.iso` file — loop-mounted via `udisksctl`
 
 Exit codes: `0` OK, `1` repairable, `2` broken.
@@ -122,7 +124,7 @@ Exit codes: `0` OK, `1` repairable, `2` broken.
 ### extract
 
 ```bash
-bd-archive extract -o /path/to/output [-D /dev/srN] [-w /path/to/workdir]
+bd-archive extract -o /path/to/output [options]
 ```
 
 | Flag | Default | Description |
@@ -131,7 +133,13 @@ bd-archive extract -o /path/to/output [-D /dev/srN] [-w /path/to/workdir]
 | `-D, --device`   | auto-detect                    | Optical drive. Auto-picks the only drive present; prompts if multiple. |
 | `-w, --workdir`  | `<output>/.bd-archive-work/`   | Staging dir for slices. Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
 
-Per-disc flow: copy slice + sha512 sidecar to staging in a single read pass, eject, then verify via SHA-512 on the local copy. PAR2 files are **not** copied unless a slice fails verification — at which point the disc is re-mounted, just the par2 for the affected slice is fetched, and `par2 repair` runs in staging. Once all discs are processed, `dar --sequential-read` does the final extraction; missing slices auto-skip rather than aborting the whole restore.
+The archive name is auto-detected from the first disc's filenames — there is no `-n` flag.
+
+Per-disc flow: copy slice + sha512 sidecar (and the catalog, on its first intact arrival) to staging in a single read pass, eject, then verify the staged slice via SHA-512. PAR2 files are **not** copied unless a slice fails verification — at which point the disc is re-mounted, just the par2 for the affected slice is fetched, and `par2 repair` runs in staging. If the catalog itself fails on this disc, the bad slice is dropped and re-fetched from the next disc that carries it.
+
+After each disc, you are asked whether to continue — answer `n` for a partial restore (e.g. one disc lost). Once you stop, `dar --sequential-read` does the final extraction; dar's "missing slice" prompts are auto-skipped so a partial set still yields ~95% of files. Per-file `Bad CRC` lines from dar plus any slices that failed sha512 *and* par2 are recorded in `<output>/corrupted-files.txt`, and `extract` exits with code `1` so scripts can detect a non-clean restore. The output dir still contains whatever dar managed to extract — best-effort, never silently corrupt.
+
+For maximum throughput on SSD-hosted archives, point `-w` at a tmpfs path (`/dev/shm/bd-extract`) — a 25 GB slice fits in RAM and never hits disk during staging.
 
 ## Development
 
@@ -139,26 +147,29 @@ Per-disc flow: copy slice + sha512 sidecar to staging in a single read pass, eje
 
 ```
 src/bd_archive/
-├── cli.py              # argparse + dispatch
+├── __init__.py         # __version__ (single source of truth)
+├── __main__.py         # entry point for `python -m bd_archive`
+├── _par2_helper.py     # dar -E hook: runs par2 on each freshly written slice
+├── cli.py              # argparse + dispatch + top-level exception handling
 ├── constants.py        # disc capacities, ISO9660 limits, regex
 ├── ui/                 # logger, prompts (interactive), progress reporter
-├── shell/              # run(), check_deps(), human_bytes()
+├── shell/              # runner (run()), deps (check_deps()), format (human_bytes())
 ├── tools/              # one thin wrapper per external CLI
 │   ├── dar.py          # dar create/extract/isolate/sample-compress
 │   ├── par2.py         # par2 + VerifyResult + is_par2_index
 │   ├── mkisofs.py      # ISO9660+UDF builder
-│   ├── growisofs.py    # burn (+ DeviceBusyError)
+│   ├── growisofs.py    # burn (+ DeviceBusyError, SIGINT double-press abort)
 │   ├── mount.py        # plain mount/umount
-│   ├── udisks.py       # udisksctl mount/loop-setup
-│   ├── eject.py
-│   ├── mediainfo.py    # dvd+rw-mediainfo capacity detection
+│   ├── udisks.py       # udisksctl mount/unmount/loop-setup/loop-delete
+│   ├── eject.py        # eject + close_tray + drive_status (CDROM ioctl)
+│   ├── mediainfo.py    # dvd+rw-mediainfo capacity detection (all format types)
 │   ├── optical.py      # list_drives + resolve_device (auto-detect / prompt)
-│   └── lsof.py         # find_device_holders
+│   └── lsof.py         # find_device_holders (optional)
 ├── archive/            # domain logic over tools/
 │   ├── checksums.py    # SHA-512 verification
 │   ├── config.py       # ArchiveConfig + write_readme
 │   ├── dar_archive.py  # DarArchive class
-│   ├── disc.py         # DiscIO class + find_sg_device
+│   ├── disc.py         # DiscIO (mount/with-retry/umount/eject/close-tray/burn) + find_sg_device
 │   ├── sizing.py       # compute_slice_bytes + measure_compression_ratio
 │   ├── source_scan.py  # SourceScan + scan_source
 │   └── verify.py       # verify_disc()
@@ -183,12 +194,13 @@ python -m build              # produces sdist + wheel in dist/
 
 ### Lint
 
-The dev install (`pip install -e '.[dev]'`) puts `ruff` in the venv:
+The dev install (`pip install -e '.[dev]'`) puts `ruff` and `pre-commit` in the venv:
 
 ```bash
 source .venv/bin/activate    # if not already active
 ruff check src/
 ruff format src/
+pre-commit install           # one-time: enables ruff-format on each commit
 ```
 
 Config in `pyproject.toml`: line-length 100, target Python 3.11, rule selection `E,W,F,I,B,UP,C4,SIM`.
