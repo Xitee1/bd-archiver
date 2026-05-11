@@ -2,10 +2,9 @@
 
 Archive data to Blu-ray discs with `dar` + `par2`.
 
-Five subcommands form a build-then-burn pipeline:
+Four subcommands form a build-then-burn pipeline:
 
 - `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. No burning.
-- `estimate` — Preview disc count and per-disc fill without running dar/par2.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
 - `verify`   — Check disc / directory / ISO integrity (SHA-512 + PAR2). Exit code reflects state.
 - `extract`  — Restore archive from discs with auto-repair via PAR2.
@@ -57,23 +56,17 @@ bd-archive create -s /path/to/source -n my-archive -o /path/to/output [options]
 | `-b, --bytes`      | auto-detected     | Manual disc capacity in raw bytes |
 | `-c, --compression`| `zstd`            | `zstd`, `lzma`, `lz4`, `gzip`, `bzip2`, `none` |
 | `-l, --level`      | —                 | Compression level |
+| `--ratio`          | —                 | Manual compression ratio for the disc-count preview (1.0 = none, 0.5 = 50% reduction). Mutually exclusive with `--sample`. |
+| `--sample <path>`  | —                 | Run dar on this subset with `-c/-l` and use the measured ratio for the preview. Mutually exclusive with `--ratio`. |
+| `-y, --yes`        | off               | Skip the pre-archive confirmation prompt. |
+
+`create` prints a disc-count + last-disc-fill preview and asks for confirmation before running. Pass `-y` to skip the prompt for scripts.
 
 After completion, ISOs sit in `<output>/images/disc_NNNN.iso`. Verify them before burning:
 
 ```bash
 bd-archive verify <output>/images/disc_0001.iso
 ```
-
-### estimate
-
-```bash
-bd-archive estimate -s /path/to/source [-D /dev/sr0 | -b BYTES] [options]
-```
-
-Compression ratio source (mutually exclusive):
-- `--sample <path>`  — Run dar on a subset, measure actual ratio (most accurate).
-- `--ratio <float>`  — Manually supplied ratio (`1.0` = no compression, `0.5` = 50% reduction).
-- *neither*          — Defaults to `1.0` (worst case).
 
 ### burn
 
@@ -149,7 +142,6 @@ src/bd_archive/
 │   └── verify.py       # verify_disc()
 └── commands/           # one file per subcommand
     ├── create.py
-    ├── estimate.py
     ├── burn.py
     ├── verify.py
     └── extract.py
