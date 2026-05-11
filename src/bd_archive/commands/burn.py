@@ -127,9 +127,7 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
                 for h in holders:
                     log.info(f"  {h}")
             else:
-                log.info(
-                    "Common culprits: MakeMKV, K3b, Brasero, or a desktop auto-mount probe."
-                )
+                log.info("Common culprits: MakeMKV, K3b, Brasero, or a desktop auto-mount probe.")
             resp = input(
                 "\033[1;33mClose the program, then press Enter to retry (q = cancel): \033[0m"
             )
