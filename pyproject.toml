@@ -7,6 +7,7 @@ name = "bd-archive"
 dynamic = ["version"]
 description = "Archive data to Blu-ray discs with dar + par2"
 requires-python = ">=3.11"
+dependencies = ["argcomplete>=3.0"]
 
 [project.scripts]
 bd-archive = "bd_archive.cli:main"
