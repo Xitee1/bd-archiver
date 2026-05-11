@@ -9,7 +9,7 @@ Four subcommands form a build-then-burn pipeline:
 - `verify`   — Check disc / directory / ISO integrity (SHA-512 + PAR2). Exit code reflects state.
 - `extract`  — Restore archive from discs with auto-repair via PAR2.
 
-Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used silently, multiple drives trigger a picker, and no drives is an error. Pass `-D /dev/srN` to override.
+Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
 
 ## Installation
 
