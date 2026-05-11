@@ -1,5 +1,12 @@
+import signal
 import subprocess
+import time
 from pathlib import Path
+
+# Window during which a second Ctrl+C is treated as a confirmed force-abort.
+# 5s is long enough for a deliberate double-press but short enough that an
+# accidental Ctrl+C plus a later real one don't compound.
+BURN_ABORT_GRACE_S = 5.0
 
 
 class DeviceBusyError(Exception):
@@ -26,23 +33,74 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
     (some drives physically pop the tray, requiring re-insert
     before verify can run).
 
+    Ctrl+C during a burn would coaster a BD-R, so we trap SIGINT
+    here: first press warns; a second press within BURN_ABORT_GRACE_S
+    terminates growisofs and raises KeyboardInterrupt. growisofs runs
+    in its own session (start_new_session=True) so it does NOT get
+    SIGINT from the user's tty — only we decide when it dies.
+
     Raises DeviceBusyError if growisofs reports the sg device is
-    locked; CalledProcessError on any other non-zero exit.
+    locked; CalledProcessError on any other non-zero exit;
+    KeyboardInterrupt if the user confirmed a mid-burn abort.
     """
     cmd = ["growisofs", "-use-the-force-luke=notray", "-dvd-compat", "-Z", f"{device}={iso_path}"]
     if speed:
         cmd += [f"-speed={speed}"]
 
-    # Stream output while watching for the "device busy" marker so
-    # the caller can retry without re-running the whole script.
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    assert proc.stdout is not None
-    sg_locked = False
-    for line in proc.stdout:
-        print(f"  [burn] {line}", end="")
-        if "failed to grab associated sg device" in line:
-            sg_locked = True
-    proc.wait()
+    # start_new_session=True isolates growisofs from the user's SIGINT
+    # so the burn only dies when WE call terminate() — see handler below.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+
+    state = {"first_press_at": None, "aborted": False}
+
+    def handler(_signum, _frame):
+        now = time.monotonic()
+        prev = state["first_press_at"]
+        if prev is not None and now - prev <= BURN_ABORT_GRACE_S:
+            # Confirmed force-abort.
+            print()
+            print(
+                "  [burn] Aborting growisofs — this disc will be unusable.",
+                flush=True,
+            )
+            state["aborted"] = True
+            proc.terminate()
+            return
+        state["first_press_at"] = now
+        print()
+        print(
+            "  [burn] Burn in progress — Ctrl+C ignored to protect the disc.",
+            flush=True,
+        )
+        print(
+            f"  [burn] Press Ctrl+C again within {int(BURN_ABORT_GRACE_S)}s "
+            f"to force-abort and waste this disc.",
+            flush=True,
+        )
+
+    prev_handler = signal.signal(signal.SIGINT, handler)
+    try:
+        assert proc.stdout is not None
+        sg_locked = False
+        for line in proc.stdout:
+            print(f"  [burn] {line}", end="")
+            if "failed to grab associated sg device" in line:
+                sg_locked = True
+        proc.wait()
+    finally:
+        signal.signal(signal.SIGINT, prev_handler)
+
+    if state["aborted"]:
+        # User confirmed mid-burn cancel: surface as KeyboardInterrupt so
+        # cmd_burn's per-disc handler prints the resume hint and the
+        # top-level handler exits 130.
+        raise KeyboardInterrupt
     if proc.returncode != 0:
         if sg_locked:
             raise DeviceBusyError(device)
