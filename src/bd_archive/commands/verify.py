@@ -8,13 +8,14 @@ from bd_archive.archive.disc import DiscIO
 from bd_archive.archive.verify import verify_disc
 from bd_archive.shell.deps import check_deps
 from bd_archive.tools import udisks
+from bd_archive.tools.optical import resolve_device
 from bd_archive.tools.par2 import VerifyResult
 from bd_archive.ui.logger import log
 
 
 def cmd_verify(args):
     check_deps("par2")
-    target = Path(args.target)
+    target = Path(resolve_device(None)) if args.target is None else Path(args.target)
 
     if target.is_file() and target.suffix.lower() == ".iso":
         # Loop-mount the ISO via udisksctl (no privileges needed),

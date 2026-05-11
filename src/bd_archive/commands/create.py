@@ -18,6 +18,7 @@ from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import mkisofs
 from bd_archive.tools.mediainfo import detect_disc_capacity
+from bd_archive.tools.optical import resolve_device
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
 
@@ -43,9 +44,10 @@ def cmd_create(args):
         raw_capacity = args.bytes
         log.info(f"Using manual capacity: {human_bytes(raw_capacity)}")
     else:
-        raw_capacity = detect_disc_capacity(args.device)
+        device = resolve_device(args.device)
+        raw_capacity = detect_disc_capacity(device)
         if raw_capacity is None:
-            log.error(f"No disc detected at {args.device}.")
+            log.error(f"No disc detected at {device}.")
             log.info("Insert a blank disc, or specify capacity manually with -b/--bytes <int>.")
             sys.exit(1)
         log.info(f"Detected {human_bytes(raw_capacity)} writable, sizing ISOs accordingly")

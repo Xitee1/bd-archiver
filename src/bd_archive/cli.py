@@ -37,8 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument(
         "-D",
         "--device",
-        default="/dev/sr0",
-        help="Optical drive for capacity detection (default: /dev/sr0)",
+        default=None,
+        help="Optical drive for capacity detection (auto-detected if omitted)",
     )
     cr.add_argument(
         "-b",
@@ -85,7 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Input directory from create step (contains images/disc_*.iso)",
     )
     bu.add_argument(
-        "-D", "--device", default="/dev/sr0", help="Optical drive device (default: /dev/sr0)"
+        "-D",
+        "--device",
+        default=None,
+        help="Optical drive device (auto-detected if omitted)",
     )
     bu.add_argument(
         "-S",
@@ -101,14 +104,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── verify ──────────────────────────────────────────────────────────
     sub.add_parser("verify", help="Check disc integrity").add_argument(
-        "target", help="Mount point, directory, or block device"
+        "target",
+        nargs="?",
+        default=None,
+        help="Mount point, directory, block device, or ISO file "
+        "(auto-detects an optical drive if omitted)",
     )
 
     # ── extract ─────────────────────────────────────────────────────────
     ex = sub.add_parser("extract", help="Restore archive from discs")
     ex.add_argument("-o", "--output", required=True, help="Output directory")
     ex.add_argument(
-        "-D", "--device", default="/dev/sr0", help="Optical drive device (default: /dev/sr0)"
+        "-D",
+        "--device",
+        default=None,
+        help="Optical drive device (auto-detected if omitted)",
     )
     ex.add_argument(
         "-w",

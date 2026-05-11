@@ -9,6 +9,7 @@ from bd_archive.archive.disc import DiscIO
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import dar, par2
+from bd_archive.tools.optical import resolve_device
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
 from bd_archive.ui.logger import log
 from bd_archive.ui.progress import Progress, copy_with_progress
@@ -139,10 +140,11 @@ def cmd_extract(args):
     staging = work_dir / "slices"
     staging.mkdir(parents=True, exist_ok=True)
 
-    dio = DiscIO(args.device)
+    device = resolve_device(args.device)
+    dio = DiscIO(device)
 
     log.step("Restore archive from discs")
-    log.info(f"Device:   {args.device}")
+    log.info(f"Device:   {device}")
     log.info(f"Output:   {output_dir}")
     log.info(f"Staging:  {staging}")
 

@@ -12,6 +12,7 @@ from bd_archive.shell.format import human_bytes
 from bd_archive.tools.growisofs import DeviceBusyError
 from bd_archive.tools.lsof import find_device_holders
 from bd_archive.tools.mediainfo import detect_disc_capacity
+from bd_archive.tools.optical import resolve_device
 from bd_archive.tools.par2 import VerifyResult
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_disc
@@ -40,11 +41,12 @@ def cmd_burn(args):
         log.error(f"--start must be between 1 and {disc_count}")
         sys.exit(1)
 
-    dio = DiscIO(args.device)
+    device = resolve_device(args.device)
+    dio = DiscIO(device)
 
     log.step("Burn disc images")
     log.info(f"Discs:    {disc_count}")
-    log.info(f"Device:   {args.device}")
+    log.info(f"Device:   {device}")
     if start > 1:
         log.info(f"Resuming from disc {start}")
 
@@ -82,13 +84,13 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
     iso_size = iso.stat().st_size
     log.info(f"ISO: {iso.name} ({human_bytes(iso_size)})")
 
-    prompt_disc(f"Insert blank disc {i}/{disc_count}", args.device)
+    prompt_disc(f"Insert blank disc {i}/{disc_count}", dio.device)
 
     # Pre-burn fit check — iso_size is the exact byte count growisofs
     # will write. detect_disc_capacity returns the format-aware
     # writable extent.
     if not args.skip_fit_check:
-        actual = detect_disc_capacity(args.device)
+        actual = detect_disc_capacity(dio.device)
         if actual is None:
             log.warn("Could not detect disc capacity — skipping fit check")
         elif actual < iso_size:
@@ -116,12 +118,12 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
             break
         except DeviceBusyError:
             log.error(
-                f"Optical device {args.device} is locked by "
+                f"Optical device {dio.device} is locked by "
                 f"another process (growisofs couldn't grab "
                 f"the associated sg device)."
             )
-            sg = find_sg_device(args.device)
-            holders = find_device_holders(args.device, sg)
+            sg = find_sg_device(dio.device)
+            holders = find_device_holders(dio.device, sg)
             if holders:
                 log.info("Holding processes:")
                 for h in holders:

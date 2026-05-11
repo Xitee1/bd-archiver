@@ -19,11 +19,13 @@ PYTHONPATH=src python3 -m bd_archive ...
 ```
 
 ```bash
-bd-archive create   -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/sr0] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [-y]
-bd-archive burn     -i <input> [-D /dev/sr0] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
-bd-archive verify   <mountpoint|dir|/dev/sr0|*.iso>
-bd-archive extract  -o <output> [-D /dev/sr0] [-w <workdir>]
+bd-archive create   -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [-y]
+bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
+bd-archive verify   [<mountpoint|dir|/dev/srN|*.iso>]
+bd-archive extract  -o <output> [-D /dev/srN] [-w <workdir>]
 ```
+
+`-D/--device` is optional everywhere. Omitting it triggers auto-detection via `tools.optical.resolve_device`: scans `/sys/block/sr*`, uses the only drive if there's one, prompts the user if there are multiple, errors out if none. Same for the positional `target` of `verify` — leave it off and the disc in the auto-detected drive is verified.
 
 `-w/--workdir` is optional for `create` and `extract` — it defaults to `<output>/.bd-archive-work/` (hidden, auto-removed on success). Override only when you want scratch on tmpfs/RAM. `burn` reads ISOs from `-i <input>` (the directory `create` wrote to) and has no separate workdir.
 
@@ -48,6 +50,7 @@ src/bd_archive/
 │   ├── udisks.py       # udisksctl mount/unmount/loop-setup/loop-delete
 │   ├── eject.py        # eject
 │   ├── mediainfo.py    # detect_disc_capacity (dvd+rw-mediainfo)
+│   ├── optical.py      # list_drives + resolve_device (sysfs sr* enum, picker)
 │   └── lsof.py         # find_device_holders
 ├── archive/            # domain logic over tools/
 │   ├── checksums.py    # sha512 verify (verify_dar_hashes bulk, verify_slice per-file)
