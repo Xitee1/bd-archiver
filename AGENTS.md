@@ -19,8 +19,7 @@ PYTHONPATH=src python3 -m bd_archive ...
 ```
 
 ```bash
-bd-archive create   -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/sr0] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>]
-bd-archive estimate -s <source> [-D /dev/sr0] [-b BYTES] [-r %] [--ratio <float> | --sample <path> [-c <algo>] [-l <level>]]
+bd-archive create   -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/sr0] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>] [--ratio R | --sample <path>] [-y]
 bd-archive burn     -i <input> [-D /dev/sr0] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
 bd-archive verify   <mountpoint|dir|/dev/sr0|*.iso>
 bd-archive extract  -o <output> [-D /dev/sr0] [-w <workdir>]
@@ -60,7 +59,6 @@ src/bd_archive/
 │   └── verify.py       # verify_disc()
 └── commands/           # one file per subcommand
     ├── create.py
-    ├── estimate.py
     ├── burn.py
     ├── verify.py
     └── extract.py
@@ -70,15 +68,14 @@ Layering: `commands/` → `archive/` → `tools/` → `shell/`. Lower layers nev
 
 ## Architecture (v5: build-then-burn separation)
 
-Four subcommands form a pipeline; `estimate` is a side-tool that previews the same math without running anything.
+Four subcommands form a pipeline. `create` previews disc count + last-disc fill before prompting for confirmation, so users can dry-run sizing without committing.
 
-1. **`create`** (`commands/create.py`) reads disc capacity via `tools.mediainfo.detect_disc_capacity` (or `args.bytes`), runs `tools.dar.create_sliced` with `--hash sha512 --min-digits 4` to slice the source into per-disc-sized `.dar` files in `<workdir>/tmp/`. par2 is generated **inline** via dar's `-E` hook (`bd_archive._par2_helper`) — the hook fires after each slice is fully written, so par2 reads the slice while it is still hot in the OS page cache, eliminating most SSD read traffic of the create phase. After dar completes, the catalog is isolated. For each slice in order: regenerate `README.txt` with the right disc number and call `tools.mkisofs.build` (mkisofs `-iso-level 3 -udf -graft-points`) to assemble `<output>/images/disc_NNNN.iso` directly from in-place files (no staging copies). The ISO file size is checked against the format-aware writable capacity as a hard limit. Phase 3 also asserts par2 files are present on disk — a missing file means the `-E` helper silently failed during dar create. After each ISO is built, the slice + par2 are deleted from `tmp/`; once all slices are processed, `tmp/` is wiped entirely. If `-w` was not supplied, the default `<output>/.bd-archive-work/` is also removed, so `<output>` ends up containing only `images/disc_*.iso`.
+1. **`create`** (`commands/create.py`) Reads disc capacity, scans the source, computes slice sizing and a disc-count estimate (optionally measuring the compression ratio via `--sample`), then prompts the user via `prompt_yn` before any heavy work begins (skip with `-y`). Reads disc capacity via `tools.mediainfo.detect_disc_capacity` (or `args.bytes`), runs `tools.dar.create_sliced` with `--hash sha512 --min-digits 4` to slice the source into per-disc-sized `.dar` files in `<workdir>/tmp/`. par2 is generated **inline** via dar's `-E` hook (`bd_archive._par2_helper`) — the hook fires after each slice is fully written, so par2 reads the slice while it is still hot in the OS page cache, eliminating most SSD read traffic of the create phase. After dar completes, the catalog is isolated. For each slice in order: regenerate `README.txt` with the right disc number and call `tools.mkisofs.build` (mkisofs `-iso-level 3 -udf -graft-points`) to assemble `<output>/images/disc_NNNN.iso` directly from in-place files (no staging copies). The ISO file size is checked against the format-aware writable capacity as a hard limit. Phase 3 also asserts par2 files are present on disk — a missing file means the `-E` helper silently failed during dar create. After each ISO is built, the slice + par2 are deleted from `tmp/`; once all slices are processed, `tmp/` is wiped entirely. If `-w` was not supplied, the default `<output>/.bd-archive-work/` is also removed, so `<output>` ends up containing only `images/disc_*.iso`.
 2. **`burn`** (`commands/burn.py`) iterates `<input>/images/disc_*.iso` lexically and burns each via `growisofs -dvd-compat -Z dev=image.iso` — a byte-for-byte ISO write, no on-the-fly mkisofs, so what's in the ISO file is exactly what ends up on disc. Volume label, publisher, file layout are all already in the file. Pre-burn fit check compares `iso_size` to `detect_disc_capacity` of the inserted blank. Resumable via `--start N`. Catches `DeviceBusyError` from `tools/growisofs.py` to retry when the sg device is locked by another process.
 3. **`verify`** (`commands/verify.py`) dispatches on target type: block device → mount; directory → check directly; **`.iso` file → loop-mount via `tools.udisks.loop_setup` + check + tear down**. The ISO branch makes pre-burn dry-run trivial: run `create`, then `verify images/disc_0001.iso` to confirm the image is internally consistent before touching media.
 4. **`extract`** (`commands/extract.py`) prompts for each disc, copies slice + sha512 sidecar (and the catalog on its first intact arrival) to staging in a single disc-read pass — par2 is **not** copied — then ejects. Verifies the staged slice via SHA-512 on local disk. On corruption, prompts to re-insert the disc, fetches just the par2 files for the affected slice, runs `par2 repair`, re-verifies. If par2 cannot recover, the slice is kept as-is and the affected disc is recorded — no prompt, no abort. Once all discs are processed, runs `tools.dar.extract_sequential`, which captures dar's per-file `Bad CRC` lines (dar 2.7 exits 0 even on corruption, so output parsing is the only reliable signal). If anything went sideways, writes `<output>/corrupted-files.txt` listing affected files plus unrepairable slices, and `cmd_extract` exits with code 1 so scripts can detect a non-clean restore. The output dir still contains whatever dar managed to extract — best-effort, never silently corrupt.
 
 **SSD-friendly tip:** pass `-w /dev/shm/bd-extract` (or any tmpfs path) to keep the staging copy in RAM. On a 25 GB-slice + 32 GB-RAM box this means **zero SSD writes for slice payload** during extract. Falls back to SSD staging automatically if `-w` is not given.
-5. **`estimate`** (`commands/estimate.py`) walks the source and applies the same `archive.sizing.compute_slice_bytes` math as `create` to predict disc count and last-disc fill, without invoking dar/par2/mkisofs. Compression ratio comes from one of three sources: `--sample <path>` runs dar on a representative subset and measures the actual ratio; `--ratio <float>` is a manual override; otherwise 1.0 (worst case).
 
 The build-then-burn separation makes mid-burn sizing failures **constructively impossible**: the ISO exists and is size-checked before any drive is touched. `burn` is a pure file-to-device copy.
 
