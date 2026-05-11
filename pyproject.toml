@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 bd-archive = "bd_archive.cli:main"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.4"]
+dev = ["ruff>=0.4", "pre-commit>=3.7"]
 
 [tool.hatch.version]
 path = "src/bd_archive/__init__.py"
