@@ -21,7 +21,7 @@ DISC_END_MARGIN = 1 * MiB
 
 # Seconds to wait for a freshly burned disc to become mountable before
 # giving up (drive needs to finalise + re-read TOC).
-POST_BURN_MOUNT_TIMEOUT = 30
+POST_BURN_MOUNT_TIMEOUT = 60
 
 # ISO9660 caps the Primary Volume Descriptor's Volume Identifier at 32
 # bytes. mkisofs/growisofs reject longer labels outright. Volume labels
