@@ -62,7 +62,7 @@ src/bd_archive/
 │   ├── optical.py      # list_drives + resolve_device (sysfs sr* enum, interactive picker)
 │   └── lsof.py         # find_device_holders (optional — no-op if lsof absent)
 ├── archive/            # domain logic over tools/
-│   ├── checksums.py    # sha512 verify (verify_dar_hashes bulk, verify_slice per-file)
+│   ├── checksums.py    # sha512 verify (verify_slice per-file, used by extract on staging)
 │   ├── config.py       # ArchiveConfig, write_readme
 │   ├── dar_archive.py  # DarArchive (slices, catalog, work-dir layout)
 │   ├── disc.py         # DiscIO (mount/mount_with_retry/umount/eject/close_tray_if_open/burn) + find_sg_device
@@ -91,7 +91,7 @@ Four subcommands form a pipeline. `create` previews disc count + last-disc fill 
 
 The build-then-burn separation makes mid-burn sizing failures **constructively impossible**: the ISO exists and is size-checked before any drive is touched. `burn` is a pure file-to-device copy.
 
-`archive/verify.py:verify_disc` is shared between standalone `verify` (block device / dir / ISO file) and the post-burn check inside `burn`. `extract` does not use it: it goes per-slice via `archive/checksums.py:verify_slice` (sha512 on staging) and reaches for `tools.par2` only when a slice fails — this avoids reading the disc multiple times and surfaces *which* slice is damaged, not just whether the disc as a whole is repairable.
+`archive/verify.py:verify_disc` is shared between standalone `verify` (block device / dir / ISO file) and the post-burn check inside `burn`. It is **par2-only**: par2 is self-verifying (each packet carries an MD5), so a single par2 pass catches both slice corruption and damage to the par2 files themselves — running sha512 alongside it would just double the disc-read time without expanding coverage. The `.sha512` sidecars dar emits stay on disc; they're used by `extract`, which goes per-slice via `archive/checksums.py:verify_slice` (sha512 on local staging) and reaches for `tools.par2` only when a slice fails — this avoids reading the disc multiple times and surfaces *which* slice is damaged, not just whether the disc as a whole is repairable.
 
 ### Slice sizing (`archive/sizing.py`)
 

@@ -6,7 +6,7 @@ Four subcommands form a build-then-burn pipeline:
 
 - `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. No burning.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
-- `verify`   — Check disc / directory / ISO integrity (SHA-512 + PAR2). Exit code reflects state.
+- `verify`   — Check disc / directory / ISO integrity via PAR2. Exit code reflects state.
 - `extract`  — Restore archive from discs with auto-repair via PAR2.
 
 Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
