@@ -52,7 +52,7 @@ bd-archive create -s /path/to/source -n my-archive -o /path/to/output [options]
 | `-o, --output`     | required          | Output directory for ISO images |
 | `-w, --workdir`    | `<output>/.bd-archive-work/` | Scratch dir for transient build files (dar slices, par2). Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
 | `-r, --redundancy` | `5`               | PAR2 redundancy in % |
-| `-D, --device`     | `/dev/sr0`        | Optical drive used for capacity detection |
+| `-D, --device`     | auto-detect       | Optical drive used for capacity detection. Auto-picks the only drive present; prompts if multiple. |
 | `-b, --bytes`      | auto-detected     | Manual disc capacity in raw bytes |
 | `-c, --compression`| `zstd`            | `zstd`, `lzma`, `lz4`, `gzip`, `bzip2`, `none` |
 | `-l, --level`      | —                 | Compression level |
@@ -77,7 +77,7 @@ bd-archive burn -i /path/to/input [options]
 | Flag | Default | Description |
 |---|---|---|
 | `-i, --input`        | required        | Directory `create` wrote to (contains `images/disc_*.iso`) |
-| `-D, --device`       | `/dev/sr0`      | Optical drive |
+| `-D, --device`       | auto-detect     | Optical drive. Auto-picks the only drive present; prompts if multiple. |
 | `-S, --speed`        | drive max       | BD speed multiplier (e.g. `2`, `4`, `6`; 1× ≈ 4.5 MB/s) |
 | `--start N`          | `1`             | Resume from disc N |
 | `--no-verify`        | off             | Skip post-burn verification |
@@ -88,10 +88,11 @@ If burning fails on disc N, resume with `--start N` after fixing the issue.
 ### verify
 
 ```bash
-bd-archive verify <target>
+bd-archive verify [target]
 ```
 
-`<target>` is one of:
+`[target]` is optional and may be:
+- Omitted — auto-detect an optical drive (prompts if multiple)
 - A mountpoint directory (already-mounted disc or extracted slices)
 - A block device (e.g. `/dev/sr0`) — mounted automatically
 - An `.iso` file — loop-mounted via `udisksctl`
@@ -101,13 +102,13 @@ Exit codes: `0` OK, `1` repairable, `2` broken.
 ### extract
 
 ```bash
-bd-archive extract -o /path/to/output [-D /dev/sr0] [-w /path/to/workdir]
+bd-archive extract -o /path/to/output [-D /dev/srN] [-w /path/to/workdir]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `-o, --output`   | required                       | Where extracted files land |
-| `-D, --device`   | `/dev/sr0`                     | Optical drive |
+| `-D, --device`   | auto-detect                    | Optical drive. Auto-picks the only drive present; prompts if multiple. |
 | `-w, --workdir`  | `<output>/.bd-archive-work/`   | Staging dir for slices. Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
 
 Per-disc flow: copy slice + sha512 sidecar to staging in a single read pass, eject, then verify via SHA-512 on the local copy. PAR2 files are **not** copied unless a slice fails verification — at which point the disc is re-mounted, just the par2 for the affected slice is fetched, and `par2 repair` runs in staging. Once all discs are processed, `dar --sequential-read` does the final extraction; missing slices auto-skip rather than aborting the whole restore.
@@ -131,6 +132,7 @@ src/bd_archive/
 │   ├── udisks.py       # udisksctl mount/loop-setup
 │   ├── eject.py
 │   ├── mediainfo.py    # dvd+rw-mediainfo capacity detection
+│   ├── optical.py      # list_drives + resolve_device (auto-detect / prompt)
 │   └── lsof.py         # find_device_holders
 ├── archive/            # domain logic over tools/
 │   ├── checksums.py    # SHA-512 verification
