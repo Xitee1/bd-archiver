@@ -3,7 +3,6 @@ import argparse
 from bd_archive import __version__
 from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
-from bd_archive.commands.estimate import cmd_estimate
 from bd_archive.commands.extract import cmd_extract
 from bd_archive.commands.verify import cmd_verify
 from bd_archive.ui.logger import Logger
@@ -58,36 +57,6 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument("-y", "--yes", action="store_true",
                     help="Skip the pre-archive confirmation prompt")
 
-    # ── estimate ────────────────────────────────────────────────────────
-    es = sub.add_parser("estimate",
-                        help="Estimate disc count + last-disc headroom")
-    es.add_argument("-s", "--source", required=True,
-                    help="Source directory")
-    es.add_argument("-r", "--redundancy", type=int, default=5,
-                    help="PAR2 redundancy in %% (default: 5)")
-    es.add_argument("-D", "--device", default="/dev/sr0",
-                    help="Optical drive for capacity detection "
-                         "(default: /dev/sr0)")
-    es.add_argument("-b", "--bytes", type=int, default=None,
-                    help="Manual disc capacity in raw bytes "
-                         "(overrides detection)")
-    ratio_group = es.add_mutually_exclusive_group()
-    ratio_group.add_argument("--ratio", type=float, default=None,
-                             help="Manual compression ratio "
-                                  "(1.0 = none, 0.5 = 50%% reduction). "
-                                  "Default: 1.0 if --sample also omitted")
-    ratio_group.add_argument("--sample", default=None,
-                             help="Run dar on this directory with -c/-l "
-                                  "and use the measured output/input ratio")
-    es.add_argument("-c", "--compression", default="zstd",
-                    choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
-                    help="Compression algorithm for --sample (default: zstd)")
-    es.add_argument("-l", "--level",
-                    help="Compression level for --sample")
-    es.add_argument("-w", "--workdir", default=None,
-                    help="Directory for sample tempdir "
-                         "(default: $TMPDIR or /tmp — may be tmpfs/RAM)")
-
     # ── burn ────────────────────────────────────────────────────────────
     bu = sub.add_parser("burn",
                         help="Burn staged discs (resumable)")
@@ -134,7 +103,6 @@ def main():
 
     match args.command:
         case "create":   cmd_create(args)
-        case "estimate": cmd_estimate(args)
         case "burn":     cmd_burn(args)
         case "verify":   cmd_verify(args)
         case "extract":  cmd_extract(args)
