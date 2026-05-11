@@ -7,7 +7,7 @@ from pathlib import Path
 from bd_archive import __version__
 from bd_archive.archive.config import ArchiveConfig, write_readme
 from bd_archive.archive.dar_archive import DarArchive
-from bd_archive.archive.sizing import compute_slice_bytes
+from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
 from bd_archive.archive.source_scan import scan_source
 from bd_archive.constants import (
     DISC_END_MARGIN,
@@ -19,6 +19,7 @@ from bd_archive.shell.format import human_bytes
 from bd_archive.tools import mkisofs
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.ui.logger import log
+from bd_archive.ui.prompts import prompt_yn
 
 
 def cmd_create(args):
@@ -35,16 +36,6 @@ def cmd_create(args):
     if not source.is_dir():
         log.error(f"Does not exist: {source}")
         sys.exit(1)
-
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    images_dir = output_dir / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-
-    workdir_is_default = args.workdir is None
-    work_dir = (Path(args.workdir) if args.workdir
-                else output_dir / ".bd-archive-work")
-    work_dir.mkdir(parents=True, exist_ok=True)
 
     if args.bytes is not None:
         raw_capacity = args.bytes
@@ -77,6 +68,47 @@ def cmd_create(args):
                   f"exceeds disc capacity ({human_bytes(raw_capacity)})")
         sys.exit(1)
 
+    # Workdir must exist before --sample so the sample tempdir lives
+    # in the user-chosen location (e.g. tmpfs). Default-pathed workdir
+    # also implies output_dir/images_dir creation here, since the
+    # default workdir lives inside output_dir.
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = output_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    workdir_is_default = args.workdir is None
+    work_dir = (Path(args.workdir) if args.workdir
+                else output_dir / ".bd-archive-work")
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Compression-ratio preview ───────────────────────────────────────
+    if args.sample:
+        ratio = measure_compression_ratio(
+            Path(args.sample).resolve(), args.compression, args.level,
+            work_dir)
+        ratio_source = f"measured from {args.sample}"
+    elif args.ratio is not None:
+        ratio = args.ratio
+        ratio_source = "manual"
+    else:
+        ratio = 1.0
+        ratio_source = "default (no compression assumed)"
+
+    archive_est = int(scan.total_bytes * ratio)
+    n_discs = max(1, (archive_est + slice_bytes - 1) // slice_bytes)
+    last_slice = archive_est - (n_discs - 1) * slice_bytes
+    if last_slice == 0:
+        last_slice = slice_bytes
+    last_disc_content = (
+        last_slice
+        + last_slice * args.redundancy // 100
+        + scan.catalog_est
+        + PAR2_AND_MISC_OVERHEAD
+    )
+    last_disc_free = max(0, sizing_target - last_disc_content)
+    last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))
+
     par2_est = slice_bytes * args.redundancy // 100
     cfg = ArchiveConfig(
         name=args.name,
@@ -86,17 +118,46 @@ def cmd_create(args):
         comp_level=args.level,
     )
 
+    log.step("Source")
+    log.info(f"Path:             {source}")
+    log.info(f"Size:             {human_bytes(scan.total_bytes)} "
+             f"({scan.entry_count} entries)")
+    log.info(f"Catalog:          ~{human_bytes(scan.catalog_est)} (estimated)")
+
+    log.step("Disc layout")
+    log.info(f"Disc capacity:    {human_bytes(raw_capacity)} (writable)")
+    log.info(f"Slice size:       {human_bytes(slice_bytes)}")
+    log.info(f"PAR2 redundancy:  {cfg.redundancy}% (~{human_bytes(par2_est)})")
+    log.info(f"Compression:      {cfg.comp_str} (ratio {ratio:.3f}, "
+             f"{ratio_source})")
+    log.info(f"Estimated archive: {human_bytes(archive_est)}")
+
+    log.step("Estimate")
+    fill_pct = last_disc_content * 100 // sizing_target
+    log.info(f"Discs needed:     {n_discs}")
+    log.info(f"Last disc fill:   {human_bytes(last_disc_content)} / "
+             f"{human_bytes(sizing_target)}  ({fill_pct}%)")
+    log.info(f"Free on last:     {human_bytes(last_disc_free)} archive")
+    if abs(ratio - 1.0) > 0.001:
+        log.info(f"                  ~{human_bytes(last_disc_free_raw)} raw "
+                 f"(at ratio {ratio:.3f})")
+
     log.step("Configuration")
-    log.info(f"Disc capacity: {human_bytes(raw_capacity)} (writable)")
-    log.info(f"Slice size:    {human_bytes(slice_bytes)}")
-    log.info(f"PAR2:          {cfg.redundancy}% (~{human_bytes(par2_est)})")
-    log.info(f"Catalog:       ~{human_bytes(scan.catalog_est)} "
-             f"({scan.entry_count} entries, estimated)")
-    log.info(f"Compression:   {cfg.comp_str}")
     log.info(f"Source:        {source}")
     log.info(f"Output:        {output_dir}")
     log.info(f"Workdir:       {work_dir}"
              f"{' (default)' if workdir_is_default else ' (custom)'}")
+
+    if not args.yes and not prompt_yn("Proceed with creation?"):
+        log.warn("Cancelled by user")
+        if workdir_is_default:
+            with contextlib.suppress(OSError):
+                work_dir.rmdir()
+            with contextlib.suppress(OSError):
+                images_dir.rmdir()
+            with contextlib.suppress(OSError):
+                output_dir.rmdir()
+        sys.exit(0)
 
     dar_archive = DarArchive(cfg.name, work_dir)
     tmp_dir = dar_archive.tmp_dir
