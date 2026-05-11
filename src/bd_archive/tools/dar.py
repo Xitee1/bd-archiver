@@ -1,8 +1,17 @@
+import re
 import subprocess
 import threading
 from pathlib import Path
 
 from bd_archive.shell.runner import run
+
+# dar 2.7 prints "Error while restoring <path> : Bad CRC, data corruption
+# occurred" when a file's per-file CRC fails during extract. dar logs this
+# and **continues**, writing the partial/corrupt bytes to disk and exiting
+# with code 0 anyway — so we cannot rely on the exit code to detect
+# corruption. We parse the message instead.
+_BAD_CRC_RE = re.compile(
+    r"Error while restoring (.+?) : Bad CRC")
 
 
 def create_sliced(base_path: Path, source: Path, slice_bytes: int,
@@ -40,7 +49,8 @@ def compress(archive_path: Path, source: Path,
 
 
 def extract_sequential(base_path: Path, output_dir: Path,
-                       catalog_base: Path | None = None) -> int:
+                       catalog_base: Path | None = None,
+                       ) -> tuple[int, list[str]]:
     """Extract a dar archive with --sequential-read.
 
     Feeds ESC bytes on stdin in a background thread so dar's
@@ -49,7 +59,11 @@ def extract_sequential(base_path: Path, output_dir: Path,
     With a complete slice set, no prompts fire and the ESC stream
     goes unused.
 
-    Returns dar's exit code.
+    Returns (exit_code, corrupted_files). corrupted_files contains
+    the paths dar reported as "Bad CRC" during extract — these
+    files were (partially) written to output and need attention.
+    dar 2.7 exits with code 0 even when CRC errors occurred, so
+    the caller must check this list, not just the exit code.
     """
     cmd = ["dar", "-x", str(base_path), "-R", str(output_dir),
            "-O", "--sequential-read"]
@@ -74,7 +88,11 @@ def extract_sequential(base_path: Path, output_dir: Path,
             pass
 
     threading.Thread(target=_feed_esc, daemon=True).start()
+    corrupted: list[str] = []
     for line in proc.stdout:
         print(f"  [dar] {line}", end="")
+        m = _BAD_CRC_RE.search(line)
+        if m:
+            corrupted.append(m.group(1).strip())
     proc.wait()
-    return proc.returncode
+    return proc.returncode, corrupted

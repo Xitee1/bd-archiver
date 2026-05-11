@@ -1,3 +1,4 @@
+import contextlib
 import shutil
 import sys
 import tempfile
@@ -138,6 +139,12 @@ def cmd_extract(args):
     archive_name: str | None = None
     catalog_verified = False
     disc_num = 0
+    # Slices that sha512 + par2 both failed on. Files coming from them
+    # may end up corrupt in the output — we collect this so the final
+    # corrupted-files.txt explains which disc to blame even when dar's
+    # per-file error parser couldn't pinpoint individual files (e.g.
+    # archive-metadata corruption).
+    unrepairable_slices: list[str] = []
 
     while True:
         target = disc_num + 1
@@ -169,10 +176,8 @@ def cmd_extract(args):
             log.ok(f"  {len(copied)} slice(s) staged")
         finally:
             dio.umount(mounted)
-            try:
+            with contextlib.suppress(OSError):
                 mount_dir.rmdir()
-            except OSError:
-                pass
             dio.eject()
 
         # ── 3. Verify catalog (only first time it lands intact) ──────────
@@ -207,17 +212,15 @@ def cmd_extract(args):
                 for sp in failed:
                     if _repair_slice(sp, mounted, staging):
                         continue
-                    log.error(f"  {sp.name}: unrecoverable")
-                    if not prompt_yn(f"Use {sp.name} as-is anyway?",
-                                     default_yes=False):
-                        log.info("Aborting extraction")
-                        sys.exit(1)
+                    log.error(f"  {sp.name}: unrecoverable damage")
+                    log.warn(f"  {sp.name}: keeping as-is — files from "
+                             f"this slice may be corrupt; will be listed "
+                             f"in corrupted-files.txt")
+                    unrepairable_slices.append(sp.name)
             finally:
                 dio.umount(mounted)
-                try:
+                with contextlib.suppress(OSError):
                     mount_dir.rmdir()
-                except OSError:
-                    pass
                 dio.eject()
             _cleanup_par2(staging)
 
@@ -239,13 +242,19 @@ def cmd_extract(args):
     catalog_base = staging / f"{archive_name}-catalog"
     has_catalog = any(staging.glob(f"{archive_name}-catalog.*.dar"))
 
-    rc = dar.extract_sequential(
+    rc, corrupted_files = dar.extract_sequential(
         dar_base, output_dir,
         catalog_base=catalog_base if has_catalog else None,
     )
 
-    if rc == 0:
+    if rc == 0 and not corrupted_files and not unrepairable_slices:
         log.ok("Extraction complete!")
+    elif rc == 0:
+        # dar exited cleanly but reported per-file CRC errors and/or
+        # we already know slices were unrepairable. Tell the user.
+        log.warn(f"Extraction finished with corruption: "
+                 f"{len(corrupted_files)} file(s) reported by dar, "
+                 f"{len(unrepairable_slices)} slice(s) unrepairable")
     else:
         log.error(f"dar extraction failed (exit {rc})")
         log.info(f"Slices are in: {staging}")
@@ -255,6 +264,43 @@ def cmd_extract(args):
         else:
             log.info(f"Manual: dar -x {dar_base} -R {output_dir} --sequential-read")
         sys.exit(1)
+
+    # Write corrupted-files.txt manifest into output_dir (NOT into the
+    # workdir, which may be auto-cleaned) when anything went sideways.
+    manifest_path: Path | None = None
+    if corrupted_files or unrepairable_slices:
+        manifest_path = output_dir / "corrupted-files.txt"
+        lines = [
+            "# bd-archive: corrupted-files manifest",
+            "# Files listed here are present in the output but their bytes",
+            "# could not be validated. par2 repair on the affected disc(s)",
+            "# followed by a re-run of `bd-archive extract` will overwrite",
+            "# them with intact data if the par2 recovery succeeds.",
+            "",
+        ]
+        if corrupted_files:
+            lines.append(f"## {len(corrupted_files)} file(s) reported by dar"
+                         " with bad CRC:")
+            for fp in corrupted_files:
+                try:
+                    rel = str(Path(fp).resolve().relative_to(
+                        output_dir.resolve()))
+                except ValueError:
+                    rel = fp
+                lines.append(rel)
+            lines.append("")
+        if unrepairable_slices:
+            lines.append(f"## {len(unrepairable_slices)} slice(s) failed "
+                         "sha512 + par2 repair:")
+            for sn in unrepairable_slices:
+                lines.append(sn)
+            lines.append("")
+            lines.append("# Files originating from these slices may be "
+                         "corrupt even if dar didn't report them above —")
+            lines.append("# slice-level corruption can also damage dar's "
+                         "internal metadata.")
+        manifest_path.write_text("\n".join(lines) + "\n")
+        log.warn(f"Wrote {manifest_path}")
 
     # Sum extracted size BEFORE cleaning the workdir, since the default
     # workdir lives under output_dir and we'd otherwise count its bytes.
@@ -270,6 +316,14 @@ def cmd_extract(args):
     print(f"  Discs:   {disc_num}")
     print(f"  Output:  {output_dir}")
     print(f"  Size:    {human_bytes(total)}")
+    if manifest_path is not None:
+        print(f"  CORRUPT: {manifest_path}")
     if not workdir_is_default:
         print(f"\n  Cleanup staging: rm -rf {work_dir}")
     print()
+
+    # Non-zero exit when corruption was detected so scripts know the
+    # restore was not fully clean. The output is still useful (best-
+    # effort restore), but callers should consult corrupted-files.txt.
+    if corrupted_files or unrepairable_slices:
+        sys.exit(1)
