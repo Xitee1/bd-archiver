@@ -107,3 +107,5 @@ No metadata file connects `create` to `burn`. `cmd_burn` derives disc count from
 ## Working on this project
 
 Always use the project-local venv at `.venv/` for any Python invocation — `python`, `pip`, `ruff`, `bd-archive`, etc. Activate it (`source .venv/bin/activate`) or call the binary directly (`.venv/bin/python`, `.venv/bin/ruff`, `.venv/bin/bd-archive`). Never run `pip install` or `python3` against the system interpreter. If `.venv/` does not exist, create it per the "Running" section above before doing anything else.
+
+Implementation plans under `docs/plans/` are local scratch — gitignored and never committed.
