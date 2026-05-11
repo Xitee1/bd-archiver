@@ -1,3 +1,5 @@
+import contextlib
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -14,7 +16,7 @@ from bd_archive.constants import (
 )
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
-from bd_archive.tools import mkisofs, par2
+from bd_archive.tools import mkisofs
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.ui.logger import log
 
@@ -100,8 +102,20 @@ def cmd_create(args):
     tmp_dir = dar_archive.tmp_dir
 
     # ── Create dar archive ──────────────────────────────────────────────
+    # par2 runs inline via dar's -E hook: par2 reads each slice while
+    # its bytes are still hot in the OS page cache, eliminating most
+    # SSD read traffic. Phase 3 below skips par2 and just verifies the
+    # files are present.
+    # %p/%b can contain spaces if the workdir or archive name does;
+    # dar substitutes literally before passing to /bin/sh, so we
+    # quote the macros here. %N is always digits, no quoting needed.
     log.step("Creating dar archive")
-    dar_archive.create(source, slice_bytes, cfg.compression, cfg.comp_level)
+    par2_hook = (
+        f'{shlex.quote(sys.executable)} -m bd_archive._par2_helper '
+        f'"%p" "%b" %N {cfg.redundancy}'
+    )
+    dar_archive.create(source, slice_bytes, cfg.compression,
+                       cfg.comp_level, par2_hook=par2_hook)
 
     slices = dar_archive.slices
     slice_count = len(slices)
@@ -134,10 +148,14 @@ def cmd_create(args):
         log.info(f"Disc {i}/{slice_count}: {slice_name} "
                  f"({human_bytes(slice_size)})")
 
-        # PAR2 writes recovery files alongside the slice in tmp_dir
-        log.info(f"  par2 ({cfg.redundancy}% redundancy)...")
-        par2.create(slice_file, cfg.redundancy)
+        # par2 was already produced via the -E hook during dar create
+        # (above). Verify the files are present — a missing file means
+        # the helper silently failed on this slice.
         par2_files = sorted(tmp_dir.glob(f"{slice_name}.*par2"))
+        if not par2_files:
+            log.error(f"par2 files missing for {slice_name} "
+                      f"(_par2_helper likely failed during dar create)")
+            sys.exit(1)
 
         # README, regenerated per disc with current disc_num/total
         readme_path = tmp_dir / "README.txt"
@@ -190,10 +208,8 @@ def cmd_create(args):
     # etc. exactly as configured.
     shutil.rmtree(tmp_dir)
     if workdir_is_default:
-        try:
+        with contextlib.suppress(OSError):
             work_dir.rmdir()
-        except OSError:
-            pass
 
     # ── Summary ─────────────────────────────────────────────────────────
     ratio = total_archive * 100 // max(scan.total_bytes, 1)
