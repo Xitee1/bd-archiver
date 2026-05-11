@@ -125,10 +125,24 @@ def extract_sequential(
 
     threading.Thread(target=_feed_esc, daemon=True).start()
     corrupted: list[str] = []
-    for line in proc.stdout:
-        print(f"  [dar] {line}", end="")
-        m = _BAD_CRC_RE.search(line)
-        if m:
-            corrupted.append(m.group(1).strip())
-    proc.wait()
+    try:
+        for line in proc.stdout:
+            print(f"  [dar] {line}", end="")
+            m = _BAD_CRC_RE.search(line)
+            if m:
+                corrupted.append(m.group(1).strip())
+        proc.wait()
+    except KeyboardInterrupt:
+        # dar shares our process group → SIGINT already reached it.
+        # Wait for it to die, then escalate if needed.
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        raise
     return proc.returncode, corrupted
