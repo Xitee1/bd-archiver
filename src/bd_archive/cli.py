@@ -1,5 +1,7 @@
 # PYTHON_ARGCOMPLETE_OK
 import argparse
+import subprocess
+import sys
 
 import argcomplete
 
@@ -8,7 +10,7 @@ from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
 from bd_archive.commands.verify import cmd_verify
-from bd_archive.ui.logger import Logger
+from bd_archive.ui.logger import Logger, log
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,13 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main():
-    print(f"\n{Logger._c('bold')}bd-archive{Logger._c('reset')} v{__version__}\n")
-
-    parser = build_parser()
-    argcomplete.autocomplete(parser)
-    args = parser.parse_args()
-
+def _dispatch(args):
     match args.command:
         case "create":
             cmd_create(args)
@@ -139,3 +135,38 @@ def main():
             cmd_verify(args)
         case "extract":
             cmd_extract(args)
+
+
+def main():
+    print(f"\n{Logger._c('bold')}bd-archive{Logger._c('reset')} v{__version__}\n")
+
+    parser = build_parser()
+    argcomplete.autocomplete(parser)
+    args = parser.parse_args()
+
+    try:
+        _dispatch(args)
+    except KeyboardInterrupt:
+        # Newline so the cancel message starts on a fresh line even when
+        # ^C was caught mid-progress-bar (which uses \r without \n).
+        print()
+        log.warn("Cancelled by user (Ctrl+C)")
+        sys.exit(130)
+    except EOFError:
+        # Ctrl+D at a prompt — treat the same as Ctrl+C.
+        print()
+        log.warn("Cancelled by user (EOF)")
+        sys.exit(130)
+    except subprocess.CalledProcessError as e:
+        # A child tool exited non-zero. Show the bare command name +
+        # exit code instead of a full traceback; the tool's own output
+        # has already streamed to the terminal via shell.runner.
+        tool = e.cmd[0] if e.cmd else "command"
+        log.error(f"{tool} failed (exit {e.returncode})")
+        sys.exit(1)
+    except FileNotFoundError as e:
+        log.error(str(e))
+        sys.exit(1)
+    except PermissionError as e:
+        log.error(f"Permission denied: {e}")
+        sys.exit(1)
