@@ -40,14 +40,21 @@ def compress(archive_path: Path, source: Path,
 
 
 def extract_sequential(base_path: Path, output_dir: Path,
-                       catalog_base: Path | None = None) -> int:
+                       catalog_base: Path | None = None,
+                       execute_hook: str | None = None) -> int:
     """Extract a dar archive with --sequential-read.
 
-    Feeds ESC bytes on stdin in a background thread so dar's
-    "missing slice" prompts auto-skip — disaster recovery from a
-    partial disc set restores ~95% of files without intervention.
-    With a complete slice set, no prompts fire and the ESC stream
-    goes unused.
+    When execute_hook is set, dar receives it via -E. dar fires the
+    hook before opening each slice (per dar 2.7 manpage: "-E ... is
+    executed before the slice is read or even asked"), which the
+    caller uses to mount the next disc and symlink the expected
+    slice path. The ESC-skip feeder is disabled in this mode —
+    the hook pre-stages every slice, so any prompt would indicate
+    a real error.
+
+    When execute_hook is None, the legacy ESC-feeding behaviour is
+    used: dar's missing-slice prompts auto-skip so a partial disc
+    set still restores ~95% of files without user intervention.
 
     Returns dar's exit code.
     """
@@ -59,21 +66,24 @@ def extract_sequential(base_path: Path, output_dir: Path,
         # bytes but the embedded catalog inside the slice can still
         # be lost past PAR2's repair threshold).
         cmd += ["-A", str(catalog_base)]
+    if execute_hook is not None:
+        cmd += ["-E", execute_hook]
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     assert proc.stdin is not None and proc.stdout is not None
 
-    def _feed_esc():
-        try:
-            while True:
-                proc.stdin.write("\x1b")
-                proc.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError):
-            pass
+    if execute_hook is None:
+        def _feed_esc():
+            try:
+                while True:
+                    proc.stdin.write("\x1b")
+                    proc.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+        threading.Thread(target=_feed_esc, daemon=True).start()
 
-    threading.Thread(target=_feed_esc, daemon=True).start()
     for line in proc.stdout:
         print(f"  [dar] {line}", end="")
     proc.wait()
