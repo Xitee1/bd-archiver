@@ -59,18 +59,29 @@ def _copy_disc_data(mounted: Path, archive_name: str, staging: Path,
 
 
 def _verify_catalog_on_staging(staging: Path, archive_name: str) -> bool:
+    """Verify every catalog slice currently in staging. Drop any that
+    fail sha512. Return True only when all present slices verified.
+
+    Iterates all slices (no early return) so multi-slice catalogs with
+    multiple failures get every corrupt slice flagged + deleted in a
+    single pass. The next disc's _copy_disc_data re-fetches anything
+    missing, so the loop converges in fewer disc-iterations than the
+    naive 'stop at first failure' variant.
+    """
     catalog_files = sorted(staging.glob(f"{archive_name}-catalog.*.dar"))
     if not catalog_files:
         return False
+    all_ok = True
     for cf in catalog_files:
         if not verify_slice(cf):
             log.warn(f"Catalog: {cf.name} failed sha512 — discarding, "
                      f"will retry from next disc")
             cf.unlink(missing_ok=True)
             (staging / f"{cf.name}.sha512").unlink(missing_ok=True)
-            return False
-    log.ok(f"Catalog verified ({len(catalog_files)} slice(s))")
-    return True
+            all_ok = False
+    if all_ok:
+        log.ok(f"Catalog verified ({len(catalog_files)} slice(s))")
+    return all_ok
 
 
 def _repair_slice(slice_path: Path, mounted: Path, staging: Path) -> bool:
