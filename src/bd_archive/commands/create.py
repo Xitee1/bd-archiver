@@ -153,10 +153,10 @@ def cmd_create(args):
         if workdir_is_default:
             with contextlib.suppress(OSError):
                 work_dir.rmdir()
-            with contextlib.suppress(OSError):
-                images_dir.rmdir()
-            with contextlib.suppress(OSError):
-                output_dir.rmdir()
+        with contextlib.suppress(OSError):
+            images_dir.rmdir()
+        with contextlib.suppress(OSError):
+            output_dir.rmdir()
         sys.exit(0)
 
     dar_archive = DarArchive(cfg.name, work_dir)
