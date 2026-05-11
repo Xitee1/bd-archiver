@@ -45,6 +45,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Compression algorithm (default: zstd)")
     cr.add_argument("-l", "--level",
                     help="Compression level")
+    ratio_group = cr.add_mutually_exclusive_group()
+    ratio_group.add_argument("--ratio", type=float, default=None,
+                             help="Manual compression ratio "
+                                  "(1.0 = none, 0.5 = 50%% reduction). "
+                                  "Used for the disc-count preview only. "
+                                  "Default: 1.0 if --sample also omitted")
+    ratio_group.add_argument("--sample", default=None,
+                             help="Run dar on this directory with -c/-l "
+                                  "and use the measured output/input ratio "
+                                  "for the disc-count preview")
+    cr.add_argument("-y", "--yes", action="store_true",
+                    help="Skip the pre-archive confirmation prompt")
 
     # ── estimate ────────────────────────────────────────────────────────
     es = sub.add_parser("estimate",
