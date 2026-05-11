@@ -72,5 +72,16 @@ class DiscIO:
     def eject(self):
         eject_tool.eject(self.device)
 
+    def close_tray_if_open(self) -> bool:
+        """If the drive reports an open tray, send the close command.
+        Returns True if a close was attempted. Some drives auto-eject
+        after burn finalisation — this pulls the tray back in so the
+        post-burn verify can mount the disc."""
+        if eject_tool.drive_status(self.device) != eject_tool.CDS_TRAY_OPEN:
+            return False
+        log.info("Tray ejected by drive — closing it again")
+        eject_tool.close_tray(self.device)
+        return True
+
     def burn(self, iso_path: Path, speed: str | None = None):
         growisofs.burn(self.device, iso_path, speed)

@@ -1,6 +1,7 @@
 import contextlib
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from bd_archive.archive.disc import DiscIO, find_sg_device
@@ -13,7 +14,7 @@ from bd_archive.tools.lsof import find_device_holders
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.par2 import VerifyResult
 from bd_archive.ui.logger import log
-from bd_archive.ui.prompts import prompt_disc, prompt_yn
+from bd_archive.ui.prompts import prompt_disc
 
 
 def cmd_burn(args):
@@ -115,34 +116,51 @@ def cmd_burn(args):
                     sys.exit(1)
         log.ok(f"Disc {i} burned")
 
-        # Post-burn verify
-        verify_failed = False
+        # Give the drive a moment to settle, then pull the tray back
+        # in if it auto-ejected. Slot-load drives ignore close-tray.
+        time.sleep(3)
+        dio.close_tray_if_open()
+
+        # Post-burn verify — retry on any failure (mount or verify)
+        # until it succeeds, since some drives auto-eject after burn
+        # and the user needs a chance to re-insert before we give up.
         if not args.no_verify:
             log.info("Post-burn verification...")
-            mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
-            mounted = dio.mount_with_retry(mount_dir)
-            if mounted is not None:
+            while True:
+                mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
+                verify_ok = False
                 try:
-                    result = verify_disc(mounted, f"Disc {i} (post-burn)", quiet=True)
-                    if result == VerifyResult.BROKEN:
-                        verify_failed = True
-                        log.error("Post-burn verification failed!")
-                        if not prompt_yn("Continue?", default_yes=False):
-                            log.info(
-                                f"Resume later with: bd-archive burn -i {input_dir} --start {i}"
+                    mounted = dio.mount_with_retry(mount_dir)
+                    if mounted is None:
+                        log.error("Could not mount disc for verification")
+                    else:
+                        try:
+                            result = verify_disc(
+                                mounted, f"Disc {i} (post-burn)", quiet=True
                             )
-                            sys.exit(1)
+                            if result == VerifyResult.BROKEN:
+                                log.error("Post-burn verification failed!")
+                            else:
+                                verify_ok = True
+                        finally:
+                            dio.umount(mounted)
                 finally:
-                    dio.umount(mounted)
-            else:
-                log.warn("Could not mount — verify manually")
-            with contextlib.suppress(OSError):
-                mount_dir.rmdir()
+                    with contextlib.suppress(OSError):
+                        mount_dir.rmdir()
+                if verify_ok:
+                    break
+                resp = input(
+                    "\033[1;33mRe-insert the disc if needed, then press Enter "
+                    "to retry verification (q = cancel): \033[0m"
+                )
+                if resp.strip().lower() == "q":
+                    log.warn("Cancelled by user")
+                    log.info(
+                        f"Resume later with: bd-archive burn -i {input_dir} --start {i}"
+                    )
+                    sys.exit(1)
 
-        # Keep a broken disc in the drive for inspection; eject good
-        # discs so the user can swap in the next blank.
-        if not verify_failed:
-            dio.eject()
+        dio.eject()
         log.ok(f"Disc {i}/{disc_count} done")
 
         if i < disc_count:
