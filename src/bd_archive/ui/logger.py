@@ -5,9 +5,13 @@ class Logger:
     """Colored console output."""
 
     COLORS = {
-        "red": "\033[0;31m", "green": "\033[0;32m",
-        "yellow": "\033[1;33m", "blue": "\033[0;34m",
-        "cyan": "\033[0;36m", "bold": "\033[1m", "reset": "\033[0m",
+        "red": "\033[0;31m",
+        "green": "\033[0;32m",
+        "yellow": "\033[1;33m",
+        "blue": "\033[0;34m",
+        "cyan": "\033[0;36m",
+        "bold": "\033[1m",
+        "reset": "\033[0m",
     }
 
     @classmethod

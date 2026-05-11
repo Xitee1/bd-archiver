@@ -3,7 +3,8 @@ from pathlib import Path
 
 from bd_archive.constants import POST_BURN_MOUNT_TIMEOUT
 from bd_archive.tools import eject as eject_tool
-from bd_archive.tools import growisofs, mount as mount_tool, udisks
+from bd_archive.tools import growisofs, udisks
+from bd_archive.tools import mount as mount_tool
 from bd_archive.ui.logger import log
 
 
@@ -44,8 +45,9 @@ class DiscIO:
                 return Path(mount_path)
         return None
 
-    def mount_with_retry(self, preferred_dir: Path,
-                         timeout: int = POST_BURN_MOUNT_TIMEOUT) -> Path | None:
+    def mount_with_retry(
+        self, preferred_dir: Path, timeout: int = POST_BURN_MOUNT_TIMEOUT
+    ) -> Path | None:
         """Poll the device until it is mountable or timeout expires.
 
         Useful right after a burn, where the drive needs a few seconds

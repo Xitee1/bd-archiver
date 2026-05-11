@@ -3,7 +3,7 @@ from pathlib import Path
 
 from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
 from bd_archive.archive.source_scan import scan_source
-from bd_archive.constants import MiB, PAR2_AND_MISC_OVERHEAD
+from bd_archive.constants import PAR2_AND_MISC_OVERHEAD, MiB
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools.mediainfo import detect_disc_capacity
@@ -35,26 +35,29 @@ def cmd_estimate(args):
         raw_capacity = detect_disc_capacity(args.device)
         if raw_capacity is None:
             log.error(f"No disc detected at {args.device}.")
-            log.info("Insert a blank disc, or specify capacity manually "
-                     "with -b/--bytes <int>.")
+            log.info("Insert a blank disc, or specify capacity manually with -b/--bytes <int>.")
             sys.exit(1)
     disc_bytes = raw_capacity - 2 * MiB
 
     log.info("Scanning source...")
     scan = scan_source(source)
 
-    slice_bytes = compute_slice_bytes(disc_bytes, scan.catalog_est,
-                                      args.redundancy)
+    slice_bytes = compute_slice_bytes(disc_bytes, scan.catalog_est, args.redundancy)
     if slice_bytes == 0:
-        log.error(f"Per-disc overhead "
-                  f"({human_bytes(scan.catalog_est + PAR2_AND_MISC_OVERHEAD)}) "
-                  f"exceeds disc capacity ({human_bytes(disc_bytes)})")
+        log.error(
+            f"Per-disc overhead "
+            f"({human_bytes(scan.catalog_est + PAR2_AND_MISC_OVERHEAD)}) "
+            f"exceeds disc capacity ({human_bytes(disc_bytes)})"
+        )
         sys.exit(1)
 
     if args.sample:
         ratio = measure_compression_ratio(
-            Path(args.sample).resolve(), args.compression, args.level,
-            Path(args.workdir).resolve() if args.workdir else None)
+            Path(args.sample).resolve(),
+            args.compression,
+            args.level,
+            Path(args.workdir).resolve() if args.workdir else None,
+        )
         ratio_source = f"measured from {args.sample}"
     elif args.ratio is not None:
         ratio = args.ratio
@@ -73,10 +76,7 @@ def cmd_estimate(args):
         last_slice = slice_bytes
 
     last_disc_content = (
-        last_slice
-        + last_slice * args.redundancy // 100
-        + scan.catalog_est
-        + PAR2_AND_MISC_OVERHEAD
+        last_slice + last_slice * args.redundancy // 100 + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
     )
     last_disc_free = max(0, disc_bytes - last_disc_content)
     # Convert archive-byte headroom back to raw source bytes via ratio.
@@ -84,8 +84,7 @@ def cmd_estimate(args):
 
     log.step("Source")
     log.info(f"Path:             {source}")
-    log.info(f"Size:             {human_bytes(scan.total_bytes)} "
-             f"({scan.entry_count} entries)")
+    log.info(f"Size:             {human_bytes(scan.total_bytes)} ({scan.entry_count} entries)")
     log.info(f"Catalog:          ~{human_bytes(scan.catalog_est)} (estimated)")
 
     log.step("Disc layout")
@@ -98,10 +97,11 @@ def cmd_estimate(args):
     log.step("Result")
     fill_pct = last_disc_content * 100 // disc_bytes
     print(f"\n  Discs needed:    {n_discs}")
-    print(f"  Last disc fill:  {human_bytes(last_disc_content)} / "
-          f"{human_bytes(disc_bytes)}  ({fill_pct}%)")
+    print(
+        f"  Last disc fill:  {human_bytes(last_disc_content)} / "
+        f"{human_bytes(disc_bytes)}  ({fill_pct}%)"
+    )
     print(f"  Free on last:    {human_bytes(last_disc_free)} archive")
     if abs(ratio - 1.0) > 0.001:
-        print(f"                   ~{human_bytes(last_disc_free_raw)} raw "
-              f"(at ratio {ratio:.3f})")
+        print(f"                   ~{human_bytes(last_disc_free_raw)} raw (at ratio {ratio:.3f})")
     print()

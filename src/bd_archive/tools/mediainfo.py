@@ -27,8 +27,7 @@ def detect_disc_capacity(device: str) -> int | None:
     Returns None if no disc, command fails, or output unparseable.
     """
     try:
-        r = run(["dvd+rw-mediainfo", device],
-                capture=True, check=False)
+        r = run(["dvd+rw-mediainfo", device], capture=True, check=False)
     except FileNotFoundError:
         return None
     if r.returncode != 0:
@@ -49,8 +48,7 @@ def detect_disc_capacity(device: str) -> int | None:
     # All format-type descriptors except 00h (= current capacity, which
     # is already covered by Free Blocks/Track Size).
     fmt_caps = []
-    for m in re.finditer(
-            r"([0-9A-Fa-f]{2})h\(\d+\):\s+(\d+)\*2048", r.stdout):
+    for m in re.finditer(r"([0-9A-Fa-f]{2})h\(\d+\):\s+(\d+)\*2048", r.stdout):
         if m.group(1).upper() == "00":
             continue
         fmt_caps.append(int(m.group(2)) * 2048)

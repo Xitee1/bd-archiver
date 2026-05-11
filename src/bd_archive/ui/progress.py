@@ -1,15 +1,15 @@
 import shutil
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from bd_archive.shell.format import human_bytes
 
 UPDATE_INTERVAL_S = 0.5
 COPY_CHUNK = 4 * 1024 * 1024  # 4 MiB — balances syscall overhead vs. responsiveness
 MIN_PROGRESS_BYTES = 50 * 1024 * 1024  # below this, copy silently — par2 indices,
-                                       # sha512 sidecars etc. would just be noise
+# sha512 sidecars etc. would just be noise
 
 
 class Progress:
@@ -22,8 +22,7 @@ class Progress:
     so the next output is readable.
     """
 
-    def __init__(self, label: str, total: int,
-                 min_size: int = MIN_PROGRESS_BYTES):
+    def __init__(self, label: str, total: int, min_size: int = MIN_PROGRESS_BYTES):
         self.label = label
         self.total = max(total, 1)
         self.done = 0
@@ -66,9 +65,11 @@ class Progress:
             eta = f"  ETA {eta_s // 60}m{eta_s % 60:02d}s"
         else:
             eta = ""
-        return (f"  {self.label}  {pct}%  "
-                f"{human_bytes(self.done)} / {human_bytes(self.total)}  "
-                f"@ {human_bytes(speed)}/s{eta}")
+        return (
+            f"  {self.label}  {pct}%  "
+            f"{human_bytes(self.done)} / {human_bytes(self.total)}  "
+            f"@ {human_bytes(speed)}/s{eta}"
+        )
 
     def _render(self, now: float) -> None:
         line = self._format(now)
@@ -81,9 +82,11 @@ class Progress:
     def _render_final(self) -> None:
         elapsed = max(time.monotonic() - self.start, 0.001)
         speed = self.done / elapsed
-        line = (f"  {self.label}  done — "
-                f"{human_bytes(self.done)} @ {human_bytes(speed)}/s "
-                f"in {elapsed:.1f}s")
+        line = (
+            f"  {self.label}  done — "
+            f"{human_bytes(self.done)} @ {human_bytes(speed)}/s "
+            f"in {elapsed:.1f}s"
+        )
         if self.tty:
             sys.stdout.write(f"\r\033[K{line}\n")
             sys.stdout.flush()
@@ -91,9 +94,13 @@ class Progress:
             print(line, flush=True)
 
 
-def copy_with_progress(src: Path, dst: Path, label: str | None = None,
-                       chunk: int = COPY_CHUNK,
-                       min_size: int = MIN_PROGRESS_BYTES) -> None:
+def copy_with_progress(
+    src: Path,
+    dst: Path,
+    label: str | None = None,
+    chunk: int = COPY_CHUNK,
+    min_size: int = MIN_PROGRESS_BYTES,
+) -> None:
     """Like shutil.copy2 (preserves mtime/permissions). For files at or
     above `min_size`, emits a Progress as bytes flow; smaller files copy
     silently to keep par2 indices / sha512 sidecars from spamming.
@@ -102,8 +109,7 @@ def copy_with_progress(src: Path, dst: Path, label: str | None = None,
     if size < min_size:
         shutil.copy2(src, dst)
         return
-    with open(src, "rb") as fi, open(dst, "wb") as fo, \
-            Progress(label or src.name, size) as p:
+    with open(src, "rb") as fi, open(dst, "wb") as fo, Progress(label or src.name, size) as p:
         while True:
             buf = fi.read(chunk)
             if not buf:

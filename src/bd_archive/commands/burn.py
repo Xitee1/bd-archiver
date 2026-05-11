@@ -1,3 +1,4 @@
+import contextlib
 import sys
 import tempfile
 from pathlib import Path
@@ -67,12 +68,8 @@ def cmd_burn(args):
             if actual is None:
                 log.warn("Could not detect disc capacity — skipping fit check")
             elif actual < iso_size:
-                log.error(
-                    f"Disc too small: {human_bytes(actual)} < "
-                    f"ISO {human_bytes(iso_size)}"
-                )
-                log.info(f"Resume later with: bd-archive burn "
-                         f"-i {input_dir} --start {i}")
+                log.error(f"Disc too small: {human_bytes(actual)} < ISO {human_bytes(iso_size)}")
+                log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
                 sys.exit(1)
             elif actual > iso_size * DISC_OVERSIZE_TOLERANCE:
                 pct_over = int((DISC_OVERSIZE_TOLERANCE - 1) * 100)
@@ -81,14 +78,11 @@ def cmd_burn(args):
                     f"{human_bytes(iso_size)} + {pct_over}% — refusing "
                     f"to waste space"
                 )
-                log.info("Insert a smaller disc, or pass --skip-fit-check "
-                         "to override.")
-                log.info(f"Resume later with: bd-archive burn "
-                         f"-i {input_dir} --start {i}")
+                log.info("Insert a smaller disc, or pass --skip-fit-check to override.")
+                log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
                 sys.exit(1)
             else:
-                log.ok(f"Disc capacity {human_bytes(actual)} fits "
-                       f"ISO {human_bytes(iso_size)}")
+                log.ok(f"Disc capacity {human_bytes(actual)} fits ISO {human_bytes(iso_size)}")
 
         # Burn (with sg-busy retry)
         log.info("Burning...")
@@ -97,9 +91,11 @@ def cmd_burn(args):
                 dio.burn(iso, args.speed)
                 break
             except DeviceBusyError:
-                log.error(f"Optical device {args.device} is locked by "
-                          f"another process (growisofs couldn't grab "
-                          f"the associated sg device).")
+                log.error(
+                    f"Optical device {args.device} is locked by "
+                    f"another process (growisofs couldn't grab "
+                    f"the associated sg device)."
+                )
                 sg = find_sg_device(args.device)
                 holders = find_device_holders(args.device, sg)
                 if holders:
@@ -107,14 +103,15 @@ def cmd_burn(args):
                     for h in holders:
                         log.info(f"  {h}")
                 else:
-                    log.info("Common culprits: MakeMKV, K3b, Brasero, "
-                             "or a desktop auto-mount probe.")
-                resp = input("\033[1;33mClose the program, then press "
-                             "Enter to retry (q = cancel): \033[0m")
+                    log.info(
+                        "Common culprits: MakeMKV, K3b, Brasero, or a desktop auto-mount probe."
+                    )
+                resp = input(
+                    "\033[1;33mClose the program, then press Enter to retry (q = cancel): \033[0m"
+                )
                 if resp.strip().lower() == "q":
                     log.warn("Cancelled by user")
-                    log.info(f"Resume later with: bd-archive burn "
-                             f"-i {input_dir} --start {i}")
+                    log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
                     sys.exit(1)
         log.ok(f"Disc {i} burned")
 
@@ -126,24 +123,21 @@ def cmd_burn(args):
             mounted = dio.mount_with_retry(mount_dir)
             if mounted is not None:
                 try:
-                    result = verify_disc(mounted,
-                                         f"Disc {i} (post-burn)", quiet=True)
+                    result = verify_disc(mounted, f"Disc {i} (post-burn)", quiet=True)
                     if result == VerifyResult.BROKEN:
                         verify_failed = True
                         log.error("Post-burn verification failed!")
                         if not prompt_yn("Continue?", default_yes=False):
-                            log.info(f"Resume later with: "
-                                     f"bd-archive burn -i {input_dir} "
-                                     f"--start {i}")
+                            log.info(
+                                f"Resume later with: bd-archive burn -i {input_dir} --start {i}"
+                            )
                             sys.exit(1)
                 finally:
                     dio.umount(mounted)
             else:
                 log.warn("Could not mount — verify manually")
-            try:
+            with contextlib.suppress(OSError):
                 mount_dir.rmdir()
-            except OSError:
-                pass
 
         # Keep a broken disc in the drive for inspection; eject good
         # discs so the user can swap in the next blank.
@@ -153,9 +147,11 @@ def cmd_burn(args):
 
         if i < disc_count:
             remaining = disc_count - i
-            log.info(f"{remaining} disc(s) remaining. "
-                     f"Resume: bd-archive burn -i {input_dir} "
-                     f"--start {i + 1}")
+            log.info(
+                f"{remaining} disc(s) remaining. "
+                f"Resume: bd-archive burn -i {input_dir} "
+                f"--start {i + 1}"
+            )
 
     log.step("All discs burned")
     print(f"\n  Discs:    {disc_count}")

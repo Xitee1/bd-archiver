@@ -26,8 +26,9 @@ def _mount_with_prompt(dio: DiscIO, mount_dir: Path, prompt_msg: str) -> Path | 
             return None
 
 
-def _copy_disc_data(mounted: Path, archive_name: str, staging: Path,
-                    catalog_verified: bool) -> list[Path]:
+def _copy_disc_data(
+    mounted: Path, archive_name: str, staging: Path, catalog_verified: bool
+) -> list[Path]:
     """Copy slices + sha512 sidecars (and catalog if not yet verified) from
     disc to staging. par2 files are NOT copied — fetched lazily on damage.
     Returns list of slice paths in staging for this disc."""
@@ -41,8 +42,9 @@ def _copy_disc_data(mounted: Path, archive_name: str, staging: Path,
             if not dest.exists():
                 shutil.copy2(cat_hash, dest)
 
-    slices = sorted(p for p in mounted.glob(f"{archive_name}.[0-9]*.dar")
-                    if "-catalog" not in p.name)
+    slices = sorted(
+        p for p in mounted.glob(f"{archive_name}.[0-9]*.dar") if "-catalog" not in p.name
+    )
     copied: list[Path] = []
     for sp in slices:
         dest = staging / sp.name
@@ -74,8 +76,7 @@ def _verify_catalog_on_staging(staging: Path, archive_name: str) -> bool:
     all_ok = True
     for cf in catalog_files:
         if not verify_slice(cf):
-            log.warn(f"Catalog: {cf.name} failed sha512 — discarding, "
-                     f"will retry from next disc")
+            log.warn(f"Catalog: {cf.name} failed sha512 — discarding, will retry from next disc")
             cf.unlink(missing_ok=True)
             (staging / f"{cf.name}.sha512").unlink(missing_ok=True)
             all_ok = False
@@ -96,8 +97,7 @@ def _repair_slice(slice_path: Path, mounted: Path, staging: Path) -> bool:
     for pf in par2_files:
         copy_with_progress(pf, staging / pf.name, label=f"copy {pf.name}")
 
-    idx_candidates = [staging / pf.name for pf in par2_files
-                      if is_par2_index(staging / pf.name)]
+    idx_candidates = [staging / pf.name for pf in par2_files if is_par2_index(staging / pf.name)]
     if not idx_candidates:
         log.error(f"  {name}: no par2 index file present")
         return False
@@ -135,8 +135,7 @@ def cmd_extract(args):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     workdir_is_default = args.workdir is None
-    work_dir = (Path(args.workdir) if args.workdir
-                else output_dir / ".bd-archive-work")
+    work_dir = Path(args.workdir) if args.workdir else output_dir / ".bd-archive-work"
     staging = work_dir / "slices"
     staging.mkdir(parents=True, exist_ok=True)
 
@@ -162,16 +161,14 @@ def cmd_extract(args):
 
         # ── 1. Mount disc ─────────────────────────────────────────────────
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
-        mounted = _mount_with_prompt(dio, mount_dir,
-                                     f"Insert disc {target}")
+        mounted = _mount_with_prompt(dio, mount_dir, f"Insert disc {target}")
         if mounted is None:
             mount_dir.rmdir()
             sys.exit(1)
 
         try:
             if archive_name is None:
-                dar_files = [p for p in mounted.glob("*.dar")
-                             if "-catalog" not in p.name]
+                dar_files = [p for p in mounted.glob("*.dar") if "-catalog" not in p.name]
                 if not dar_files:
                     log.error("No dar files found on disc — try another")
                     continue
@@ -182,8 +179,7 @@ def cmd_extract(args):
 
             # ── 2. Copy data (no par2) ────────────────────────────────────
             log.info(f"Copying disc {disc_num}...")
-            copied = _copy_disc_data(mounted, archive_name, staging,
-                                     catalog_verified)
+            copied = _copy_disc_data(mounted, archive_name, staging, catalog_verified)
             log.ok(f"  {len(copied)} slice(s) staged")
         finally:
             dio.umount(mounted)
@@ -207,15 +203,14 @@ def cmd_extract(args):
         if not failed:
             log.ok(f"  All {len(copied)} slice(s) intact")
         else:
-            log.warn(f"  {len(failed)} slice(s) failed sha512 — "
-                     f"par2 repair needed")
+            log.warn(f"  {len(failed)} slice(s) failed sha512 — par2 repair needed")
 
         # ── 5. Damage path: re-mount disc, fetch par2, repair ────────────
         if failed:
             mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
             mounted = _mount_with_prompt(
-                dio, mount_dir,
-                f"Re-insert disc {disc_num} for par2 repair")
+                dio, mount_dir, f"Re-insert disc {disc_num} for par2 repair"
+            )
             if mounted is None:
                 mount_dir.rmdir()
                 sys.exit(1)
@@ -224,9 +219,11 @@ def cmd_extract(args):
                     if _repair_slice(sp, mounted, staging):
                         continue
                     log.error(f"  {sp.name}: unrecoverable damage")
-                    log.warn(f"  {sp.name}: keeping as-is — files from "
-                             f"this slice may be corrupt; will be listed "
-                             f"in corrupted-files.txt")
+                    log.warn(
+                        f"  {sp.name}: keeping as-is — files from "
+                        f"this slice may be corrupt; will be listed "
+                        f"in corrupted-files.txt"
+                    )
                     unrepairable_slices.append(sp.name)
             finally:
                 dio.umount(mounted)
@@ -244,8 +241,9 @@ def cmd_extract(args):
 
     # ── Extract ─────────────────────────────────────────────────────────
     log.step("Extracting archive")
-    collected = [c for c in sorted(staging.glob(f"{archive_name}.[0-9]*.dar"))
-                 if "-catalog" not in c.name]
+    collected = [
+        c for c in sorted(staging.glob(f"{archive_name}.[0-9]*.dar")) if "-catalog" not in c.name
+    ]
     log.info(f"Slices: {len(collected)}")
     log.info(f"Output: {output_dir}")
 
@@ -254,7 +252,8 @@ def cmd_extract(args):
     has_catalog = any(staging.glob(f"{archive_name}-catalog.*.dar"))
 
     rc, corrupted_files = dar.extract_sequential(
-        dar_base, output_dir,
+        dar_base,
+        output_dir,
         catalog_base=catalog_base if has_catalog else None,
     )
 
@@ -263,15 +262,18 @@ def cmd_extract(args):
     elif rc == 0:
         # dar exited cleanly but reported per-file CRC errors and/or
         # we already know slices were unrepairable. Tell the user.
-        log.warn(f"Extraction finished with corruption: "
-                 f"{len(corrupted_files)} file(s) reported by dar, "
-                 f"{len(unrepairable_slices)} slice(s) unrepairable")
+        log.warn(
+            f"Extraction finished with corruption: "
+            f"{len(corrupted_files)} file(s) reported by dar, "
+            f"{len(unrepairable_slices)} slice(s) unrepairable"
+        )
     else:
         log.error(f"dar extraction failed (exit {rc})")
         log.info(f"Slices are in: {staging}")
         if has_catalog:
-            log.info(f"Retry without rescue catalog: "
-                     f"dar -x {dar_base} -R {output_dir} --sequential-read")
+            log.info(
+                f"Retry without rescue catalog: dar -x {dar_base} -R {output_dir} --sequential-read"
+            )
         else:
             log.info(f"Manual: dar -x {dar_base} -R {output_dir} --sequential-read")
         sys.exit(1)
@@ -290,33 +292,32 @@ def cmd_extract(args):
             "",
         ]
         if corrupted_files:
-            lines.append(f"## {len(corrupted_files)} file(s) reported by dar"
-                         " with bad CRC:")
+            lines.append(f"## {len(corrupted_files)} file(s) reported by dar with bad CRC:")
             for fp in corrupted_files:
                 try:
-                    rel = str(Path(fp).resolve().relative_to(
-                        output_dir.resolve()))
+                    rel = str(Path(fp).resolve().relative_to(output_dir.resolve()))
                 except ValueError:
                     rel = fp
                 lines.append(rel)
             lines.append("")
         if unrepairable_slices:
-            lines.append(f"## {len(unrepairable_slices)} slice(s) failed "
-                         "sha512 + par2 repair:")
+            lines.append(f"## {len(unrepairable_slices)} slice(s) failed sha512 + par2 repair:")
             for sn in unrepairable_slices:
                 lines.append(sn)
             lines.append("")
-            lines.append("# Files originating from these slices may be "
-                         "corrupt even if dar didn't report them above —")
-            lines.append("# slice-level corruption can also damage dar's "
-                         "internal metadata.")
+            lines.append(
+                "# Files originating from these slices may be "
+                "corrupt even if dar didn't report them above —"
+            )
+            lines.append("# slice-level corruption can also damage dar's internal metadata.")
         manifest_path.write_text("\n".join(lines) + "\n")
         log.warn(f"Wrote {manifest_path}")
 
     # Sum extracted size BEFORE cleaning the workdir, since the default
     # workdir lives under output_dir and we'd otherwise count its bytes.
-    total = sum(f.stat().st_size for f in output_dir.rglob("*")
-                if f.is_file() and work_dir not in f.parents)
+    total = sum(
+        f.stat().st_size for f in output_dir.rglob("*") if f.is_file() and work_dir not in f.parents
+    )
 
     if workdir_is_default:
         shutil.rmtree(work_dir, ignore_errors=True)

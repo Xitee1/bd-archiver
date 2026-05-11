@@ -1,3 +1,4 @@
+import contextlib
 import sys
 import tempfile
 import time
@@ -39,10 +40,8 @@ def cmd_verify(args):
                 result = verify_disc(mounted, f"ISO {target.name}")
             finally:
                 dio.umount(mounted)
-                try:
+                with contextlib.suppress(OSError):
                     mount_dir.rmdir()
-                except OSError:
-                    pass
         finally:
             udisks.loop_delete(loop_dev)
         sys.exit(result.value)
@@ -59,10 +58,8 @@ def cmd_verify(args):
             result = verify_disc(mounted, f"Disc at {target}")
         finally:
             dio.umount(mounted)
-            try:
+            with contextlib.suppress(OSError):
                 mount_dir.rmdir()
-            except OSError:
-                pass
         sys.exit(result.value)
 
     elif target.is_dir():
