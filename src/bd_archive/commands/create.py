@@ -3,6 +3,7 @@ import re
 import shlex
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from bd_archive import __version__
@@ -68,6 +69,12 @@ def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
 
 def cmd_create(args):
     check_deps("dar", "par2", "mkisofs", "dvd+rw-mediainfo")
+
+    if not 0 <= args.min_last_disc_fill <= 100:
+        log.error(
+            f"--min-last-disc-fill must be 0-100, got {args.min_last_disc_fill}"
+        )
+        sys.exit(1)
 
     # Hard cap matches the pre-Phase-2 label format (32 - 5) so existing
     # archive names that lived right up against the old limit still work.
@@ -177,6 +184,11 @@ def cmd_create(args):
 
     def _layout(est: int) -> tuple[int, int, int]:
         """(n_discs, last_disc_content, last_fill_pct) for a given archive size."""
+        if est == 0:
+            # Incremental with no new file data — catalog + par2 overhead
+            # still take up a disc, but the data portion is empty.
+            overhead = scan.catalog_est + PAR2_AND_MISC_OVERHEAD
+            return 1, overhead, overhead * 100 // sizing_target
         n = max(1, (est + slice_bytes - 1) // slice_bytes)
         last_sl = est - (n - 1) * slice_bytes
         if last_sl == 0:
@@ -210,8 +222,13 @@ def cmd_create(args):
             )
         pool.sort(key=lambda f: f.mtime, reverse=True)
 
+        # Initialise loop-mutated state to the pre-defer layout so the
+        # "pool exhausted / threshold unreachable" fallback below has
+        # values to read even when the pool is empty (all source files
+        # are already in the base catalog).
         cum_size = 0
         reached = False
+        new_n, new_last, new_fill = n_discs, last_disc_content, fill_pct
         for f in pool:
             cum_size += f.size
             new_est = max(0, archive_est - int(cum_size * ratio))
@@ -228,22 +245,33 @@ def cmd_create(args):
                 break
 
         if not reached:
-            log.warn(
-                f"--min-last-disc-fill {args.min_last_disc_fill}% not reachable; "
-                f"pool ({len(pool)} candidate file(s), {pool_kind}) exhausted "
-                f"after deferring {human_bytes(cum_size)}. Proceeding with "
-                f"what we have."
-            )
-            if archive_est - int(cum_size * ratio) > 0:
-                archive_est, n_discs, last_disc_content, fill_pct = (
-                    archive_est - int(cum_size * ratio), new_n, new_last, new_fill
+            if not pool:
+                # Nothing was deferrable (incremental + base already
+                # contains every source file). Keep original layout
+                # and let dar handle the delta-empty run — its
+                # archive will contain only deletion markers if any.
+                log.info(
+                    "Auto-defer pool empty (nothing new vs base); "
+                    "proceeding with the original layout."
                 )
             else:
-                log.error(
-                    "Deferring all candidates would leave 0 bytes to archive. "
-                    "Lower --min-last-disc-fill or skip the run."
+                log.warn(
+                    f"--min-last-disc-fill {args.min_last_disc_fill}% not reachable; "
+                    f"pool ({len(pool)} candidate file(s), {pool_kind}) exhausted "
+                    f"after deferring {human_bytes(cum_size)}. Proceeding with "
+                    f"what we have."
                 )
-                sys.exit(1)
+                new_est = archive_est - int(cum_size * ratio)
+                if new_est > 0:
+                    archive_est, n_discs, last_disc_content, fill_pct = (
+                        new_est, new_n, new_last, new_fill
+                    )
+                else:
+                    log.error(
+                        "Deferring all candidates would leave 0 bytes to archive. "
+                        "Lower --min-last-disc-fill or skip the run."
+                    )
+                    sys.exit(1)
 
     last_disc_free = max(0, sizing_target - last_disc_content)
     last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))
@@ -284,12 +312,11 @@ def cmd_create(args):
     if deferred_files:
         defer_bytes = sum(f.size for f in deferred_files)
         oldest_deferred = min(f.mtime for f in deferred_files)
-        from datetime import datetime as _dt
-
         log.step(f"Auto-defer (--min-last-disc-fill {args.min_last_disc_fill}%)")
         log.info(f"Files deferred:   {len(deferred_files)}")
         log.info(f"Bytes deferred:   {human_bytes(defer_bytes)} (raw)")
-        log.info(f"Oldest deferred:  mtime {_dt.fromtimestamp(oldest_deferred):%Y-%m-%d %H:%M}")
+        oldest_dt = datetime.fromtimestamp(oldest_deferred)
+        log.info(f"Oldest deferred:  mtime {oldest_dt:%Y-%m-%d %H:%M}")
         sample = deferred_files[:3]
         for f in sample:
             log.info(f"  - {f.rel_path}")
