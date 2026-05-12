@@ -1,1 +1,9 @@
-__version__ = "5.0.0"
+try:
+    from ._version import __version__
+except ImportError:
+    try:
+        from importlib.metadata import version
+
+        __version__ = version("bd-archive")
+    except Exception:
+        __version__ = "0.0.0+unknown"
