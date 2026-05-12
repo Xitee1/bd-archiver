@@ -71,9 +71,7 @@ def cmd_create(args):
     check_deps("dar", "par2", "mkisofs", "dvd+rw-mediainfo")
 
     if not 0 <= args.min_last_disc_fill <= 100:
-        log.error(
-            f"--min-last-disc-fill must be 0-100, got {args.min_last_disc_fill}"
-        )
+        log.error(f"--min-last-disc-fill must be 0-100, got {args.min_last_disc_fill}")
         sys.exit(1)
 
     # Hard cap matches the pre-Phase-2 label format (32 - 5) so existing
@@ -82,10 +80,7 @@ def cmd_create(args):
     # volume label only; filenames inside the ISO keep the full name.
     legacy_max_name_len = ISO9660_VOLUME_LABEL_MAX - 5
     if len(args.name) > legacy_max_name_len:
-        log.error(
-            f"--name '{args.name}' is {len(args.name)} chars; "
-            f"max {legacy_max_name_len}"
-        )
+        log.error(f"--name '{args.name}' is {len(args.name)} chars; max {legacy_max_name_len}")
         sys.exit(1)
     if len(args.name) > ISO9660_LABEL_NAME_MAX:
         log.warn(
@@ -194,8 +189,7 @@ def cmd_create(args):
         if last_sl == 0:
             last_sl = slice_bytes
         last_content = (
-            last_sl + last_sl * args.redundancy // 100
-            + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
+            last_sl + last_sl * args.redundancy // 100 + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
         )
         return n, last_content, last_content * 100 // sizing_target
 
@@ -239,7 +233,10 @@ def cmd_create(args):
                 break
             if new_fill >= args.min_last_disc_fill:
                 archive_est, n_discs, last_disc_content, fill_pct = (
-                    new_est, new_n, new_last, new_fill
+                    new_est,
+                    new_n,
+                    new_last,
+                    new_fill,
                 )
                 reached = True
                 break
@@ -264,7 +261,10 @@ def cmd_create(args):
                 new_est = archive_est - int(cum_size * ratio)
                 if new_est > 0:
                     archive_est, n_discs, last_disc_content, fill_pct = (
-                        new_est, new_n, new_last, new_fill
+                        new_est,
+                        new_n,
+                        new_last,
+                        new_fill,
                     )
                 else:
                     log.error(

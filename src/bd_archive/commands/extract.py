@@ -61,9 +61,7 @@ def _copy_disc_data(
                 shutil.copy2(cat_hash, dest)
 
     slices = sorted(
-        p
-        for p in mounted.glob(f"{disc_basename}.[0-9]*.dar")
-        if "-catalog" not in p.name
+        p for p in mounted.glob(f"{disc_basename}.[0-9]*.dar") if "-catalog" not in p.name
     )
     copied: list[Path] = []
     for sp in slices:
