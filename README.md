@@ -27,21 +27,27 @@ Optional: `lsof` (better diagnostics when the optical device is locked by anothe
 
 ### Python package
 
-Requires Python ≥ 3.11. Install into a project-local virtualenv (modern distros block bare `pip install` via PEP 668):
+Requires Python ≥ 3.11. It's recommended to use a virtual environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'   # editable + dev tools (ruff, pre-commit)
-# or, runtime only:
+
+# For production
 pip install .
+
+# For development
+pip install -e '.[dev]'
+
+bd-archive -h # show bd-archive usage
 ```
 
-`.venv/` is gitignored. With the venv activated, the `bd-archive` command is on `PATH`. Re-activate later with `source .venv/bin/activate`.
+To re-activate the virtual environment after closing the terminal, type `source .venv/bin/activate` again.
 
-### Shell completion (optional)
 
-`bd-archive` ships with [`argcomplete`](https://github.com/kislyuk/argcomplete) support for bash/zsh tab-completion of subcommands, flags, and path arguments. Pick one:
+#### Shell completion (optional)
+
+`bd-archive` ships with [`argcomplete`](https://github.com/kislyuk/argcomplete) support for bash/zsh tab-completion of subcommands, flags, and path arguments.
 
 **Per-user (recommended):** add to `~/.bashrc` (or `~/.zshrc`):
 
@@ -59,7 +65,7 @@ sudo activate-global-python-argcomplete
 
 This enables completion for **every** argcomplete-enabled Python CLI on the system, not just `bd-archive`. No per-user setup needed afterwards.
 
-## Docker
+### Docker
 
 A prebuilt image with all runtime tools (dar, par2, mkisofs, growisofs, dvd+rw-tools, udisks2, lsof, eject) is published to GitHub Container Registry on every `v*.*.*` tag:
 
@@ -67,15 +73,13 @@ A prebuilt image with all runtime tools (dar, par2, mkisofs, growisofs, dvd+rw-t
 docker pull ghcr.io/xitee1/bd-archiver:latest
 ```
 
-Available tags: `latest`, `<major>` (e.g. `5`), `<major>.<minor>` (e.g. `5.0`), `<full-version>` (e.g. `5.0.0`). Images are built for `linux/amd64` and `linux/arm64`.
-
-### Caveats
+#### Caveats
 
 - **Drive auto-detection is disabled in containers.** `list_drives()` scans `/sys/block/sr*`, which is not populated by `--device=…` passthrough. Always pass `-D /dev/srN` explicitly when the subcommand uses a drive.
 - **`burn` needs raw SCSI access** (`growisofs` issues SG_IO ioctls). The simplest way is `--privileged`; if you want tighter scoping, `--cap-add=SYS_RAWIO` is the relevant capability.
 - **`verify <iso-file>` does not work out of the box.** It uses `udisksctl` to loop-mount, which needs a running `udisksd` + dbus inside the container. Easiest workaround: verify ISOs on the host, or pre-mount on the host (`sudo mount -o loop disc.iso /mnt/iso`) and pass the mountpoint instead.
 
-### Examples
+#### Examples
 
 Host paths used below: source data at `/data/src`, output at `/data/out`. Adjust to taste.
 
@@ -108,16 +112,6 @@ docker run --rm -it \
   burn -i /data/out -D /dev/sr0
 ```
 
-**verify** a block device:
-
-```bash
-docker run --rm -it \
-  --device=/dev/sr0 \
-  -v /data:/data \
-  ghcr.io/xitee1/bd-archiver:latest \
-  verify /dev/sr0
-```
-
 **extract** (restore from disc, RAM staging via tmpfs):
 
 ```bash
@@ -131,67 +125,51 @@ docker run --rm -it \
 
 `--tmpfs` here serves the same purpose as `-w /dev/shm/...` for a local install: keeps slice staging in RAM during extract so the SSD takes zero writes.
 
-## Usage
+## Usage example
 
-### create
+Let's say you have 199GB worth of images on an HDD that you want to archive onto 25GB BDs.
+Before you start, you check that the output dir has at least 250GB (total amount (199GB) + disc size (25GB) + some buffer).
 
-```bash
-bd-archive create -s /path/to/source -n my-archive -o /path/to/output [options]
-```
+Because it's all images, you opt for no compression (images don't compress good).
 
-| Flag | Default | Description |
-|---|---|---|
-| `-s, --source`     | required          | Source directory |
-| `-n, --name`       | required          | Archive name (≤ 27 chars; ISO9660 volume label limit minus 5-char disc suffix) |
-| `-o, --output`     | required          | Output directory for ISO images |
-| `-w, --workdir`    | `<output>/.bd-archive-work/` | Scratch dir for transient build files (dar slices, par2). Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
-| `-r, --redundancy` | `5`               | PAR2 redundancy in % |
-| `-D, --device`     | auto-detect       | Optical drive used for capacity detection. Auto-picks the only drive present; prompts if multiple. |
-| `-b, --bytes`      | auto-detected     | Manual disc capacity in raw bytes |
-| `-c, --compression`| `zstd`            | `zstd`, `lzma`, `lz4`, `gzip`, `bzip2`, `none` |
-| `-l, --level`      | —                 | Compression level |
-| `--ratio`          | —                 | Manual compression ratio for the disc-count preview (1.0 = none, 0.5 = 50% reduction). Mutually exclusive with `--sample`. |
-| `--sample <path>`  | —                 | Run dar on this subset with `-c/-l` and use the measured ratio for the preview. Mutually exclusive with `--ratio`. |
-| `-y, --yes`        | off               | Skip the pre-archive confirmation prompt. |
+### create + burn
+First, create the ISOs:
+`bd-archive create -s /path/to/images -o /path/to/staging-dir --name "My_image_archive" -c none`
 
-`create` prints a disc-count + last-disc-fill preview and asks for confirmation before running. Pass `-y` to skip the prompt for scripts.
+Now the folder is scanned and an overview is provided with the amount of discs and other useful information.
+You notice that it says the last disk will only be filled with 300 MB.
+Images don't compress good, but you can still get a little bit out of it, so you decline and run again with the default compression:
 
-After completion, ISOs sit in `<output>/images/disc_NNNN.iso`. Verify them before burning:
+`bd-archive create -s /path/to/images --name "My_image_archive" -c none`
 
-```bash
-bd-archive verify <output>/images/disc_0001.iso
-```
+Now it fits perfectly and you safe a disc. You confirm with `y`.
+The ISO files are now generated. This can take a while (multiple hours depending on the storage device of the output dir).
 
-### burn
+After it's done, proceed with burning (x4 speed).
+`bd-archive burn -i /path/to/staging-dir -S 4`
 
-```bash
-bd-archive burn -i /path/to/input [options]
-```
+bd-archiver will now ask you to insert the first disc. After it's inserted, press enter to start the burn process.
+After burning it will automatically verify the data integrity. You may need manual intervention and close the tray before that if it opens automatically by firmware.
+After everything is verified, insert the next disc until the end.
 
-| Flag | Default | Description |
-|---|---|---|
-| `-i, --input`        | required        | Directory `create` wrote to (contains `images/disc_*.iso`) |
-| `-D, --device`       | auto-detect     | Optical drive. Auto-picks the only drive present; prompts if multiple. |
-| `-S, --speed`        | drive max       | BD speed multiplier (e.g. `2`, `4`, `6`; 1× ≈ 4.5 MB/s) |
-| `--start N`          | `1`             | Resume from disc N |
-| `--no-verify`        | off             | Skip post-burn verification |
-| `--skip-fit-check`   | off             | Skip the pre-burn capacity check (covers both *too small* and *too large by >5%*, the latter guards against wasting a 50 GB BD-DL on a 25 GB-sized archive) |
-
-If burning fails on disc N, resume with `--start N` after fixing the issue.
+But let's say you need to shutdown/restart your PC and have a lot of discs left. No problem, just wait for the current burn process to finish and exit using `CTRL + C`.
+When you want to continue, just start with `--start x` where x is the disc number. For example you've burned 3 out of 10 discs, you type `--start 4`.
 
 ### verify
-
-```bash
-bd-archive verify [target]
-```
-
-`[target]` is optional and may be:
-- Omitted — auto-detect an optical drive (prompts if multiple)
-- A mountpoint directory (already-mounted disc or extracted slices)
-- A block device (e.g. `/dev/srN`) — mounted automatically
-- An `.iso` file — loop-mounted via `udisksctl`
+If later (e.g. after some years) you want to verify a specific disc, just insert it and execute `bd-archive verify` to check the integrity.
 
 Exit codes: `0` OK, `1` repairable, `2` broken.
+
+
+### extract
+If you need the data back from the discs, execute:
+`bd-archive extract -o /path/to/output`
+
+---> TODO
+
+### add incremental
+
+----> TODO
 
 ### extract
 
@@ -265,24 +243,4 @@ python -m build              # produces sdist + wheel in dist/
 ```
 
 `_version.py` is generated and gitignored — don't commit it. After moving to a new tag, re-run `pip install -e .` to regenerate it for editable installs.
-
-### Lint
-
-The dev install (`pip install -e '.[dev]'`) puts `ruff` and `pre-commit` in the venv:
-
-```bash
-source .venv/bin/activate    # if not already active
-ruff check src/
-ruff format src/
-pre-commit install           # one-time: enables ruff-format on each commit
-```
-
-Config in `pyproject.toml`: line-length 100, target Python 3.11, rule selection `E,W,F,I,B,UP,C4,SIM`.
-
-### Run without install
-
-For a quick `--help` peek without setting up the venv (subcommands still need the system deps listed above):
-
-```bash
-PYTHONPATH=src python3 -m bd_archive --help
 ```
