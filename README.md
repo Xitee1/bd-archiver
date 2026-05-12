@@ -59,6 +59,78 @@ sudo activate-global-python-argcomplete
 
 This enables completion for **every** argcomplete-enabled Python CLI on the system, not just `bd-archive`. No per-user setup needed afterwards.
 
+## Docker
+
+A prebuilt image with all runtime tools (dar, par2, mkisofs, growisofs, dvd+rw-tools, udisks2, lsof, eject) is published to GitHub Container Registry on every `v*.*.*` tag:
+
+```bash
+docker pull ghcr.io/xitee1/bd-archiver:latest
+```
+
+Available tags: `latest`, `<major>` (e.g. `5`), `<major>.<minor>` (e.g. `5.0`), `<full-version>` (e.g. `5.0.0`). Images are built for `linux/amd64` and `linux/arm64`.
+
+### Caveats
+
+- **Drive auto-detection is disabled in containers.** `list_drives()` scans `/sys/block/sr*`, which is not populated by `--device=…` passthrough. Always pass `-D /dev/srN` explicitly when the subcommand uses a drive.
+- **`burn` needs raw SCSI access** (`growisofs` issues SG_IO ioctls). The simplest way is `--privileged`; if you want tighter scoping, `--cap-add=SYS_RAWIO` is the relevant capability.
+- **`verify <iso-file>` does not work out of the box.** It uses `udisksctl` to loop-mount, which needs a running `udisksd` + dbus inside the container. Easiest workaround: verify ISOs on the host, or pre-mount on the host (`sudo mount -o loop disc.iso /mnt/iso`) and pass the mountpoint instead.
+
+### Examples
+
+Host paths used below: source data at `/data/src`, output at `/data/out`. Adjust to taste.
+
+**create** (build per-disc ISOs from a source tree):
+
+```bash
+docker run --rm -it \
+  --device=/dev/sr0 \
+  -v /data:/data \
+  ghcr.io/xitee1/bd-archiver:latest \
+  create -s /data/src -n my-archive -o /data/out -D /dev/sr0
+```
+
+If you don't want to mount the drive at all (e.g. driveless build with a fixed capacity), drop `--device` and pass `-b <bytes>` instead of `-D`:
+
+```bash
+docker run --rm -it \
+  -v /data:/data \
+  ghcr.io/xitee1/bd-archiver:latest \
+  create -s /data/src -n my-archive -o /data/out -b 25025314816
+```
+
+**burn** (write ISOs to disc):
+
+```bash
+docker run --rm -it \
+  --privileged --device=/dev/sr0 \
+  -v /data:/data \
+  ghcr.io/xitee1/bd-archiver:latest \
+  burn -i /data/out -D /dev/sr0
+```
+
+**verify** a block device:
+
+```bash
+docker run --rm -it \
+  --device=/dev/sr0 \
+  -v /data:/data \
+  ghcr.io/xitee1/bd-archiver:latest \
+  verify /dev/sr0
+```
+
+**extract** (restore from disc, RAM staging via tmpfs):
+
+```bash
+docker run --rm -it \
+  --device=/dev/sr0 \
+  -v /data:/data \
+  --tmpfs /scratch:size=32g \
+  ghcr.io/xitee1/bd-archiver:latest \
+  extract -o /data/restore -w /scratch -D /dev/sr0
+```
+
+`--tmpfs` here serves the same purpose as `-w /dev/shm/...` for a local install: keeps slice staging in RAM during extract so the SSD takes zero writes.
+
 ## Usage
 
 ### create
@@ -147,7 +219,7 @@ For maximum throughput on SSD-hosted archives, point `-w` at a tmpfs path (`/dev
 
 ```
 src/bd_archive/
-├── __init__.py         # __version__ (single source of truth)
+├── __init__.py         # __version__ (loaded from _version.py via hatch-vcs)
 ├── __main__.py         # entry point for `python -m bd_archive`
 ├── _par2_helper.py     # dar -E hook: runs par2 on each freshly written slice
 ├── cli.py              # argparse + dispatch + top-level exception handling
@@ -184,13 +256,15 @@ Layering: `commands/` → `archive/` → `tools/` → `shell/`. Lower layers nev
 
 ### Build
 
-Build backend: `hatchling`. Version is read dynamically from `src/bd_archive/__init__.py` (`__version__`).
+Build backend: `hatchling` + `hatch-vcs`. The version is derived from the latest git tag (`v*` prefix) and written into `src/bd_archive/_version.py` at build time. `bd_archive/__init__.py` imports from there, with an `importlib.metadata` fallback for editable installs. To release, tag (`v5.0.0`) and push — the `Docker Publish` workflow takes care of the rest.
 
 ```bash
 source .venv/bin/activate    # if not already active
 pip install build
 python -m build              # produces sdist + wheel in dist/
 ```
+
+`_version.py` is generated and gitignored — don't commit it. After moving to a new tag, re-run `pip install -e .` to regenerate it for editable installs.
 
 ### Lint
 
