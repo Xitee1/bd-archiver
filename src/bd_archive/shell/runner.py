@@ -14,8 +14,16 @@ def _check_sigint(returncode: int) -> None:
 
 
 def run(
-    cmd: list[str], *, label: str = "", check: bool = True, capture: bool = False
+    cmd: list[str],
+    *,
+    label: str = "",
+    check: bool = True,
+    capture: bool = False,
+    passthrough: bool = False,
 ) -> subprocess.CompletedProcess:
+    if capture and passthrough:
+        raise ValueError("capture and passthrough are mutually exclusive")
+
     if capture:
         # check=False here so we can intercept the SIGINT case before
         # subprocess.run synthesises a CalledProcessError on its own.
@@ -23,6 +31,18 @@ def run(
         _check_sigint(r.returncode)
         if check and r.returncode != 0:
             raise subprocess.CalledProcessError(r.returncode, cmd, r.stdout, r.stderr)
+        return r
+
+    if passthrough:
+        # Inherit our stdout/stderr so the child writes straight to the
+        # user's terminal — required for tools whose progress uses \r
+        # to repaint a single line (par2 "Scanning: X%"). The default
+        # streaming path below reads until \n, which buffers those
+        # updates and shows nothing live. Trade-off: no [label] prefix.
+        r = subprocess.run(cmd, check=False)
+        _check_sigint(r.returncode)
+        if check and r.returncode != 0:
+            raise subprocess.CalledProcessError(r.returncode, cmd)
         return r
 
     prefix = f"  [{label}] " if label else "  "
