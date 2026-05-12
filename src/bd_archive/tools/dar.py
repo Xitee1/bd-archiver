@@ -128,6 +128,7 @@ def extract_sequential(
     base_path: Path,
     output_dir: Path,
     catalog_base: Path | None = None,
+    overwrite: bool = False,
 ) -> tuple[int, list[str]]:
     """Extract a dar archive with --sequential-read.
 
@@ -137,6 +138,11 @@ def extract_sequential(
     With a complete slice set, no prompts fire and the ESC stream
     goes unused.
 
+    Set overwrite=True to make dar replace existing files without
+    prompting (`-wa`). Required when extracting an incremental on
+    top of a previously-extracted generation, where later gens
+    update files that earlier gens already restored.
+
     Returns (exit_code, corrupted_files). corrupted_files contains
     the paths dar reported as "Bad CRC" during extract — these
     files were (partially) written to output and need attention.
@@ -144,6 +150,8 @@ def extract_sequential(
     the caller must check this list, not just the exit code.
     """
     cmd = ["dar", "-x", str(base_path), "-R", str(output_dir), "-O", "--sequential-read"]
+    if overwrite:
+        cmd.append("-wa")
     if catalog_base is not None:
         # -A uses the isolated catalog as rescue source — handles
         # corruption of the in-archive catalog (PAR2 covers slice

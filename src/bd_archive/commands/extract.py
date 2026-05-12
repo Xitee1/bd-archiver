@@ -1,10 +1,12 @@
 import contextlib
+import re
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 from bd_archive.archive.checksums import verify_slice
+from bd_archive.archive.dar_archive import parse_dar_filename
 from bd_archive.archive.disc import DiscIO
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
@@ -14,6 +16,17 @@ from bd_archive.tools.par2 import VerifyResult, is_par2_index
 from bd_archive.ui.logger import log
 from bd_archive.ui.progress import Progress, copy_with_progress
 from bd_archive.ui.prompts import prompt_disc, prompt_yn
+
+# A dar slice or catalog filename ends in ".NNNN.dar"; stripping that
+# off yields the dar archive basename (e.g. "photos-gen1" or, on legacy
+# pre-Phase-2 archives, just "photos"). That basename is what dar -x
+# wants as input, and what we use to group files by generation in
+# staging.
+_SLICE_SUFFIX_RE = re.compile(r"\.\d+\.dar$")
+
+
+def _dar_basename(filename: str) -> str:
+    return _SLICE_SUFFIX_RE.sub("", filename)
 
 
 def _mount_with_prompt(dio: DiscIO, mount_dir: Path, prompt_msg: str) -> Path | None:
@@ -28,23 +41,29 @@ def _mount_with_prompt(dio: DiscIO, mount_dir: Path, prompt_msg: str) -> Path | 
 
 
 def _copy_disc_data(
-    mounted: Path, archive_name: str, staging: Path, catalog_verified: bool
+    mounted: Path, disc_basename: str, staging: Path, catalog_verified: bool
 ) -> list[Path]:
-    """Copy slices + sha512 sidecars (and catalog if not yet verified) from
-    disc to staging. par2 files are NOT copied — fetched lazily on damage.
-    Returns list of slice paths in staging for this disc."""
+    """Copy slices + sha512 sidecars (and the catalog of this disc's
+    generation, if not yet verified) from disc to staging. par2 files
+    are NOT copied — fetched lazily on damage.
+
+    Returns the list of slice paths in staging that came from this disc.
+    """
+    catalog_basename = f"{disc_basename}-catalog"
     if not catalog_verified:
-        for cat in mounted.glob(f"{archive_name}-catalog.*.dar"):
+        for cat in mounted.glob(f"{catalog_basename}.*.dar"):
             dest = staging / cat.name
             if not dest.exists():
                 shutil.copy2(cat, dest)
-        for cat_hash in mounted.glob(f"{archive_name}-catalog.*.dar.sha512"):
+        for cat_hash in mounted.glob(f"{catalog_basename}.*.dar.sha512"):
             dest = staging / cat_hash.name
             if not dest.exists():
                 shutil.copy2(cat_hash, dest)
 
     slices = sorted(
-        p for p in mounted.glob(f"{archive_name}.[0-9]*.dar") if "-catalog" not in p.name
+        p
+        for p in mounted.glob(f"{disc_basename}.[0-9]*.dar")
+        if "-catalog" not in p.name
     )
     copied: list[Path] = []
     for sp in slices:
@@ -61,17 +80,16 @@ def _copy_disc_data(
     return copied
 
 
-def _verify_catalog_on_staging(staging: Path, archive_name: str) -> bool:
-    """Verify every catalog slice currently in staging. Drop any that
-    fail sha512. Return True only when all present slices verified.
+def _verify_catalog_on_staging(staging: Path, catalog_basename: str) -> bool:
+    """Verify every catalog slice currently in staging for one generation.
+    Drop any that fail sha512 so the next disc carrying them can refetch.
 
-    Iterates all slices (no early return) so multi-slice catalogs with
-    multiple failures get every corrupt slice flagged + deleted in a
-    single pass. The next disc's _copy_disc_data re-fetches anything
-    missing, so the loop converges in fewer disc-iterations than the
-    naive 'stop at first failure' variant.
+    Returns True only when every present slice verified — a single pass
+    flags every corrupt slice (no early return), so multi-slice catalogs
+    converge in one fewer disc-iteration than a 'stop at first failure'
+    variant would.
     """
-    catalog_files = sorted(staging.glob(f"{archive_name}-catalog.*.dar"))
+    catalog_files = sorted(staging.glob(f"{catalog_basename}.*.dar"))
     if not catalog_files:
         return False
     all_ok = True
@@ -147,16 +165,18 @@ def cmd_extract(args):
     log.info(f"Device:   {device}")
     log.info(f"Output:   {output_dir}")
     log.info(f"Staging:  {staging}")
+    log.info("Insert discs from any generation, in any order. The tool")
+    log.info("detects generations from filenames and extracts the chain")
+    log.info("in order at the end.")
 
-    archive_name: str | None = None
-    catalog_verified = False
-    disc_num = 0
-    # Slices that sha512 + par2 both failed on. Files coming from them
-    # may end up corrupt in the output — we collect this so the final
-    # corrupted-files.txt explains which disc to blame even when dar's
-    # per-file error parser couldn't pinpoint individual files (e.g.
-    # archive-metadata corruption).
+    # Per-generation state. Catalog verification and dar basename live
+    # under each gen because the chain may mix legacy (gen 1 without
+    # -gen<N> suffix) and new-format generations.
+    chain_name: str | None = None
+    catalogs_verified: dict[int, bool] = {}
+    gen_basenames: dict[int, str] = {}
     unrepairable_slices: list[str] = []
+    disc_num = 0
 
     while True:
         target = disc_num + 1
@@ -169,19 +189,37 @@ def cmd_extract(args):
             sys.exit(1)
 
         try:
-            if archive_name is None:
-                dar_files = [p for p in mounted.glob("*.dar") if "-catalog" not in p.name]
-                if not dar_files:
-                    log.error("No dar files found on disc — try another")
-                    continue
-                archive_name = dar_files[0].stem.rsplit(".", 1)[0]
-                log.info(f"Archive detected: {archive_name}")
+            # Detect chain name + generation from any slice filename.
+            dar_files = [p for p in mounted.glob("*.dar") if "-catalog" not in p.name]
+            if not dar_files:
+                log.error("No dar files found on disc — try another")
+                continue
+            parsed = parse_dar_filename(dar_files[0].name)
+            if parsed is None:
+                log.error(f"Unrecognised dar filename: {dar_files[0].name}")
+                continue
+            disc_name, disc_gen, _ = parsed
+            disc_basename = _dar_basename(dar_files[0].name)
+
+            if chain_name is None:
+                chain_name = disc_name
+                log.info(f"Chain: {chain_name}")
+            elif disc_name != chain_name:
+                log.error(
+                    f"Disc belongs to chain '{disc_name}', but this run is for "
+                    f"chain '{chain_name}'. Eject and insert a matching disc."
+                )
+                continue
+
+            log.info(f"Disc {target}: Gen {disc_gen} ({disc_basename})")
+            gen_basenames.setdefault(disc_gen, disc_basename)
+            catalog_verified = catalogs_verified.get(disc_gen, False)
 
             disc_num = target
 
             # ── 2. Copy data (no par2) ────────────────────────────────────
             log.info(f"Copying disc {disc_num}...")
-            copied = _copy_disc_data(mounted, archive_name, staging, catalog_verified)
+            copied = _copy_disc_data(mounted, disc_basename, staging, catalog_verified)
             log.ok(f"  {len(copied)} slice(s) staged")
         finally:
             dio.umount(mounted)
@@ -189,11 +227,11 @@ def cmd_extract(args):
                 mount_dir.rmdir()
             dio.eject()
 
-        # ── 3. Verify catalog (only first time it lands intact) ──────────
-        if not catalog_verified:
-            log.info("Verifying catalog on staging...")
-            if _verify_catalog_on_staging(staging, archive_name):
-                catalog_verified = True
+        # ── 3. Verify catalog for this generation (first time it lands) ───
+        if not catalogs_verified.get(disc_gen, False):
+            log.info(f"Verifying Gen {disc_gen} catalog on staging...")
+            if _verify_catalog_on_staging(staging, f"{disc_basename}-catalog"):
+                catalogs_verified[disc_gen] = True
 
         # ── 4. Verify slices on staging via sha512 ───────────────────────
         log.info(f"Verifying disc {disc_num} slices on staging...")
@@ -222,9 +260,8 @@ def cmd_extract(args):
                         continue
                     log.error(f"  {sp.name}: unrecoverable damage")
                     log.warn(
-                        f"  {sp.name}: keeping as-is — files from "
-                        f"this slice may be corrupt; will be listed "
-                        f"in corrupted-files.txt"
+                        f"  {sp.name}: keeping as-is — files from this slice may "
+                        f"be corrupt; will be listed in corrupted-files.txt"
                     )
                     unrepairable_slices.append(sp.name)
             finally:
@@ -234,56 +271,61 @@ def cmd_extract(args):
                 dio.eject()
             _cleanup_par2(staging)
 
-        collected = sorted(staging.glob(f"{archive_name}.[0-9]*.dar"))
-        collected = [c for c in collected if "-catalog" not in c.name]
-        log.info(f"Collected: {len(collected)} slice(s)")
+        # Report current chain collection state.
+        gens_collected = sorted(gen_basenames)
+        log.info(f"Chain so far: Gen {gens_collected} ({disc_num} disc(s) total)")
 
         if not prompt_yn("Insert another disc?"):
             break
 
-    # ── Extract ─────────────────────────────────────────────────────────
-    log.step("Extracting archive")
-    collected = [
-        c for c in sorted(staging.glob(f"{archive_name}.[0-9]*.dar")) if "-catalog" not in c.name
-    ]
-    log.info(f"Slices: {len(collected)}")
-    log.info(f"Output: {output_dir}")
+    if chain_name is None:
+        log.error("No discs processed")
+        sys.exit(1)
 
-    dar_base = staging / archive_name
-    catalog_base = staging / f"{archive_name}-catalog"
-    has_catalog = any(staging.glob(f"{archive_name}-catalog.*.dar"))
+    # ── Extract: one dar -x per generation in order ──────────────────────
+    log.step("Extracting archive chain")
+    sorted_gens = sorted(gen_basenames)
+    log.info(f"Chain: {chain_name}")
+    log.info(f"Generations: {sorted_gens}")
 
-    rc, corrupted_files = dar.extract_sequential(
-        dar_base,
-        output_dir,
-        catalog_base=catalog_base if has_catalog else None,
-    )
+    all_corrupted: list[str] = []
+    for i, gen in enumerate(sorted_gens):
+        basename = gen_basenames[gen]
+        log.info(f"Gen {gen}: dar -x {basename}")
+        catalog_basename = f"{basename}-catalog"
+        has_catalog = any(staging.glob(f"{catalog_basename}.*.dar"))
+        # Subsequent generations must overwrite earlier ones (later gens
+        # carry the newer file contents). Gen 1 extracts into a clean
+        # output dir, so overwrite is a no-op there — but we set it
+        # uniformly to keep the call site simple.
+        rc, corrupted = dar.extract_sequential(
+            staging / basename,
+            output_dir,
+            catalog_base=staging / catalog_basename if has_catalog else None,
+            overwrite=i > 0,
+        )
+        all_corrupted.extend(corrupted)
+        if rc != 0:
+            log.error(f"Gen {gen} dar extract failed (exit {rc})")
+            log.info(f"Slices remain in: {staging}")
+            log.info(
+                f"Manual retry: dar -x {staging / basename} -R {output_dir} --sequential-read -wa"
+            )
+            sys.exit(1)
 
-    if rc == 0 and not corrupted_files and not unrepairable_slices:
+    if not all_corrupted and not unrepairable_slices:
         log.ok("Extraction complete!")
-    elif rc == 0:
-        # dar exited cleanly but reported per-file CRC errors and/or
-        # we already know slices were unrepairable. Tell the user.
+    else:
         log.warn(
             f"Extraction finished with corruption: "
-            f"{len(corrupted_files)} file(s) reported by dar, "
+            f"{len(all_corrupted)} file(s) reported by dar, "
             f"{len(unrepairable_slices)} slice(s) unrepairable"
         )
-    else:
-        log.error(f"dar extraction failed (exit {rc})")
-        log.info(f"Slices are in: {staging}")
-        if has_catalog:
-            log.info(
-                f"Retry without rescue catalog: dar -x {dar_base} -R {output_dir} --sequential-read"
-            )
-        else:
-            log.info(f"Manual: dar -x {dar_base} -R {output_dir} --sequential-read")
-        sys.exit(1)
 
     # Write corrupted-files.txt manifest into output_dir (NOT into the
     # workdir, which may be auto-cleaned) when anything went sideways.
     manifest_path: Path | None = None
-    if corrupted_files or unrepairable_slices:
+    if all_corrupted or unrepairable_slices:
         manifest_path = output_dir / "corrupted-files.txt"
         lines = [
             "# bd-archive: corrupted-files manifest",
@@ -293,9 +335,9 @@ def cmd_extract(args):
             "# them with intact data if the par2 recovery succeeds.",
             "",
         ]
-        if corrupted_files:
-            lines.append(f"## {len(corrupted_files)} file(s) reported by dar with bad CRC:")
-            for fp in corrupted_files:
+        if all_corrupted:
+            lines.append(f"## {len(all_corrupted)} file(s) reported by dar with bad CRC:")
+            for fp in all_corrupted:
                 try:
                     rel = str(Path(fp).resolve().relative_to(output_dir.resolve()))
                 except ValueError:
@@ -325,19 +367,18 @@ def cmd_extract(args):
         shutil.rmtree(work_dir, ignore_errors=True)
 
     log.step("Restore complete")
-    print(f"\n  Archive: {archive_name}")
-    print(f"  Slices:  {len(collected)}")
-    print(f"  Discs:   {disc_num}")
-    print(f"  Output:  {output_dir}")
-    print(f"  Size:    {human_bytes(total)}")
+    print(f"\n  Chain:        {chain_name}")
+    print(f"  Generations:  {sorted_gens}")
+    print(f"  Discs:        {disc_num}")
+    print(f"  Output:       {output_dir}")
+    print(f"  Size:         {human_bytes(total)}")
     if manifest_path is not None:
-        print(f"  CORRUPT: {manifest_path}")
+        print(f"  CORRUPT:      {manifest_path}")
     if not workdir_is_default:
         print(f"\n  Cleanup staging: rm -rf {work_dir}")
     print()
 
     # Non-zero exit when corruption was detected so scripts know the
-    # restore was not fully clean. The output is still useful (best-
-    # effort restore), but callers should consult corrupted-files.txt.
-    if corrupted_files or unrepairable_slices:
+    # restore was not fully clean.
+    if all_corrupted or unrepairable_slices:
         sys.exit(1)
