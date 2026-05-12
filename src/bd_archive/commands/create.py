@@ -11,6 +11,7 @@ from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_r
 from bd_archive.archive.source_scan import scan_source
 from bd_archive.constants import (
     DISC_END_MARGIN,
+    ISO9660_LABEL_NAME_MAX,
     ISO9660_VOLUME_LABEL_MAX,
     PAR2_AND_MISC_OVERHEAD,
 )
@@ -26,14 +27,23 @@ from bd_archive.ui.prompts import prompt_yn
 def cmd_create(args):
     check_deps("dar", "par2", "mkisofs", "dvd+rw-mediainfo")
 
-    max_name_len = ISO9660_VOLUME_LABEL_MAX - 5  # "_NNNN" suffix
-    if len(args.name) > max_name_len:
+    # Hard cap matches the pre-Phase-2 label format (32 - 5) so existing
+    # archive names that lived right up against the old limit still work.
+    # Names longer than ISO9660_LABEL_NAME_MAX (23) get truncated in the
+    # volume label only; filenames inside the ISO keep the full name.
+    legacy_max_name_len = ISO9660_VOLUME_LABEL_MAX - 5
+    if len(args.name) > legacy_max_name_len:
         log.error(
             f"--name '{args.name}' is {len(args.name)} chars; "
-            f"max {max_name_len} (ISO9660 volume label limit "
-            f"{ISO9660_VOLUME_LABEL_MAX} minus 5-char disc suffix)"
+            f"max {legacy_max_name_len}"
         )
         sys.exit(1)
+    if len(args.name) > ISO9660_LABEL_NAME_MAX:
+        log.warn(
+            f"--name '{args.name}' is {len(args.name)} chars; "
+            f"volume labels will be truncated to {ISO9660_LABEL_NAME_MAX} chars "
+            f"('{args.name[:ISO9660_LABEL_NAME_MAX]}'). Filenames on disc keep the full name."
+        )
 
     source = Path(args.source).resolve()
     if not source.is_dir():
@@ -109,12 +119,15 @@ def cmd_create(args):
     last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))
 
     par2_est = slice_bytes * args.redundancy // 100
+    # Phase 2: every archive starts as Gen 1. Phase 3 lets `--base`
+    # derive higher generation numbers from a predecessor catalog.
     cfg = ArchiveConfig(
         name=args.name,
         disc_bytes=raw_capacity,
         redundancy=args.redundancy,
         compression=args.compression,
         comp_level=args.level,
+        generation=1,
     )
 
     log.step("Source")
@@ -156,7 +169,7 @@ def cmd_create(args):
             output_dir.rmdir()
         sys.exit(0)
 
-    dar_archive = DarArchive(cfg.name, work_dir)
+    dar_archive = DarArchive(cfg.dar_name, work_dir)
     tmp_dir = dar_archive.tmp_dir
 
     # ── Create dar archive ──────────────────────────────────────────────
@@ -238,8 +251,10 @@ def cmd_create(args):
         sources.extend(par2_files)
         sources.append(readme_path)
 
-        # Build ISO directly from in-place files (no staging copies)
-        volume_label = f"{cfg.name}_{i:04d}"
+        # Build ISO directly from in-place files (no staging copies).
+        # Label is "<truncated_name>_G<NN>_<NNNN>" — name truncated to
+        # ISO9660_LABEL_NAME_MAX (23) so gen + disc suffix always fit.
+        volume_label = f"{cfg.name[:ISO9660_LABEL_NAME_MAX]}_G{cfg.generation:02d}_{i:04d}"
         iso_path = images_dir / f"disc_{i:04d}.iso"
         log.info(f"  building {iso_path.name}...")
         mkisofs.build(iso_path, sources, volume_label, publisher)
@@ -281,9 +296,9 @@ def cmd_create(args):
         cat_hash = Path(str(cat) + ".sha512")
         if cat_hash.exists():
             shutil.copy2(cat_hash, output_dir / cat_hash.name)
-    catalog_persisted = sorted(output_dir.glob(f"{cfg.name}-catalog.*.dar"))
+    catalog_persisted = sorted(output_dir.glob(f"{cfg.dar_name}-catalog.*.dar"))
     if catalog_persisted:
-        log.info(f"Catalog persisted: {catalog_persisted[0].parent}/{cfg.name}-catalog.*.dar")
+        log.info(f"Catalog persisted: {catalog_persisted[0].parent}/{cfg.dar_name}-catalog.*.dar")
 
     # Final cleanup: drop the entire tmp/ tree (catalog, dar internals).
     # If workdir is the default hidden one, also remove it — the only
@@ -305,6 +320,6 @@ def cmd_create(args):
     print(f"  PAR2:         {cfg.redundancy}% per disc")
     print(f"  Compression:  {cfg.comp_str}")
     print(f"  Images:       {images_dir}")
-    print(f"  Catalog:      {output_dir}/{cfg.name}-catalog.*.dar")
+    print(f"  Catalog:      {output_dir}/{cfg.dar_name}-catalog.*.dar")
     print(f"\n  Next step:    bd-archive burn -i {output_dir}")
     print(f"  Cleanup:      rm -rf {output_dir}\n")
