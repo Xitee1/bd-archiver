@@ -20,6 +20,7 @@ def create_sliced(
     compression: str,
     comp_level: str | None,
     execute_hook: str | None = None,
+    ref_catalog: Path | None = None,
 ):
     """Create a sliced dar archive with sha512 hashes.
 
@@ -27,6 +28,12 @@ def create_sliced(
     been completed (verified against dar 2.7.17). This is used by
     cmd_create to run par2 on each slice while its bytes are still in
     the OS page cache.
+
+    If ref_catalog is set, dar runs in incremental mode (`-A <ref>`):
+    only files new or changed relative to that reference catalog are
+    archived. Pass the basename of the catalog without the
+    ``.NNNN.dar`` suffix (dar accepts the catalog basename and finds
+    the slice files itself).
     """
     cmd = [
         "dar",
@@ -47,9 +54,35 @@ def create_sliced(
         if comp_level:
             flag += f":{comp_level}"
         cmd += [flag, "-am"]
+    if ref_catalog is not None:
+        cmd += ["-A", str(ref_catalog)]
     if execute_hook is not None:
         cmd += ["-E", execute_hook]
     run(cmd, label="dar")
+
+
+def list_catalog_paths(catalog_base: Path) -> set[str]:
+    """Return the set of relative paths stored in a dar catalog.
+
+    Runs ``dar -l <catalog_base> -as`` and parses the listing. dar's
+    entry lines use tab separators between the user, group, size, date,
+    and filename columns — the filename is always the last tab-separated
+    field. Header and separator lines lack tabs entirely, so the
+    "contains a tab" filter is sufficient to discard them.
+
+    Directories are included; the consumer (auto-defer pool filter)
+    treats the set as "anything dar already knows about", which keeps
+    the filter conservative.
+    """
+    r = run(["dar", "-l", str(catalog_base), "-as", "-Q"], capture=True, check=True)
+    paths: set[str] = set()
+    for line in r.stdout.splitlines():
+        if "\t" not in line:
+            continue
+        path = line.split("\t")[-1].rstrip()
+        if path:
+            paths.add(path)
+    return paths
 
 
 def isolate_catalog(base_path: Path):

@@ -58,6 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compression algorithm (default: zstd)",
     )
     cr.add_argument("-l", "--level", help="Compression level")
+    cr.add_argument(
+        "--base",
+        default=None,
+        help="Path to the isolated catalog of a previous generation "
+        "(e.g. <prev-output>/<name>-gen<N>-catalog.0001.dar). When set, "
+        "this run produces an incremental archive (Gen N+1) containing "
+        "only files new or changed since that catalog. Archive name "
+        "(-n) must match the predecessor — chain identity is the name.",
+    )
     ratio_group = cr.add_mutually_exclusive_group()
     ratio_group.add_argument(
         "--ratio",

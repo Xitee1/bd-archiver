@@ -1,4 +1,5 @@
 import contextlib
+import re
 import shlex
 import shutil
 import sys
@@ -6,9 +7,9 @@ from pathlib import Path
 
 from bd_archive import __version__
 from bd_archive.archive.config import ArchiveConfig, write_readme
-from bd_archive.archive.dar_archive import DarArchive
+from bd_archive.archive.dar_archive import DarArchive, parse_dar_filename
 from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
-from bd_archive.archive.source_scan import scan_source
+from bd_archive.archive.source_scan import scan_delta_bytes, scan_source
 from bd_archive.constants import (
     DISC_END_MARGIN,
     ISO9660_LABEL_NAME_MAX,
@@ -18,10 +19,46 @@ from bd_archive.constants import (
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import mkisofs
+from bd_archive.tools.dar import list_catalog_paths
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
+
+# Catalog slice files end in ".NNNN.dar"; strip that to get the dar
+# basename suitable for `-A`. dar resolves the actual slice file(s)
+# from the basename, so we never hand it the raw filename.
+_CATALOG_SLICE_SUFFIX_RE = re.compile(r"\.\d+\.dar$")
+
+
+def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
+    """Validate and unpack a --base argument.
+
+    Returns ``(catalog_basename_path, base_generation)``. Raises
+    SystemExit with a user-readable error if the path is missing, the
+    filename doesn't look like a dar catalog slice, or the embedded
+    archive name disagrees with ``-n``.
+    """
+    base_path = Path(base_arg).resolve()
+    if not base_path.is_file():
+        log.error(f"--base path does not exist: {base_path}")
+        sys.exit(1)
+    parsed = parse_dar_filename(base_path.name)
+    if parsed is None or not parsed[2]:
+        log.error(
+            f"--base must point to a dar catalog slice "
+            f"(<name>[-gen<N>]-catalog.NNNN.dar); got '{base_path.name}'"
+        )
+        sys.exit(1)
+    base_name, base_gen, _ = parsed
+    if base_name != archive_name:
+        log.error(
+            f"--base belongs to archive '{base_name}' but -n is '{archive_name}'. "
+            f"Chain identity is the archive name; keep it consistent across generations."
+        )
+        sys.exit(1)
+    base_stem = _CATALOG_SLICE_SUFFIX_RE.sub("", base_path.name)
+    return base_path.parent / base_stem, base_gen
 
 
 def cmd_create(args):
@@ -44,6 +81,15 @@ def cmd_create(args):
             f"volume labels will be truncated to {ISO9660_LABEL_NAME_MAX} chars "
             f"('{args.name[:ISO9660_LABEL_NAME_MAX]}'). Filenames on disc keep the full name."
         )
+
+    # --base: parse and validate. Sets `ref_catalog` (dar -A argument)
+    # and `generation` (current run's gen number = base_gen + 1).
+    ref_catalog: Path | None = None
+    generation = 1
+    if args.base is not None:
+        ref_catalog, base_gen = _resolve_base(args.base, args.name)
+        generation = base_gen + 1
+        log.info(f"Incremental against: {ref_catalog.name} (Gen {base_gen}) → new Gen {generation}")
 
     source = Path(args.source).resolve()
     if not source.is_dir():
@@ -107,7 +153,21 @@ def cmd_create(args):
         ratio = 1.0
         ratio_source = "default (no compression assumed)"
 
-    archive_est = int(scan.total_bytes * ratio)
+    # For an incremental, the data payload is only new/changed files;
+    # estimating against the full source overstates disc count and
+    # last-disc fill. Re-scan the source against the base catalog to
+    # get a delta-aware payload size. mtime is a heuristic — see
+    # scan_delta_bytes for why it's good enough for previews.
+    if ref_catalog is not None:
+        base_paths = list_catalog_paths(ref_catalog)
+        # Stat the user-supplied catalog slice file directly — its mtime
+        # is the timestamp dar wrote the catalog at, which we use as the
+        # cutoff for "modified since base".
+        base_mtime = Path(args.base).resolve().stat().st_mtime
+        delta_bytes = scan_delta_bytes(source, base_paths, base_mtime)
+        archive_est = int(delta_bytes * ratio)
+    else:
+        archive_est = int(scan.total_bytes * ratio)
     n_discs = max(1, (archive_est + slice_bytes - 1) // slice_bytes)
     last_slice = archive_est - (n_discs - 1) * slice_bytes
     if last_slice == 0:
@@ -119,15 +179,13 @@ def cmd_create(args):
     last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))
 
     par2_est = slice_bytes * args.redundancy // 100
-    # Phase 2: every archive starts as Gen 1. Phase 3 lets `--base`
-    # derive higher generation numbers from a predecessor catalog.
     cfg = ArchiveConfig(
         name=args.name,
         disc_bytes=raw_capacity,
         redundancy=args.redundancy,
         compression=args.compression,
         comp_level=args.level,
-        generation=1,
+        generation=generation,
     )
 
     log.step("Source")
@@ -140,7 +198,8 @@ def cmd_create(args):
     log.info(f"Slice size:       {human_bytes(slice_bytes)}")
     log.info(f"PAR2 redundancy:  {cfg.redundancy}% (~{human_bytes(par2_est)})")
     log.info(f"Compression:      {cfg.comp_str} (ratio {ratio:.3f}, {ratio_source})")
-    log.info(f"Estimated archive: {human_bytes(archive_est)}")
+    archive_kind = "delta vs base" if ref_catalog is not None else "full source"
+    log.info(f"Estimated archive: {human_bytes(archive_est)} ({archive_kind})")
 
     log.step("Estimate")
     fill_pct = last_disc_content * 100 // sizing_target
@@ -157,6 +216,9 @@ def cmd_create(args):
     log.info(f"Source:        {source}")
     log.info(f"Output:        {output_dir}")
     log.info(f"Workdir:       {work_dir}{' (default)' if workdir_is_default else ' (custom)'}")
+    log.info(f"Generation:    {cfg.generation} ({'incremental' if ref_catalog else 'full'})")
+    if ref_catalog is not None:
+        log.info(f"Base catalog:  {args.base}")
 
     if not args.yes and not prompt_yn("Proceed with creation?"):
         log.warn("Cancelled by user")
@@ -184,7 +246,14 @@ def cmd_create(args):
     par2_hook = (
         f'{shlex.quote(sys.executable)} -m bd_archive._par2_helper "%p" "%b" %N {cfg.redundancy}'
     )
-    dar_archive.create(source, slice_bytes, cfg.compression, cfg.comp_level, par2_hook=par2_hook)
+    dar_archive.create(
+        source,
+        slice_bytes,
+        cfg.compression,
+        cfg.comp_level,
+        par2_hook=par2_hook,
+        ref_catalog=ref_catalog,
+    )
 
     slices = dar_archive.slices
     slice_count = len(slices)
