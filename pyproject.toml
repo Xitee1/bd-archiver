@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -16,7 +16,10 @@ bd-archive = "bd_archive.cli:main"
 dev = ["ruff>=0.4", "pre-commit>=3.7"]
 
 [tool.hatch.version]
-path = "src/bd_archive/__init__.py"
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/bd_archive/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bd_archive"]
