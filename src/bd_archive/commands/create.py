@@ -225,11 +225,16 @@ def cmd_create(args):
         sources = [slice_file]
         if slice_hash.exists():
             sources.append(slice_hash)
-        for cat in dar_archive.catalog_files:
-            sources.append(cat)
-            cat_hash = Path(str(cat) + ".sha512")
-            if cat_hash.exists():
-                sources.append(cat_hash)
+        # Catalog goes onto Disc 1 only. The master catalog at the end of
+        # the last slice (dar default) plus this isolated copy on Disc 1
+        # gives two spatially separated copies per archive set. Replicating
+        # on every disc was redundant and grew unboundedly with file count.
+        if i == 1:
+            for cat in dar_archive.catalog_files:
+                sources.append(cat)
+                cat_hash = Path(str(cat) + ".sha512")
+                if cat_hash.exists():
+                    sources.append(cat_hash)
         sources.extend(par2_files)
         sources.append(readme_path)
 
@@ -264,6 +269,22 @@ def cmd_create(args):
             pf.unlink()
         readme_path.unlink(missing_ok=True)
 
+    # Persist the isolated catalog alongside images/ for two reasons:
+    #   1. It survives `output_dir` being burned + the local images/
+    #      being deleted — user keeps the catalog as part of their
+    #      regular backup.
+    #   2. Future incremental generations will reference this file via
+    #      `--base` (not implemented yet in this phase, but the artifact
+    #      needs to exist from this phase onward).
+    for cat in dar_archive.catalog_files:
+        shutil.copy2(cat, output_dir / cat.name)
+        cat_hash = Path(str(cat) + ".sha512")
+        if cat_hash.exists():
+            shutil.copy2(cat_hash, output_dir / cat_hash.name)
+    catalog_persisted = sorted(output_dir.glob(f"{cfg.name}-catalog.*.dar"))
+    if catalog_persisted:
+        log.info(f"Catalog persisted: {catalog_persisted[0].parent}/{cfg.name}-catalog.*.dar")
+
     # Final cleanup: drop the entire tmp/ tree (catalog, dar internals).
     # If workdir is the default hidden one, also remove it — the only
     # thing inside was tmp/, so leaving it would just be cruft. A
@@ -284,5 +305,6 @@ def cmd_create(args):
     print(f"  PAR2:         {cfg.redundancy}% per disc")
     print(f"  Compression:  {cfg.comp_str}")
     print(f"  Images:       {images_dir}")
+    print(f"  Catalog:      {output_dir}/{cfg.name}-catalog.*.dar")
     print(f"\n  Next step:    bd-archive burn -i {output_dir}")
     print(f"  Cleanup:      rm -rf {output_dir}\n")
