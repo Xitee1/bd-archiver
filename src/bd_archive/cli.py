@@ -67,6 +67,17 @@ def build_parser() -> argparse.ArgumentParser:
         "only files new or changed since that catalog. Archive name "
         "(-n) must match the predecessor — chain identity is the name.",
     )
+    cr.add_argument(
+        "--min-last-disc-fill",
+        type=int,
+        default=0,
+        metavar="PERCENT",
+        help="Auto-defer newest files until the last disc of the set is "
+        "at least PERCENT full (0-100). With --base, defers only files "
+        "not already in the base catalog. Without --base (full archive), "
+        "defers any files — and they will NOT be archived until a future "
+        "incremental run picks them up. Default 0 = no deferral.",
+    )
     ratio_group = cr.add_mutually_exclusive_group()
     ratio_group.add_argument(
         "--ratio",

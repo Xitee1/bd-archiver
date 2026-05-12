@@ -21,6 +21,7 @@ def create_sliced(
     comp_level: str | None,
     execute_hook: str | None = None,
     ref_catalog: Path | None = None,
+    excludes: list[str] | None = None,
 ):
     """Create a sliced dar archive with sha512 hashes.
 
@@ -34,6 +35,10 @@ def create_sliced(
     archived. Pass the basename of the catalog without the
     ``.NNNN.dar`` suffix (dar accepts the catalog basename and finds
     the slice files itself).
+
+    If excludes is set, each entry is passed to dar as ``-P <path>``,
+    excluding that exact relative subpath from the archive. Used by
+    auto-defer to push specific files to a later generation.
     """
     cmd = [
         "dar",
@@ -56,6 +61,9 @@ def create_sliced(
         cmd += [flag, "-am"]
     if ref_catalog is not None:
         cmd += ["-A", str(ref_catalog)]
+    if excludes:
+        for path in excludes:
+            cmd += ["-P", path]
     if execute_hook is not None:
         cmd += ["-E", execute_hook]
     run(cmd, label="dar")

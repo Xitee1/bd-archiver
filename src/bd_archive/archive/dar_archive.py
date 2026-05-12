@@ -58,6 +58,7 @@ class DarArchive:
         comp_level: str | None,
         par2_hook: str | None = None,
         ref_catalog: Path | None = None,
+        excludes: list[str] | None = None,
     ):
         dar.create_sliced(
             self.base_path,
@@ -67,6 +68,7 @@ class DarArchive:
             comp_level,
             execute_hook=par2_hook,
             ref_catalog=ref_catalog,
+            excludes=excludes,
         )
 
     def isolate_catalog(self):

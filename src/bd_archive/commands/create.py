@@ -9,7 +9,12 @@ from bd_archive import __version__
 from bd_archive.archive.config import ArchiveConfig, write_readme
 from bd_archive.archive.dar_archive import DarArchive, parse_dar_filename
 from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
-from bd_archive.archive.source_scan import scan_delta_bytes, scan_source
+from bd_archive.archive.source_scan import (
+    SourceFile,
+    list_source_files,
+    scan_delta_bytes,
+    scan_source,
+)
 from bd_archive.constants import (
     DISC_END_MARGIN,
     ISO9660_LABEL_NAME_MAX,
@@ -158,6 +163,7 @@ def cmd_create(args):
     # last-disc fill. Re-scan the source against the base catalog to
     # get a delta-aware payload size. mtime is a heuristic — see
     # scan_delta_bytes for why it's good enough for previews.
+    base_paths: set[str] = set()
     if ref_catalog is not None:
         base_paths = list_catalog_paths(ref_catalog)
         # Stat the user-supplied catalog slice file directly — its mtime
@@ -168,13 +174,77 @@ def cmd_create(args):
         archive_est = int(delta_bytes * ratio)
     else:
         archive_est = int(scan.total_bytes * ratio)
-    n_discs = max(1, (archive_est + slice_bytes - 1) // slice_bytes)
-    last_slice = archive_est - (n_discs - 1) * slice_bytes
-    if last_slice == 0:
-        last_slice = slice_bytes
-    last_disc_content = (
-        last_slice + last_slice * args.redundancy // 100 + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
-    )
+
+    def _layout(est: int) -> tuple[int, int, int]:
+        """(n_discs, last_disc_content, last_fill_pct) for a given archive size."""
+        n = max(1, (est + slice_bytes - 1) // slice_bytes)
+        last_sl = est - (n - 1) * slice_bytes
+        if last_sl == 0:
+            last_sl = slice_bytes
+        last_content = (
+            last_sl + last_sl * args.redundancy // 100
+            + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
+        )
+        return n, last_content, last_content * 100 // sizing_target
+
+    n_discs, last_disc_content, fill_pct = _layout(archive_est)
+
+    # ── Auto-defer (--min-last-disc-fill) ───────────────────────────────
+    # When the last disc would be too empty, push newest files to a
+    # future generation so this set "rounds down" to fewer discs with
+    # higher fill. Pool is "files truly new vs. base catalog" when
+    # incremental, "all files" when full (with warning — those files
+    # won't be archived anywhere until a later incremental run picks
+    # them up).
+    deferred_files: list[SourceFile] = []
+    if args.min_last_disc_fill > 0 and fill_pct < args.min_last_disc_fill:
+        if ref_catalog is not None:
+            pool = [f for f in list_source_files(source) if f.rel_path not in base_paths]
+            pool_kind = "files not in base catalog"
+        else:
+            pool = list_source_files(source)
+            pool_kind = "all source files"
+            log.warn(
+                "--min-last-disc-fill on a Full archive defers files that will "
+                "NOT be archived until a future incremental run picks them up."
+            )
+        pool.sort(key=lambda f: f.mtime, reverse=True)
+
+        cum_size = 0
+        reached = False
+        for f in pool:
+            cum_size += f.size
+            new_est = max(0, archive_est - int(cum_size * ratio))
+            new_n, new_last, new_fill = _layout(new_est) if new_est > 0 else (0, 0, 0)
+            deferred_files.append(f)
+            if new_est == 0:
+                # Pool would empty the archive entirely — stop here.
+                break
+            if new_fill >= args.min_last_disc_fill:
+                archive_est, n_discs, last_disc_content, fill_pct = (
+                    new_est, new_n, new_last, new_fill
+                )
+                reached = True
+                break
+
+        if not reached:
+            log.warn(
+                f"--min-last-disc-fill {args.min_last_disc_fill}% not reachable; "
+                f"pool ({len(pool)} candidate file(s), {pool_kind}) exhausted "
+                f"after deferring {human_bytes(cum_size)}. Proceeding with "
+                f"what we have."
+            )
+            if archive_est - int(cum_size * ratio) > 0:
+                archive_est, n_discs, last_disc_content, fill_pct = (
+                    archive_est - int(cum_size * ratio), new_n, new_last, new_fill
+                )
+            else:
+                log.error(
+                    "Deferring all candidates would leave 0 bytes to archive. "
+                    "Lower --min-last-disc-fill or skip the run."
+                )
+                sys.exit(1)
+
     last_disc_free = max(0, sizing_target - last_disc_content)
     last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))
 
@@ -202,7 +272,6 @@ def cmd_create(args):
     log.info(f"Estimated archive: {human_bytes(archive_est)} ({archive_kind})")
 
     log.step("Estimate")
-    fill_pct = last_disc_content * 100 // sizing_target
     log.info(f"Discs needed:     {n_discs}")
     log.info(
         f"Last disc fill:   {human_bytes(last_disc_content)} / "
@@ -211,6 +280,21 @@ def cmd_create(args):
     log.info(f"Free on last:     {human_bytes(last_disc_free)} archive")
     if abs(ratio - 1.0) > 0.001:
         log.info(f"                  ~{human_bytes(last_disc_free_raw)} raw (at ratio {ratio:.3f})")
+
+    if deferred_files:
+        defer_bytes = sum(f.size for f in deferred_files)
+        oldest_deferred = min(f.mtime for f in deferred_files)
+        from datetime import datetime as _dt
+
+        log.step(f"Auto-defer (--min-last-disc-fill {args.min_last_disc_fill}%)")
+        log.info(f"Files deferred:   {len(deferred_files)}")
+        log.info(f"Bytes deferred:   {human_bytes(defer_bytes)} (raw)")
+        log.info(f"Oldest deferred:  mtime {_dt.fromtimestamp(oldest_deferred):%Y-%m-%d %H:%M}")
+        sample = deferred_files[:3]
+        for f in sample:
+            log.info(f"  - {f.rel_path}")
+        if len(deferred_files) > len(sample):
+            log.info(f"  - ... and {len(deferred_files) - len(sample)} more")
 
     log.step("Configuration")
     log.info(f"Source:        {source}")
@@ -253,6 +337,7 @@ def cmd_create(args):
         cfg.comp_level,
         par2_hook=par2_hook,
         ref_catalog=ref_catalog,
+        excludes=[f.rel_path for f in deferred_files] if deferred_files else None,
     )
 
     slices = dar_archive.slices
