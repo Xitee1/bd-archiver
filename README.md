@@ -126,6 +126,7 @@ docker run --rm -it \
 `--tmpfs` here serves the same purpose as `-w /dev/shm/...` for a local install: keeps slice staging in RAM during extract so the SSD takes zero writes.
 
 ## Usage example
+This is an example that demonstrates a lot of (but not all) features of this tool.
 
 Let's say you have 199GB worth of images on an HDD that you want to archive onto 25GB BDs.
 Before you start, you check that the output dir has at least 250GB (total amount (199GB) + disc size (25GB) + some buffer).
@@ -155,6 +156,8 @@ After everything is verified, insert the next disc until the end.
 But let's say you need to shutdown/restart your PC and have a lot of discs left. No problem, just wait for the current burn process to finish and exit using `CTRL + C`.
 When you want to continue, just start with `--start x` where x is the disc number. For example you've burned 3 out of 10 discs, you type `--start 4`.
 
+After all your discs are burned and verified, delete all the staging ISO files.
+
 ### verify
 If later (e.g. after some years) you want to verify a specific disc, just insert it and execute `bd-archive verify` to check the integrity.
 
@@ -165,7 +168,9 @@ Exit codes: `0` OK, `1` repairable, `2` broken.
 If you need the data back from the discs, execute:
 `bd-archive extract -o /path/to/output`
 
----> TODO
+The tool will prompt you to insert disc 1 - x. `dar` supports partial restore, so you don't need all discs for a file you know is on disc 5. Just make sure you insert all the relevant discs if the file is physically splitted across multiple discs.
+
+While extracting, it will automatically check for data integrity and fix everything it can with the help of par2.
 
 ### add incremental
 
