@@ -149,6 +149,8 @@ The ISO files are now generated. This can take a while (multiple hours depending
 After it's done, proceed with burning (x4 speed).
 `bd-archive burn -i /path/to/staging-dir -S 4`
 
+> **Note:** use **blank, unformatted** BD-R discs. `bd-archive` burns with `growisofs -use-the-force-luke=spare=none` to skip the implicit format step. That disables drive-firmware defect management, which roughly **doubles** burn speed (a 4x disc actually burns at 4x instead of 2x) and reclaims the ~256 MiB the drive would otherwise reserve as Outer Spare Area. Application-layer integrity is already covered by par2 FEC + sha512 checksums + a post-burn verify pass. A previously formatted BD-R will still burn, but at the reduced capacity its current format dictates — the fit check on capacity won't account for this.
+
 bd-archiver will now ask you to insert the first disc. After it's inserted, press enter to start the burn process.
 After burning it will automatically verify the data integrity. You may need manual intervention and close the tray before that if it opens automatically by firmware.
 After everything is verified, insert the next disc until the end.

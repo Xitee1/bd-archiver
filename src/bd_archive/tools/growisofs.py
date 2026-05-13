@@ -32,6 +32,23 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
     -use-the-force-luke=notray: skip post-burn tray eject/reload
     (some drives physically pop the tray, requiring re-insert
     before verify can run).
+    -use-the-force-luke=spare=none: skip the BD-R format step that
+    growisofs otherwise does unconditionally. Without that format,
+    BD-R defect management is off: no read-after-write verify, no
+    Outer Spare Area reservation. The drive writes at full rated
+    speed (~2x → ~4x on a 4x disc) and the full nominal Free Blocks
+    capacity is usable. We have par2 FEC + sha512 + a post-burn
+    verify pass, so drive-firmware DM is redundant defence in depth
+    that costs half the write time and ~256 MiB per disc.
+
+    ⚠️ This flag is COUPLED to `tools.mediainfo.detect_disc_capacity`,
+    which returns `Free Blocks` directly (nominal capacity). If you
+    remove `spare=none`, growisofs will format the BD-R and reserve
+    an Outer Spare Area (~256 MiB on 25 GB SL), and writes past that
+    LBA will fail with SK=5h/LBA OUT OF RANGE — Free Blocks then
+    over-reports the writable extent. To re-enable DM you MUST also
+    revert detect_disc_capacity to read the MMC-6 32h format-type
+    descriptor from `READ FORMAT CAPACITIES` (see commit 43fce62).
 
     Ctrl+C during a burn would coaster a BD-R, so we trap SIGINT
     here: first press warns; a second press within BURN_ABORT_GRACE_S
@@ -43,7 +60,14 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
     locked; CalledProcessError on any other non-zero exit;
     KeyboardInterrupt if the user confirmed a mid-burn abort.
     """
-    cmd = ["growisofs", "-use-the-force-luke=notray", "-dvd-compat", "-Z", f"{device}={iso_path}"]
+    cmd = [
+        "growisofs",
+        "-use-the-force-luke=notray",
+        "-use-the-force-luke=spare=none",
+        "-dvd-compat",
+        "-Z",
+        f"{device}={iso_path}",
+    ]
     if speed:
         cmd += [f"-speed={speed}"]
 
