@@ -25,9 +25,13 @@ POST_BURN_MOUNT_TIMEOUT = 60
 
 # ISO9660 caps the Primary Volume Descriptor's Volume Identifier at 32
 # bytes. mkisofs/growisofs reject longer labels outright. Volume labels
-# here are "<archive_name>_NNNN", so archive_name must leave room for
-# the 5-char disc suffix.
+# here are "<archive_name>_G<NN>_<NNNN>" — 9 fixed chars for the gen +
+# disc suffixes, leaving 23 chars for the (possibly truncated) name.
+# Filenames *inside* the ISO keep the untruncated archive name, so the
+# label is purely a human hint, not a technical identifier.
 ISO9660_VOLUME_LABEL_MAX = 32
+ISO9660_LABEL_SUFFIX_LEN = 9  # "_G<NN>_<NNNN>"
+ISO9660_LABEL_NAME_MAX = ISO9660_VOLUME_LABEL_MAX - ISO9660_LABEL_SUFFIX_LEN  # 23
 
 # PAR2 recovery volumes are named "<base>.volNNN+NN.par2"; the index file
 # is plain "<base>.par2". This pattern matches recovery volumes only.
