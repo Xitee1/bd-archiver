@@ -20,6 +20,8 @@ def create_sliced(
     compression: str,
     comp_level: str | None,
     execute_hook: str | None = None,
+    ref_catalog: Path | None = None,
+    excludes: list[str] | None = None,
 ):
     """Create a sliced dar archive with sha512 hashes.
 
@@ -27,6 +29,16 @@ def create_sliced(
     been completed (verified against dar 2.7.17). This is used by
     cmd_create to run par2 on each slice while its bytes are still in
     the OS page cache.
+
+    If ref_catalog is set, dar runs in incremental mode (`-A <ref>`):
+    only files new or changed relative to that reference catalog are
+    archived. Pass the basename of the catalog without the
+    ``.NNNN.dar`` suffix (dar accepts the catalog basename and finds
+    the slice files itself).
+
+    If excludes is set, each entry is passed to dar as ``-P <path>``,
+    excluding that exact relative subpath from the archive. Used by
+    auto-defer to push specific files to a later generation.
     """
     cmd = [
         "dar",
@@ -47,9 +59,38 @@ def create_sliced(
         if comp_level:
             flag += f":{comp_level}"
         cmd += [flag, "-am"]
+    if ref_catalog is not None:
+        cmd += ["-A", str(ref_catalog)]
+    if excludes:
+        for path in excludes:
+            cmd += ["-P", path]
     if execute_hook is not None:
         cmd += ["-E", execute_hook]
     run(cmd, label="dar")
+
+
+def list_catalog_paths(catalog_base: Path) -> set[str]:
+    """Return the set of relative paths stored in a dar catalog.
+
+    Runs ``dar -l <catalog_base> -as`` and parses the listing. dar's
+    entry lines use tab separators between the user, group, size, date,
+    and filename columns — the filename is always the last tab-separated
+    field. Header and separator lines lack tabs entirely, so the
+    "contains a tab" filter is sufficient to discard them.
+
+    Directories are included; the consumer (auto-defer pool filter)
+    treats the set as "anything dar already knows about", which keeps
+    the filter conservative.
+    """
+    r = run(["dar", "-l", str(catalog_base), "-as", "-Q"], capture=True, check=True)
+    paths: set[str] = set()
+    for line in r.stdout.splitlines():
+        if "\t" not in line:
+            continue
+        path = line.split("\t")[-1].rstrip()
+        if path:
+            paths.add(path)
+    return paths
 
 
 def isolate_catalog(base_path: Path):
@@ -87,6 +128,7 @@ def extract_sequential(
     base_path: Path,
     output_dir: Path,
     catalog_base: Path | None = None,
+    overwrite: bool = False,
 ) -> tuple[int, list[str]]:
     """Extract a dar archive with --sequential-read.
 
@@ -96,6 +138,11 @@ def extract_sequential(
     With a complete slice set, no prompts fire and the ESC stream
     goes unused.
 
+    Set overwrite=True to make dar replace existing files without
+    prompting (`-wa`). Required when extracting an incremental on
+    top of a previously-extracted generation, where later gens
+    update files that earlier gens already restored.
+
     Returns (exit_code, corrupted_files). corrupted_files contains
     the paths dar reported as "Bad CRC" during extract — these
     files were (partially) written to output and need attention.
@@ -103,6 +150,8 @@ def extract_sequential(
     the caller must check this list, not just the exit code.
     """
     cmd = ["dar", "-x", str(base_path), "-R", str(output_dir), "-O", "--sequential-read"]
+    if overwrite:
+        cmd.append("-wa")
     if catalog_base is not None:
         # -A uses the isolated catalog as rescue source — handles
         # corruption of the in-archive catalog (PAR2 covers slice

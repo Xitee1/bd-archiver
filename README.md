@@ -1,15 +1,19 @@
-# bd-archive
+# bd-archiver
 
 Archive data to Blu-ray discs with `dar` + `par2`.
 
 Four subcommands form a build-then-burn pipeline:
 
-- `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. No burning.
+- `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. Supports full archives and incrementals (via `--base`). No burning.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
 - `verify`   — Check disc / directory / ISO integrity via PAR2. Exit code reflects state.
-- `extract`  — Restore archive from discs with auto-repair via PAR2.
+- `extract`  — Restore archive from discs with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end.
 
 Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
+
+### Chain identity = archive name
+
+Incremental archives form a **chain**: a Full (Gen 1), then any number of incremental generations (Gen 2, 3, …) that record only what changed since the previous gen. The archive name from `-n` is the chain's identity — **use the same `-n` for every generation of the same chain**. Renaming between generations breaks chain detection at extract time. The volume label shows generation + disc number; the human-readable name in `-n` should be picked for the long term, even if its meaning drifts (an archive named `family-2024-batch1` can grow to hold years of new family photos — its name doesn't have to stay literally accurate, but it must stay literally the same).
 
 ## Installation
 
@@ -166,19 +170,45 @@ If later (e.g. after some years) you want to verify a specific disc, just insert
 Exit codes: `0` OK, `1` repairable, `2` broken.
 
 
-### extract
-If you need the data back from the discs, execute:
-`bd-archive extract -o /path/to/output`
+### Adding an incremental generation
 
+Some time later you have a new batch of photos you want to add to the same archive. Rather than re-burning everything from scratch, build an **incremental** generation that contains only the delta:
+
+```bash
+bd-archive create \
+    -s /path/to/images \
+    -n "My_image_archive" \
+    --base /path/to/staging-dir/My_image_archive-gen1-catalog.0001.dar \
+    -o /path/to/gen2-staging-dir \
+    -c none
+```
+
+`--base` points at the previous generation's locally-persisted catalog (written into the previous output dir alongside `images/`). The tool diffs the current source against that catalog and archives only files that are new or changed. The new gen gets its own ISOs (typically far fewer discs than the full), its own catalog, its own output dir. Burn it like any other set:
+
+```bash
+bd-archive burn -i /path/to/gen2-staging-dir
+```
+
+You can chain as many generations as you want (`--base` always points at the most recent gen's catalog). The first lookup the tool does is **the archive name** — pass the same `-n` you used for Gen 1, otherwise `--base` refuses to proceed.
+
+#### Auto-defer with `--min-last-disc-fill`
+
+When the last disc of an incremental would be only sparsely filled (e.g. 1 GB on a 50 GB disc), you can tell bd-archive to push the newest files to a later generation so the current set rounds down to fewer discs:
 The tool will prompt you to insert disc 1 - x. `dar` supports partial restore, so you don't need all discs for a file you know is on disc 5. Just make sure you insert all the relevant discs if the file is physically splitted across multiple discs.
 
 While extracting, it will automatically check for data integrity and fix everything it can with the help of par2.
 
-### add incremental
+```bash
+bd-archive create -s /path/to/images -n "My_image_archive" \
+    --base /path/to/gen1/My_image_archive-gen1-catalog.0001.dar \
+    -o /path/to/gen2 -c none --min-last-disc-fill 50
+```
 
-----> TODO
+`--min-last-disc-fill 50` says "the last disc must end up at least 50 % full". The tool iterates the newest-by-mtime files that are **not already in the base catalog** and defers them one by one until either the threshold is met or the candidate pool is exhausted. The deferred files stay in your source — they'll naturally appear as "new" the next time you create an incremental against this generation's catalog.
 
-### extract
+Without `--base` (i.e. on a Full archive), `--min-last-disc-fill` still works but defers files that **will not be archived until you do an incremental run later**. The tool warns loudly when you're in that mode.
+
+### extract — whole-chain restore
 
 ```bash
 bd-archive extract -o /path/to/output [options]
@@ -190,13 +220,19 @@ bd-archive extract -o /path/to/output [options]
 | `-D, --device`   | auto-detect                    | Optical drive. Auto-picks the only drive present; prompts if multiple. |
 | `-w, --workdir`  | `<output>/.bd-archive-work/`   | Staging dir for slices. Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
 
-The archive name is auto-detected from the first disc's filenames — there is no `-n` flag.
+The chain name is auto-detected from the first disc's filenames — there is no `-n` flag. Discs from multiple generations of the same chain may be inserted in any order; the tool detects each disc's generation from its filenames (`<name>-gen<N>.NNNN.dar`).
 
-Per-disc flow: copy slice + sha512 sidecar (and the catalog, on its first intact arrival) to staging in a single read pass, eject, then verify the staged slice via SHA-512. PAR2 files are **not** copied unless a slice fails verification — at which point the disc is re-mounted, just the par2 for the affected slice is fetched, and `par2 repair` runs in staging. If the catalog itself fails on this disc, the bad slice is dropped and re-fetched from the next disc that carries it.
+Per-disc flow: copy slice + sha512 sidecar (and that generation's catalog, on its first intact arrival) to staging in a single read pass, eject, verify the staged slice via SHA-512. PAR2 files are **not** copied unless a slice fails verification — at which point the disc is re-mounted, just the par2 for the affected slice is fetched, and `par2 repair` runs in staging. If the catalog itself fails on a disc, the bad slice is dropped and re-fetched from the next disc that carries it.
 
-After each disc, you are asked whether to continue — answer `n` for a partial restore (e.g. one disc lost). Once you stop, `dar --sequential-read` does the final extraction; dar's "missing slice" prompts are auto-skipped so a partial set still yields ~95% of files. Per-file `Bad CRC` lines from dar plus any slices that failed sha512 *and* par2 are recorded in `<output>/corrupted-files.txt`, and `extract` exits with code `1` so scripts can detect a non-clean restore. The output dir still contains whatever dar managed to extract — best-effort, never silently corrupt.
+After each disc, the tool asks whether to continue. Once you stop, it runs `dar -x` for each generation found in staging, in order: Gen 1 extracts into the (empty) output dir, then Gen 2 extracts on top with overwrite, and so on. Files modified in later generations replace the older versions; deletions recorded in later catalogs are honoured. Partial restores work too — losing all discs of one generation leaves a hole in the chain, but earlier and later gens still restore what they hold.
+
+Per-file `Bad CRC` lines from dar plus any slices that failed sha512 *and* par2 are recorded in `<output>/corrupted-files.txt`, and `extract` exits with code `1` so scripts can detect a non-clean restore. The output dir still contains whatever dar managed to extract — best-effort, never silently corrupt.
 
 For maximum throughput on SSD-hosted archives, point `-w` at a tmpfs path (`/dev/shm/bd-extract`) — a 25 GB slice fits in RAM and never hits disk during staging.
+
+#### Legacy (pre-incremental) archives
+
+Archive sets burned before this version's naming convention have slices named `<name>.NNNN.dar` (no `-gen<N>` segment). Extract handles them transparently as Gen 1. To extend an old set with an incremental: copy the isolated catalog off any of its discs (`<name>-catalog.NNNN.dar`) and pass that file to `--base` on a new `create` run — the new generation will be Gen 2 of the chain, with `<name>-gen2.NNNN.dar` filenames.
 
 ## Development
 
