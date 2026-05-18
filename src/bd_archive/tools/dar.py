@@ -1,3 +1,4 @@
+import contextlib
 import re
 import subprocess
 import threading
@@ -194,4 +195,12 @@ def extract_sequential(
                 proc.kill()
                 proc.wait()
         raise
+    finally:
+        # dar has exited → its end of the stdin pipe is gone. The
+        # ESC-feeder daemon thread may still hold a buffered write;
+        # closing here triggers its except branch and lets us swallow
+        # the BrokenPipeError instead of leaking it through the
+        # TextIOWrapper finalizer at GC time.
+        with contextlib.suppress(BrokenPipeError, OSError):
+            proc.stdin.close()
     return proc.returncode, corrupted
