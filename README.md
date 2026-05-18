@@ -1,4 +1,4 @@
-# bd-archive
+# bd-archiver
 
 Archive data to Blu-ray discs with `dar` + `par2`.
 
