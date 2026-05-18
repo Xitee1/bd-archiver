@@ -11,11 +11,16 @@ from bd_archive.archive.disc import DiscIO
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import dar, par2
+from bd_archive.tools import eject as eject_tool
 from bd_archive.tools.optical import resolve_device
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
+from bd_archive.ui.keypress import cbreak_stdin, read_keypress
 from bd_archive.ui.logger import log
 from bd_archive.ui.progress import Progress, copy_with_progress
 from bd_archive.ui.prompts import prompt_disc, prompt_yn
+
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧"
+POLL_INTERVAL_S = 0.3
 
 # A dar slice or catalog filename ends in ".NNNN.dar"; stripping that
 # off yields the dar archive basename (e.g. "photos-gen1" or, on legacy
@@ -38,6 +43,41 @@ def _mount_with_prompt(dio: DiscIO, mount_dir: Path, prompt_msg: str) -> Path | 
         log.error("Could not mount disc")
         if not prompt_yn("Retry?"):
             return None
+
+
+def _wait_for_next_disc(dio: DiscIO, mount_dir: Path, target: int) -> Path | None:
+    """Poll drive + stdin until a disc is mountable or the user presses 'e'.
+
+    Returns the mount path when a disc is detected and mounts cleanly.
+    Returns None when the user pressed 'e' — caller should break the
+    disc-collection loop and proceed to the extraction phase.
+    """
+    is_stdout_tty = sys.stdout.isatty()
+    log.info(f"Waiting for disc {target}... (press 'e' to extract all collected discs)")
+    if not sys.stdin.isatty():
+        log.warn("stdin not a TTY — press Ctrl+C to abort instead of 'e'")
+
+    frame = 0
+    try:
+        with cbreak_stdin():
+            while True:
+                if is_stdout_tty:
+                    sys.stdout.write(f"\r  {SPINNER_FRAMES[frame]} polling drive...")
+                    sys.stdout.flush()
+                    frame = (frame + 1) % len(SPINNER_FRAMES)
+
+                key = read_keypress(POLL_INTERVAL_S)
+                if key == "e":
+                    return None
+
+                if eject_tool.drive_status(dio.device) == eject_tool.CDS_DISC_OK:
+                    mounted = dio.mount(mount_dir)
+                    if mounted is not None:
+                        return mounted
+    finally:
+        if is_stdout_tty:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
 
 
 def _copy_disc_data(
@@ -180,11 +220,22 @@ def cmd_extract(args):
         target = disc_num + 1
 
         # ── 1. Mount disc ─────────────────────────────────────────────────
+        # Disc 1 keeps the classic press-Enter prompt so the user can read
+        # the header info before the run starts. Discs ≥ 2 auto-detect:
+        # poll drive + stdin, return on disc-ready or user pressing 'e'.
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
-        mounted = _mount_with_prompt(dio, mount_dir, f"Insert disc {target}")
-        if mounted is None:
-            mount_dir.rmdir()
-            sys.exit(1)
+        if target == 1:
+            mounted = _mount_with_prompt(dio, mount_dir, f"Insert disc {target}")
+            if mounted is None:
+                mount_dir.rmdir()
+                sys.exit(1)
+        else:
+            mounted = _wait_for_next_disc(dio, mount_dir, target)
+            if mounted is None:
+                # 'e' pressed → done collecting, proceed to extraction
+                with contextlib.suppress(OSError):
+                    mount_dir.rmdir()
+                break
 
         try:
             # Detect chain name + generation from any slice filename.
@@ -272,9 +323,6 @@ def cmd_extract(args):
         # Report current chain collection state.
         gens_collected = sorted(gen_basenames)
         log.info(f"Chain so far: Gen {gens_collected} ({disc_num} disc(s) total)")
-
-        if not prompt_yn("Insert another disc?"):
-            break
 
     if chain_name is None:
         log.error("No discs processed")
