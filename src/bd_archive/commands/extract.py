@@ -32,10 +32,12 @@ def _dar_basename(filename: str) -> str:
 def _mount_with_prompt(dio: DiscIO, mount_dir: Path, prompt_msg: str) -> Path | None:
     while True:
         prompt_disc(prompt_msg, dio.device)
-        mounted = dio.mount(mount_dir)
+        mounted, mount_err = dio.mount(mount_dir)
         if mounted is not None:
             return mounted
         log.error("Could not mount disc")
+        if mount_err:
+            log.error(f"  {mount_err}")
         if not prompt_yn("Retry?"):
             return None
 

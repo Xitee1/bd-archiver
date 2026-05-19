@@ -29,9 +29,14 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
 
     -dvd-compat: pad the lead-out to make the disc readable by
     standalone players + older drives. Negligible space cost.
-    -use-the-force-luke=notray: skip post-burn tray eject/reload
-    (some drives physically pop the tray, requiring re-insert
-    before verify can run).
+    Note: we deliberately do NOT pass `-use-the-force-luke=notray`.
+    growisofs's default post-burn eject is the only reliable way to
+    trigger a kernel media-change event on Linux — without it, the
+    OS keeps the disc cached as "Blank BD-R" (since that's what it
+    was at burn-start) and udisks2 reports it as not-mountable. The
+    eject is then handled by `DiscIO.wait_for_disc_ready` after burn:
+    tray-load drives get re-closed in software; slim drives prompt
+    the user to push the disc back in.
     -use-the-force-luke=spare=none: skip the BD-R format step that
     growisofs otherwise does unconditionally. Without that format,
     BD-R defect management is off: no read-after-write verify, no
@@ -62,7 +67,6 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
     """
     cmd = [
         "growisofs",
-        "-use-the-force-luke=notray",
         "-use-the-force-luke=spare=none",
         "-dvd-compat",
         "-Z",

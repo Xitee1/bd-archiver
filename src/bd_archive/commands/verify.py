@@ -33,9 +33,11 @@ def cmd_verify(args):
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
         result = VerifyResult.BROKEN
         try:
-            mounted = dio.mount(mount_dir)
+            mounted, mount_err = dio.mount(mount_dir)
             if mounted is None:
                 log.error(f"Could not mount {loop_dev}")
+                if mount_err:
+                    log.error(f"  {mount_err}")
                 sys.exit(1)
             try:
                 result = verify_disc(mounted, f"ISO {target.name}")
@@ -50,9 +52,11 @@ def cmd_verify(args):
     elif target.is_block_device():
         dio = DiscIO(str(target))
         mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
-        mounted = dio.mount(mount_dir)
+        mounted, mount_err = dio.mount(mount_dir)
         if mounted is None:
             log.error(f"Could not mount {target}")
+            if mount_err:
+                log.error(f"  {mount_err}")
             mount_dir.rmdir()
             sys.exit(1)
         try:
