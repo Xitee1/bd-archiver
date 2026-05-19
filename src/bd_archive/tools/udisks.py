@@ -8,8 +8,12 @@ def is_available() -> bool:
     return shutil.which("udisksctl") is not None
 
 
-def mount(device: str) -> str | None:
-    """Mount via udisksctl. Returns the mount path, or None on failure.
+def mount(device: str) -> tuple[str | None, str]:
+    """Mount via udisksctl. Returns (mount_path, error_message).
+
+    mount_path is None on failure (or if the success output couldn't be
+    parsed); error_message carries the captured stderr/stdout so callers
+    can log *why* — empty on clean success.
 
     udisksctl uses Polkit and works for the active desktop user without
     a password, but picks its own mount path under /run/media/...
@@ -18,10 +22,12 @@ def mount(device: str) -> str | None:
         ["udisksctl", "mount", "-b", device, "--no-user-interaction"], capture=True, check=False
     )
     if r.returncode != 0:
-        return None
+        return None, (r.stderr or r.stdout or f"udisksctl exited {r.returncode}").strip()
     # "Mounted /dev/sr0 at /run/media/.../LABEL."
     m = re.search(r"^Mounted .+? at (.+?)\.?\s*$", (r.stdout or "").strip(), re.MULTILINE)
-    return m.group(1) if m else None
+    if m is None:
+        return None, "udisksctl succeeded but mount path could not be parsed"
+    return m.group(1), ""
 
 
 def unmount(device: str) -> bool:

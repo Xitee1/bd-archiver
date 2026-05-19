@@ -139,23 +139,29 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
                 sys.exit(1)
     log.ok(f"Disc {i} burned")
 
-    # Give the drive a moment to settle, then pull the tray back
-    # in if it auto-ejected. Slot-load drives ignore close-tray.
-    time.sleep(3)
-    dio.close_tray_if_open()
-
-    # Post-burn verify — retry on any failure (mount or verify)
-    # until it succeeds, since some drives auto-eject after burn
-    # and the user needs a chance to re-insert before we give up.
+    # Post-burn verify. growisofs auto-ejects the tray on finish (we no
+    # longer pass `notray`), which is what generates the kernel
+    # media-change event that makes mount actually see the new
+    # filesystem. We then wait for the disc to be back in — either via
+    # software close-tray (full-size drives) or the user pushing it in
+    # (slim drives). The 10s pre-pause is on the long side, but slower
+    # USB BD drives can take 5–8s just to extend the tray; closing it
+    # before the eject motion finishes races the two motors and can
+    # leave the drive in a confused state.
     if not args.no_verify:
+        time.sleep(10)
+        dio.wait_for_disc_ready()
+
         log.info("Post-burn verification...")
         while True:
             mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
             verify_ok = False
             try:
-                mounted = dio.mount_with_retry(mount_dir)
+                mounted, mount_err = dio.mount_with_retry(mount_dir)
                 if mounted is None:
                     log.error("Could not mount disc for verification")
+                    if mount_err:
+                        log.error(f"  {mount_err}")
                 else:
                     try:
                         result = verify_disc(mounted, f"Disc {i} (post-burn)", quiet=True)
