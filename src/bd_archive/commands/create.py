@@ -428,13 +428,21 @@ def cmd_create(args):
         sources.extend(par2_files)
         sources.append(readme_path)
 
+        # Everything lives inside the archive's top-level folder, named
+        # after the dar basename so extract can resolve it directly.
+        # The per-archive README sits in there too — no top-level files.
+        entries = [(f"{cfg.dar_name}/{p.name}", p) for p in sources]
+
         # Build ISO directly from in-place files (no staging copies).
-        # Label is "<truncated_name>_G<NN>_<NNNN>" — name truncated to
-        # ISO9660_LABEL_NAME_MAX (23) so gen + disc suffix always fit.
-        volume_label = f"{cfg.name[:ISO9660_LABEL_NAME_MAX]}_G{cfg.generation:02d}_{i:04d}"
+        # Label is "<truncated_name>_G<NN>_<NNNN>" — name budget derived
+        # from the actual suffix so variants (e.g. the packed-disc "+"
+        # marker) always fit the 32-byte ISO9660 limit.
+        label_suffix = f"_G{cfg.generation:02d}_{i:04d}"
+        name_budget = ISO9660_VOLUME_LABEL_MAX - len(label_suffix)
+        volume_label = f"{cfg.name[:name_budget]}{label_suffix}"
         iso_path = images_dir / f"disc_{i:04d}.iso"
         log.info(f"  building {iso_path.name}...")
-        mkisofs.build(iso_path, sources, volume_label, publisher)
+        mkisofs.build(iso_path, entries, volume_label, publisher)
 
         # Hard fit check — the ISO file IS what gets written to disc.
         # raw_capacity is the format-aware writable extent.
