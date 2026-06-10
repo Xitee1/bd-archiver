@@ -208,6 +208,35 @@ bd-archive create -s /path/to/images -n "My_image_archive" \
 
 Without `--base` (i.e. on a Full archive), `--min-last-disc-fill` still works but defers files that **will not be archived until you do an incremental run later**. The tool warns loudly when you're in that mode.
 
+#### Filling a partial last disc with `--pack-with`
+
+Sometimes the last disc of a set stays mostly empty no matter how you tune compression or deferral (e.g. 7 GB on a 100 GB BDXL). If you have **not burned that last ISO yet**, hold on to it and let the *next* archive fill the disc:
+
+```bash
+bd-archive create -s /path/to/new-data -n "New_archive" \
+    -o /path/to/new-staging \
+    --pack-with /path/to/old-staging/images/disc_0003.iso
+```
+
+`create` then:
+
+1. reads the leftover ISO (loop-mounted read-only — no copy, no extra disk space),
+2. sizes the new archive's **first slice** to the space the leftover leaves free (later discs use the full slice size),
+3. builds `disc_0001.iso` as a **combined** image: the old archive's files and the new archive's first piece, each in its own top-level folder with its own README,
+4. marks the combined disc's volume label with a trailing `+` (e.g. `New_archive_G01_0001+`).
+
+Burn the new set as usual — disc 1 goes onto the blank disc you had reserved for the old set's last disc.
+
+> **Warning:** the original leftover ISO is **superseded** by the combined image. Never burn it afterwards; delete it once the combined disc is burned and verified.
+
+Restores are unaffected: `extract` finds each archive in its own folder and ignores the other one. A disc carrying two generations of the *same* chain — e.g. gen 1's tail packed together with gen 2's start — contributes both generations in a single insertion. `verify` checks every archive on the disc in one pass.
+
+This also works with leftover ISOs from older bd-archive versions (flat file layout) — their contents are re-foldered automatically. And since a combined ISO is itself an ordinary ISO, the pattern repeats: leave the new set's last ISO unburned and pass it to the next `create --pack-with`.
+
+#### On-disc layout
+
+Discs created from this version on place each archive's files in a top-level folder named `<name>-gen<N>/` (slices, par2, sha512, README — plus the catalog on disc 1). Older flat-layout discs remain fully readable by `verify` and `extract`.
+
 ### extract — whole-chain restore
 
 ```bash
@@ -220,7 +249,7 @@ bd-archive extract -o /path/to/output [options]
 | `-D, --device`   | auto-detect                    | Optical drive. Auto-picks the only drive present; prompts if multiple. |
 | `-w, --workdir`  | `<output>/.bd-archive-work/`   | Staging dir for slices. Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
 
-The chain name is auto-detected from the first disc's filenames — there is no `-n` flag. Discs from multiple generations of the same chain may be inserted in any order; the tool detects each disc's generation from its filenames (`<name>-gen<N>.NNNN.dar`).
+The chain name is auto-detected from the first disc's filenames — there is no `-n` flag. Discs from multiple generations of the same chain may be inserted in any order; the tool detects each disc's generation from its filenames (`<name>-gen<N>.NNNN.dar`). If the first disc is a packed disc carrying more than one chain (see `--pack-with`), a numbered prompt asks which chain to restore; archives of other chains on shared discs are ignored automatically.
 
 Per-disc flow: copy slice + sha512 sidecar (and that generation's catalog, on its first intact arrival) to staging in a single read pass, eject, verify the staged slice via SHA-512. PAR2 files are **not** copied unless a slice fails verification — at which point the disc is re-mounted, just the par2 for the affected slice is fetched, and `par2 repair` runs in staging. If the catalog itself fails on a disc, the bad slice is dropped and re-fetched from the next disc that carries it.
 
