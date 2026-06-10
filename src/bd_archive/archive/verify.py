@@ -16,10 +16,13 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
     # corruption in a single disc read. The .sha512 sidecars on disc are
     # still used by `extract`, where they run against local staging and
     # par2 is only fetched on mismatch.
-    par2_indices = [p for p in sorted(disc_path.glob("*.par2")) if is_par2_index(p)]
+    # rglob, not glob: foldered discs keep each archive's files in a
+    # top-level <name>-gen<N>/ directory (and a packed disc carries
+    # several); legacy flat discs still match at the root.
+    par2_indices = [p for p in sorted(disc_path.rglob("*.par2")) if is_par2_index(p)]
     for par2_index in par2_indices:
         if not quiet:
-            log.info(f"PAR2 check: {par2_index.name}")
+            log.info(f"PAR2 check: {par2_index.relative_to(disc_path)}")
         result = par2.verify(par2_index)
         if result == VerifyResult.OK:
             log.ok("PAR2: data intact")
