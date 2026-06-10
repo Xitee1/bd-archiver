@@ -23,6 +23,7 @@ def create_sliced(
     execute_hook: str | None = None,
     ref_catalog: Path | None = None,
     excludes: list[str] | None = None,
+    first_slice_bytes: int | None = None,
 ):
     """Create a sliced dar archive with sha512 hashes.
 
@@ -40,6 +41,11 @@ def create_sliced(
     If excludes is set, each entry is passed to dar as ``-P <path>``,
     excluding that exact relative subpath from the archive. Used by
     auto-defer to push specific files to a later generation.
+
+    If first_slice_bytes is set and differs from slice_bytes, dar
+    produces a first slice of that size and subsequent slices of
+    slice_bytes (``-S <first> -s <rest>``). Used by --pack-with so the
+    first slice fits the space a packed leftover ISO leaves on disc 1.
     """
     cmd = [
         "dar",
@@ -47,6 +53,10 @@ def create_sliced(
         str(base_path),
         "-R",
         str(source),
+    ]
+    if first_slice_bytes is not None and first_slice_bytes != slice_bytes:
+        cmd += ["-S", str(first_slice_bytes)]
+    cmd += [
         "-s",
         str(slice_bytes),
         "--hash",

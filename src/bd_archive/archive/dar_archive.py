@@ -118,6 +118,7 @@ class DarArchive:
         par2_hook: str | None = None,
         ref_catalog: Path | None = None,
         excludes: list[str] | None = None,
+        first_slice_bytes: int | None = None,
     ):
         dar.create_sliced(
             self.base_path,
@@ -128,6 +129,7 @@ class DarArchive:
             execute_hook=par2_hook,
             ref_catalog=ref_catalog,
             excludes=excludes,
+            first_slice_bytes=first_slice_bytes,
         )
 
     def isolate_catalog(self):
