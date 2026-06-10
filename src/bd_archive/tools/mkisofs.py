@@ -4,9 +4,7 @@ from bd_archive.constants import ISO9660_VOLUME_LABEL_MAX
 from bd_archive.shell.runner import run
 
 
-def build(
-    iso_path: Path, graft_entries: list[tuple[str, Path]], volume_label: str, publisher: str
-):
+def build(iso_path: Path, graft_entries: list[tuple[str, Path]], volume_label: str, publisher: str):
     """Build an ISO9660+UDF image at iso_path.
 
     graft_entries maps each source file to its path inside the image:
