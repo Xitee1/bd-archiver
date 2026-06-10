@@ -1,5 +1,4 @@
 import contextlib
-import re
 import shlex
 import shutil
 import sys
@@ -8,7 +7,7 @@ from pathlib import Path
 
 from bd_archive import __version__
 from bd_archive.archive.config import ArchiveConfig, write_readme
-from bd_archive.archive.dar_archive import DarArchive, parse_dar_filename
+from bd_archive.archive.dar_archive import DarArchive, dar_basename, parse_dar_filename
 from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
 from bd_archive.archive.source_scan import (
     SourceFile,
@@ -30,11 +29,6 @@ from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
-
-# Catalog slice files end in ".NNNN.dar"; strip that to get the dar
-# basename suitable for `-A`. dar resolves the actual slice file(s)
-# from the basename, so we never hand it the raw filename.
-_CATALOG_SLICE_SUFFIX_RE = re.compile(r"\.\d+\.dar$")
 
 
 def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
@@ -63,8 +57,10 @@ def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
             f"Chain identity is the archive name; keep it consistent across generations."
         )
         sys.exit(1)
-    base_stem = _CATALOG_SLICE_SUFFIX_RE.sub("", base_path.name)
-    return base_path.parent / base_stem, base_gen
+    # Strip the ".NNNN.dar" slice suffix to get the catalog basename
+    # suitable for `-A`. dar resolves the actual slice file(s) from the
+    # basename, so we never hand it the raw filename.
+    return base_path.parent / dar_basename(base_path.name), base_gen
 
 
 def cmd_create(args):
