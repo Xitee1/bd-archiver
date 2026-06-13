@@ -1,14 +1,21 @@
 import contextlib
-import re
 import shlex
 import shutil
 import sys
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
 from bd_archive import __version__
 from bd_archive.archive.config import ArchiveConfig, write_readme
-from bd_archive.archive.dar_archive import DarArchive, parse_dar_filename
+from bd_archive.archive.dar_archive import (
+    DarArchive,
+    dar_basename,
+    find_disc_archives,
+    parse_dar_filename,
+)
+from bd_archive.archive.disc import DiscIO
 from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
 from bd_archive.archive.source_scan import (
     SourceFile,
@@ -24,17 +31,12 @@ from bd_archive.constants import (
 )
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
-from bd_archive.tools import mkisofs
+from bd_archive.tools import mkisofs, udisks
 from bd_archive.tools.dar import list_catalog_paths
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
-
-# Catalog slice files end in ".NNNN.dar"; strip that to get the dar
-# basename suitable for `-A`. dar resolves the actual slice file(s)
-# from the basename, so we never hand it the raw filename.
-_CATALOG_SLICE_SUFFIX_RE = re.compile(r"\.\d+\.dar$")
 
 
 def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
@@ -63,12 +65,102 @@ def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
             f"Chain identity is the archive name; keep it consistent across generations."
         )
         sys.exit(1)
-    base_stem = _CATALOG_SLICE_SUFFIX_RE.sub("", base_path.name)
-    return base_path.parent / base_stem, base_gen
+    # Strip the ".NNNN.dar" slice suffix to get the catalog basename
+    # suitable for `-A`. dar resolves the actual slice file(s) from the
+    # basename, so we never hand it the raw filename.
+    return base_path.parent / dar_basename(base_path.name), base_gen
+
+
+@contextlib.contextmanager
+def _loop_mounted(iso_path: Path):
+    """Loop-mount an ISO read-only via udisksctl and yield the mount path.
+
+    Used by --pack-with to read the leftover ISO's contents — once
+    briefly for inspection, once while disc 1's combined image is
+    built. Mirrors the verify command's ISO branch. Exits with a
+    user-readable error if loop-setup or mount fails.
+    """
+    ok, loop_dev, message = udisks.loop_setup(str(iso_path))
+    if not ok:
+        log.error(f"loop-setup failed for {iso_path}: {message}")
+        sys.exit(1)
+    assert loop_dev is not None
+
+    time.sleep(0.5)  # let udev settle so the loop device is ready
+    dio = DiscIO(loop_dev)
+    mount_dir = Path(tempfile.mkdtemp(prefix="bd-pack-"))
+    try:
+        mounted, mount_err = dio.mount(mount_dir)
+        if mounted is None:
+            log.error(f"Could not mount {iso_path}")
+            if mount_err:
+                log.error(f"  {mount_err}")
+            sys.exit(1)
+        try:
+            yield mounted
+        finally:
+            dio.umount(mounted)
+            with contextlib.suppress(OSError):
+                mount_dir.rmdir()
+    finally:
+        udisks.loop_delete(loop_dev)
+
+
+def _inspect_pack_iso(pack_path: Path, new_dar_name: str) -> set[str]:
+    """Briefly loop-mount a --pack-with ISO and catalogue its archives.
+
+    Returns the set of dar basenames found inside. Exits with a
+    user-readable error when the path is missing, contains no dar
+    slices, or already holds an archive with this run's basename (same
+    name + generation would collide on the combined disc).
+    """
+    if not pack_path.is_file():
+        log.error(f"--pack-with path does not exist: {pack_path}")
+        sys.exit(1)
+    with _loop_mounted(pack_path) as mounted:
+        archives = find_disc_archives(mounted)
+    if not archives:
+        log.error(f"--pack-with ISO contains no dar slices: {pack_path}")
+        sys.exit(1)
+    basenames = {a.basename for a in archives}
+    if new_dar_name in basenames:
+        log.error(
+            f"--pack-with ISO already contains '{new_dar_name}' — the new archive's "
+            f"files would collide on the combined disc. Use a different -n, or "
+            f"--base to bump the generation."
+        )
+        sys.exit(1)
+    return basenames
+
+
+def _pack_graft_entries(pack_mount: Path) -> list[tuple[str, Path]]:
+    """Graft entries replicating a leftover ISO's contents onto the
+    combined disc. Folders from a foldered-layout source ISO pass
+    through unchanged; a legacy flat ISO's root files (incl. its
+    README.txt) are re-foldered under that archive's dar basename, so
+    the combined disc is uniformly foldered either way."""
+    entries: list[tuple[str, Path]] = []
+    for sub in sorted(p for p in pack_mount.iterdir() if p.is_dir()):
+        entries += [(f"{sub.name}/{f.name}", f) for f in sorted(sub.iterdir()) if f.is_file()]
+    root_files = sorted(p for p in pack_mount.iterdir() if p.is_file())
+    if root_files:
+        flat = [a for a in find_disc_archives(pack_mount) if a.rel_dir == ""]
+        if flat:
+            base = flat[0].basename
+            entries += [(f"{base}/{f.name}", f) for f in root_files]
+        else:
+            # Root files but no flat archive (stray files on a foldered
+            # ISO) — keep them at the root rather than guess a folder.
+            entries += [(f.name, f) for f in root_files]
+    return entries
 
 
 def cmd_create(args):
-    check_deps("dar", "par2", "mkisofs", "dvd+rw-mediainfo")
+    deps = ["dar", "par2", "mkisofs", "dvd+rw-mediainfo"]
+    if args.pack_with is not None:
+        # --pack-with loop-mounts the leftover ISO via udisksctl.
+        deps.append("udisksctl")
+    check_deps(*deps)
 
     if not 0 <= args.min_last_disc_fill <= 100:
         log.error(f"--min-last-disc-fill must be 0-100, got {args.min_last_disc_fill}")
@@ -97,6 +189,25 @@ def cmd_create(args):
         ref_catalog, base_gen = _resolve_base(args.base, args.name)
         generation = base_gen + 1
         log.info(f"Incremental against: {ref_catalog.name} (Gen {base_gen}) → new Gen {generation}")
+
+    # --pack-with: validate + catalogue the leftover ISO that will share
+    # disc 1 with this archive. Loop-mounted briefly here; mounted again
+    # only while disc 1's combined image is built.
+    pack_iso: Path | None = None
+    pack_basenames: set[str] = set()
+    pack_bytes = 0
+    if args.pack_with is not None:
+        pack_iso = Path(args.pack_with).resolve()
+        pack_basenames = _inspect_pack_iso(pack_iso, f"{args.name}-gen{generation}")
+        # The ISO's own file size is the sizing input: it over-counts
+        # the contents by the ISO metadata, making the first-slice
+        # budget strictly conservative. The post-build hard fit check
+        # against raw_capacity stays the real gate.
+        pack_bytes = pack_iso.stat().st_size
+        log.info(
+            f"Packing with: {pack_iso.name} ({human_bytes(pack_bytes)}; "
+            f"contains {', '.join(sorted(pack_basenames))})"
+        )
 
     source = Path(args.source).resolve()
     if not source.is_dir():
@@ -133,6 +244,22 @@ def cmd_create(args):
             f"exceeds disc capacity ({human_bytes(raw_capacity)})"
         )
         sys.exit(1)
+
+    # With --pack-with, disc 1's budget shrinks by the leftover ISO; the
+    # first slice is sized separately (dar -S) while discs 2..N keep the
+    # full slice_bytes. Without packing the two sizes are identical.
+    first_slice_bytes = slice_bytes
+    if pack_iso is not None:
+        first_slice_bytes = compute_slice_bytes(
+            sizing_target - pack_bytes, scan.catalog_est, args.redundancy
+        )
+        if first_slice_bytes == 0:
+            log.error(
+                f"--pack-with ISO ({human_bytes(pack_bytes)}) leaves no room for a "
+                f"first slice + catalog + par2 on a {human_bytes(raw_capacity)} disc."
+            )
+            log.info("Burn the leftover ISO on its own instead, or use larger media.")
+            sys.exit(1)
 
     # Workdir must exist before --sample so the sample tempdir lives
     # in the user-chosen location (e.g. tmpfs). Default-pathed workdir
@@ -178,19 +305,31 @@ def cmd_create(args):
         archive_est = int(scan.total_bytes * ratio)
 
     def _layout(est: int) -> tuple[int, int, int]:
-        """(n_discs, last_disc_content, last_fill_pct) for a given archive size."""
+        """(n_discs, last_disc_content, last_fill_pct) for a given archive size.
+
+        The first slice may be smaller than the rest (--pack-with);
+        without packing first_slice_bytes == slice_bytes and this
+        collapses to plain ceil-division. When the set is a single
+        disc and packing is active, that disc is the shared one — the
+        leftover ISO counts towards its fill (pack_bytes is 0 otherwise).
+        """
         if est == 0:
             # Incremental with no new file data — catalog + par2 overhead
             # still take up a disc, but the data portion is empty.
-            overhead = scan.catalog_est + PAR2_AND_MISC_OVERHEAD
+            overhead = pack_bytes + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
             return 1, overhead, overhead * 100 // sizing_target
-        n = max(1, (est + slice_bytes - 1) // slice_bytes)
-        last_sl = est - (n - 1) * slice_bytes
-        if last_sl == 0:
-            last_sl = slice_bytes
+        if est <= first_slice_bytes:
+            n, last_sl = 1, est
+        else:
+            n = 1 + (est - first_slice_bytes + slice_bytes - 1) // slice_bytes
+            last_sl = est - first_slice_bytes - (n - 2) * slice_bytes
+            if last_sl == 0:
+                last_sl = slice_bytes
         last_content = (
             last_sl + last_sl * args.redundancy // 100 + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
         )
+        if n == 1:
+            last_content += pack_bytes
         return n, last_content, last_content * 100 // sizing_target
 
     n_discs, last_disc_content, fill_pct = _layout(archive_est)
@@ -299,6 +438,14 @@ def cmd_create(args):
     archive_kind = "delta vs base" if ref_catalog is not None else "full source"
     log.info(f"Estimated archive: {human_bytes(archive_est)} ({archive_kind})")
 
+    if pack_iso is not None:
+        log.step("Pack-with")
+        log.info(f"Leftover ISO:     {pack_iso}")
+        log.info(f"Leftover size:    {human_bytes(pack_bytes)}")
+        log.info(f"Contains:         {', '.join(sorted(pack_basenames))}")
+        log.info(f"First slice:      {human_bytes(first_slice_bytes)} (disc 1 shared)")
+        log.info(f"Rest slices:      {human_bytes(slice_bytes)}")
+
     log.step("Estimate")
     log.info(f"Discs needed:     {n_discs}")
     log.info(
@@ -365,6 +512,7 @@ def cmd_create(args):
         par2_hook=par2_hook,
         ref_catalog=ref_catalog,
         excludes=[f.rel_path for f in deferred_files] if deferred_files else None,
+        first_slice_bytes=first_slice_bytes if pack_iso is not None else None,
     )
 
     slices = dar_archive.slices
@@ -432,13 +580,32 @@ def cmd_create(args):
         sources.extend(par2_files)
         sources.append(readme_path)
 
+        # Everything lives inside the archive's top-level folder, named
+        # after the dar basename so extract can resolve it directly.
+        # The per-archive README sits in there too — no top-level files.
+        entries = [(f"{cfg.dar_name}/{p.name}", p) for p in sources]
+
         # Build ISO directly from in-place files (no staging copies).
-        # Label is "<truncated_name>_G<NN>_<NNNN>" — name truncated to
-        # ISO9660_LABEL_NAME_MAX (23) so gen + disc suffix always fit.
-        volume_label = f"{cfg.name[:ISO9660_LABEL_NAME_MAX]}_G{cfg.generation:02d}_{i:04d}"
+        # Label is "<truncated_name>_G<NN>_<NNNN>" — name budget derived
+        # from the actual suffix so variants (e.g. the packed-disc "+"
+        # marker) always fit the 32-byte ISO9660 limit.
+        label_suffix = f"_G{cfg.generation:02d}_{i:04d}"
+        if pack_iso is not None and i == 1:
+            label_suffix += "+"  # marks a packed (shared, multi-archive) disc
+        name_budget = ISO9660_VOLUME_LABEL_MAX - len(label_suffix)
+        volume_label = f"{cfg.name[:name_budget]}{label_suffix}"
         iso_path = images_dir / f"disc_{i:04d}.iso"
         log.info(f"  building {iso_path.name}...")
-        mkisofs.build(iso_path, sources, volume_label, publisher)
+        if pack_iso is not None and i == 1:
+            # Combined disc: the leftover ISO's contents ride along,
+            # re-foldered if the source was legacy-flat. The mount only
+            # needs to live for the duration of the mkisofs run.
+            with _loop_mounted(pack_iso) as pack_mount:
+                mkisofs.build(
+                    iso_path, _pack_graft_entries(pack_mount) + entries, volume_label, publisher
+                )
+        else:
+            mkisofs.build(iso_path, entries, volume_label, publisher)
 
         # Hard fit check — the ISO file IS what gets written to disc.
         # raw_capacity is the format-aware writable extent.
@@ -493,6 +660,13 @@ def cmd_create(args):
 
     # ── Summary ─────────────────────────────────────────────────────────
     ratio = total_archive * 100 // max(scan.total_bytes, 1)
+
+    if pack_iso is not None:
+        log.warn(f"Packed: {pack_iso}")
+        log.warn(
+            "  is superseded by images/disc_0001.iso — do NOT burn the original "
+            "ISO anymore; delete it once the combined disc is burned and verified."
+        )
 
     log.step("Summary")
     print(f"\n  Source:       {human_bytes(scan.total_bytes)}")

@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from bd_archive.tools import dar
@@ -14,6 +15,17 @@ from bd_archive.tools import dar
 _DAR_FILENAME_RE = re.compile(
     r"^(?P<name>.+?)(?:-gen(?P<gen>\d+))?(?P<catalog>-catalog)?\.\d+\.dar$"
 )
+
+# A dar slice or catalog filename ends in ".NNNN.dar"; stripping that
+# off yields the dar archive basename (e.g. "photos-gen1" or, on legacy
+# pre-Phase-2 archives, just "photos"). That basename is what dar -x
+# wants as input, what groups files by generation in extract staging,
+# and what names an archive's top-level folder on disc.
+_SLICE_SUFFIX_RE = re.compile(r"\.\d+\.dar$")
+
+
+def dar_basename(filename: str) -> str:
+    return _SLICE_SUFFIX_RE.sub("", filename)
 
 
 def parse_dar_filename(filename: str) -> tuple[str, int, bool] | None:
@@ -31,6 +43,53 @@ def parse_dar_filename(filename: str) -> tuple[str, int, bool] | None:
     gen = int(m.group("gen")) if m.group("gen") else 1
     is_catalog = m.group("catalog") is not None
     return name, gen, is_catalog
+
+
+@dataclass(frozen=True)
+class DiscArchive:
+    """One archive found on a (mounted) disc or disc image.
+
+    ``directory`` is where its files live: a top-level folder on
+    foldered-layout discs, or the disc root on legacy flat discs.
+    ``rel_dir`` is ``directory`` relative to the scanned root ("" for
+    the root itself) — stable across re-mounts at different paths.
+    """
+
+    chain_name: str
+    generation: int
+    basename: str
+    directory: Path
+    rel_dir: str
+
+
+def find_disc_archives(root: Path) -> list[DiscArchive]:
+    """Discover every archive on a mounted disc / disc image.
+
+    Foldered layout (v1.1+): one top-level folder per archive, named
+    after its dar basename. Legacy flat layout: slice files at the
+    root. Both are detected from the slice *filenames* (authoritative —
+    folder names are only a location hint). A directory yields one
+    entry per distinct basename found, so a hand-built disc with two
+    archives' files mixed in one folder still resolves.
+    """
+    found: list[DiscArchive] = []
+    seen: set[str] = set()
+    search_dirs = [d for d in sorted(root.iterdir()) if d.is_dir()] + [root]
+    for d in search_dirs:
+        for f in sorted(d.glob("*.dar")):
+            if "-catalog" in f.name:
+                continue
+            parsed = parse_dar_filename(f.name)
+            if parsed is None:
+                continue
+            basename = dar_basename(f.name)
+            if basename in seen:
+                continue
+            seen.add(basename)
+            name, gen, _ = parsed
+            rel = "" if d == root else d.name
+            found.append(DiscArchive(name, gen, basename, d, rel))
+    return found
 
 
 class DarArchive:
@@ -59,6 +118,7 @@ class DarArchive:
         par2_hook: str | None = None,
         ref_catalog: Path | None = None,
         excludes: list[str] | None = None,
+        first_slice_bytes: int | None = None,
     ):
         dar.create_sliced(
             self.base_path,
@@ -69,6 +129,7 @@ class DarArchive:
             execute_hook=par2_hook,
             ref_catalog=ref_catalog,
             excludes=excludes,
+            first_slice_bytes=first_slice_bytes,
         )
 
     def isolate_catalog(self):

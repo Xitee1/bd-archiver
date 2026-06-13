@@ -68,6 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
         "(-n) must match the predecessor — chain identity is the name.",
     )
     cr.add_argument(
+        "--pack-with",
+        default=None,
+        metavar="ISO",
+        help="Pack the contents of an existing (UNBURNED) disc ISO onto "
+        "this archive's first disc, filling its unused space — e.g. the "
+        "partial last disc of a previous archive. The new archive's "
+        "first slice is sized to the remaining space. The given ISO is "
+        "superseded by the combined images/disc_0001.iso and must not "
+        "be burned separately afterwards.",
+    )
+    cr.add_argument(
         "--min-last-disc-fill",
         type=int,
         default=0,

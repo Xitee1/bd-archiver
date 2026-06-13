@@ -1,12 +1,11 @@
 import contextlib
-import re
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 from bd_archive.archive.checksums import verify_slice
-from bd_archive.archive.dar_archive import parse_dar_filename
+from bd_archive.archive.dar_archive import DiscArchive, find_disc_archives
 from bd_archive.archive.disc import DiscIO
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
@@ -22,16 +21,22 @@ from bd_archive.ui.prompts import prompt_disc, prompt_yn
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧"
 POLL_INTERVAL_S = 0.3
 
-# A dar slice or catalog filename ends in ".NNNN.dar"; stripping that
-# off yields the dar archive basename (e.g. "photos-gen1" or, on legacy
-# pre-Phase-2 archives, just "photos"). That basename is what dar -x
-# wants as input, and what we use to group files by generation in
-# staging.
-_SLICE_SUFFIX_RE = re.compile(r"\.\d+\.dar$")
 
-
-def _dar_basename(filename: str) -> str:
-    return _SLICE_SUFFIX_RE.sub("", filename)
+def _prompt_chain(names: list[str]) -> str:
+    """Numbered picker for which archive chain to extract, used when the
+    first disc of a run is a packed (shared) disc carrying more than one
+    chain. EOFError from input() bubbles up as the usual cancel path."""
+    log.info(f"Disc contains {len(names)} archive chains:")
+    for i, n in enumerate(names, 1):
+        log.info(f"  [{i}] {n}")
+    while True:
+        resp = input(f"Extract which chain [1-{len(names)}]? ").strip()
+        try:
+            idx = int(resp)
+        except ValueError:
+            continue
+        if 1 <= idx <= len(names):
+            return names[idx - 1]
 
 
 def _mount_with_prompt(dio: DiscIO, mount_dir: Path, prompt_msg: str) -> Path | None:
@@ -73,7 +78,7 @@ def _wait_for_next_disc(dio: DiscIO, mount_dir: Path, target: int) -> Path | Non
                     return None
 
                 if eject_tool.drive_status(dio.device) == eject_tool.CDS_DISC_OK:
-                    mounted = dio.mount(mount_dir)
+                    mounted, _err = dio.mount(mount_dir)
                     if mounted is not None:
                         return mounted
     finally:
@@ -83,27 +88,28 @@ def _wait_for_next_disc(dio: DiscIO, mount_dir: Path, target: int) -> Path | Non
 
 
 def _copy_disc_data(
-    mounted: Path, disc_basename: str, staging: Path, catalog_verified: bool
+    disc_dir: Path, disc_basename: str, staging: Path, catalog_verified: bool
 ) -> list[Path]:
     """Copy slices + sha512 sidecars (and the catalog of this disc's
-    generation, if not yet verified) from disc to staging. par2 files
-    are NOT copied — fetched lazily on damage.
+    generation, if not yet verified) from one archive's directory on
+    disc (its top-level folder, or the disc root on legacy flat discs)
+    to staging. par2 files are NOT copied — fetched lazily on damage.
 
     Returns the list of slice paths in staging that came from this disc.
     """
     catalog_basename = f"{disc_basename}-catalog"
     if not catalog_verified:
-        for cat in mounted.glob(f"{catalog_basename}.*.dar"):
+        for cat in disc_dir.glob(f"{catalog_basename}.*.dar"):
             dest = staging / cat.name
             if not dest.exists():
                 shutil.copy2(cat, dest)
-        for cat_hash in mounted.glob(f"{catalog_basename}.*.dar.sha512"):
+        for cat_hash in disc_dir.glob(f"{catalog_basename}.*.dar.sha512"):
             dest = staging / cat_hash.name
             if not dest.exists():
                 shutil.copy2(cat_hash, dest)
 
     slices = sorted(
-        p for p in mounted.glob(f"{disc_basename}.[0-9]*.dar") if "-catalog" not in p.name
+        p for p in disc_dir.glob(f"{disc_basename}.[0-9]*.dar") if "-catalog" not in p.name
     )
     copied: list[Path] = []
     for sp in slices:
@@ -144,11 +150,11 @@ def _verify_catalog_on_staging(staging: Path, catalog_basename: str) -> bool:
     return all_ok
 
 
-def _repair_slice(slice_path: Path, mounted: Path, staging: Path) -> bool:
-    """Fetch par2 for one slice from a mounted disc, attempt repair, re-verify
-    via sha512. Returns True on success."""
+def _repair_slice(slice_path: Path, disc_dir: Path, staging: Path) -> bool:
+    """Fetch par2 for one slice from its directory on a mounted disc,
+    attempt repair, re-verify via sha512. Returns True on success."""
     name = slice_path.name
-    par2_files = sorted(mounted.glob(f"{name}.*par2"))
+    par2_files = sorted(disc_dir.glob(f"{name}.*par2"))
     if not par2_files:
         log.error(f"  {name}: no par2 files found on disc")
         return False
@@ -240,59 +246,73 @@ def cmd_extract(args):
                 break
 
         try:
-            # Detect chain name + generation from any slice filename.
-            dar_files = [p for p in mounted.glob("*.dar") if "-catalog" not in p.name]
-            if not dar_files:
+            # Detect every archive on the disc: per-archive top-level
+            # folders on v1.1+ discs, slice files at the root on legacy
+            # flat discs. A packed (shared) disc carries several.
+            archives = find_disc_archives(mounted)
+            if not archives:
                 log.error("No dar files found on disc — try another")
                 continue
-            parsed = parse_dar_filename(dar_files[0].name)
-            if parsed is None:
-                log.error(f"Unrecognised dar filename: {dar_files[0].name}")
-                continue
-            disc_name, disc_gen, _ = parsed
-            disc_basename = _dar_basename(dar_files[0].name)
 
             if chain_name is None:
-                chain_name = disc_name
+                names = sorted({a.chain_name for a in archives})
+                chain_name = names[0] if len(names) == 1 else _prompt_chain(names)
                 log.info(f"Chain: {chain_name}")
-            elif disc_name != chain_name:
+
+            matching = [a for a in archives if a.chain_name == chain_name]
+            foreign = sorted(a.basename for a in archives if a.chain_name != chain_name)
+            if not matching:
                 log.error(
-                    f"Disc belongs to chain '{disc_name}', but this run is for "
+                    f"Disc belongs to {', '.join(foreign)}, but this run is for "
                     f"chain '{chain_name}'. Eject and insert a matching disc."
                 )
                 continue
-
-            log.info(f"Disc {target}: Gen {disc_gen} ({disc_basename})")
-            gen_basenames.setdefault(disc_gen, disc_basename)
-            catalog_verified = catalogs_verified.get(disc_gen, False)
+            if foreign:
+                log.info(f"Ignoring foreign archive(s) on disc: {', '.join(foreign)}")
 
             disc_num = target
 
             # ── 2. Copy data (no par2) ────────────────────────────────────
-            log.info(f"Copying disc {disc_num}...")
-            copied = _copy_disc_data(mounted, disc_basename, staging, catalog_verified)
-            log.ok(f"  {len(copied)} slice(s) staged")
+            # A packed disc can hold several generations of this chain
+            # (e.g. gen1's last disc + gen2's first disc) — stage each.
+            staged: list[tuple[DiscArchive, list[Path]]] = []
+            for arc in matching:
+                log.info(f"Disc {target}: Gen {arc.generation} ({arc.basename})")
+                gen_basenames.setdefault(arc.generation, arc.basename)
+                log.info(f"Copying disc {disc_num} ({arc.basename})...")
+                copied = _copy_disc_data(
+                    arc.directory,
+                    arc.basename,
+                    staging,
+                    catalogs_verified.get(arc.generation, False),
+                )
+                log.ok(f"  {len(copied)} slice(s) staged")
+                staged.append((arc, copied))
         finally:
             dio.umount(mounted)
             with contextlib.suppress(OSError):
                 mount_dir.rmdir()
             dio.eject()
 
-        # ── 3. Verify catalog for this generation (first time it lands) ───
-        if not catalogs_verified.get(disc_gen, False):
-            log.info(f"Verifying Gen {disc_gen} catalog on staging...")
-            if _verify_catalog_on_staging(staging, f"{disc_basename}-catalog"):
-                catalogs_verified[disc_gen] = True
+        # ── 3. Verify catalogs for generations that just landed ──────────
+        for arc, _ in staged:
+            if not catalogs_verified.get(arc.generation, False):
+                log.info(f"Verifying Gen {arc.generation} catalog on staging...")
+                if _verify_catalog_on_staging(staging, f"{arc.basename}-catalog"):
+                    catalogs_verified[arc.generation] = True
 
         # ── 4. Verify slices on staging via sha512 ───────────────────────
         log.info(f"Verifying disc {disc_num} slices on staging...")
-        failed = []
-        for sp in copied:
-            with Progress(f"sha512 {sp.name}", sp.stat().st_size) as p:
-                if not verify_slice(sp, progress=p.advance):
-                    failed.append(sp)
+        failed: list[tuple[Path, DiscArchive]] = []
+        n_copied = 0
+        for arc, copied in staged:
+            n_copied += len(copied)
+            for sp in copied:
+                with Progress(f"sha512 {sp.name}", sp.stat().st_size) as p:
+                    if not verify_slice(sp, progress=p.advance):
+                        failed.append((sp, arc))
         if not failed:
-            log.ok(f"  All {len(copied)} slice(s) intact")
+            log.ok(f"  All {n_copied} slice(s) intact")
         else:
             log.warn(f"  {len(failed)} slice(s) failed sha512 — par2 repair needed")
 
@@ -306,8 +326,11 @@ def cmd_extract(args):
                 mount_dir.rmdir()
                 sys.exit(1)
             try:
-                for sp in failed:
-                    if _repair_slice(sp, mounted, staging):
+                for sp, arc in failed:
+                    # Re-resolve the archive's directory on the fresh
+                    # mount — the mountpoint path differs per mount.
+                    src_dir = mounted / arc.rel_dir if arc.rel_dir else mounted
+                    if _repair_slice(sp, src_dir, staging):
                         continue
                     log.error(f"  {sp.name}: unrecoverable damage")
                     log.warn(
