@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       dar \
       par2 \
       genisoimage \
-      growisofs \
+      xorriso \
       dvd+rw-tools \
       udisks2 \
       mount \

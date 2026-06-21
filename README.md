@@ -21,10 +21,10 @@ Incremental archives form a **chain**: a Full (Gen 1), then any number of increm
 
 ```bash
 # Arch
-sudo pacman -Syu dar par2cmdline dvd+rw-tools cdrtools udisks2
+sudo pacman -Syu dar par2cmdline libisoburn dvd+rw-tools cdrtools udisks2
 
 # Debian / Ubuntu
-sudo apt install dar par2 growisofs genisoimage udisks2
+sudo apt install dar par2 xorriso dvd+rw-tools genisoimage udisks2
 ```
 
 Optional: `lsof` (better diagnostics when the optical device is locked by another process).
@@ -71,7 +71,7 @@ This enables completion for **every** argcomplete-enabled Python CLI on the syst
 
 ### Docker
 
-A prebuilt image with all runtime tools (dar, par2, mkisofs, growisofs, dvd+rw-tools, udisks2, lsof, eject) is published to GitHub Container Registry on every `v*.*.*` tag:
+A prebuilt image with all runtime tools (dar, par2, mkisofs, xorriso, dvd+rw-tools, udisks2, lsof, eject) is published to GitHub Container Registry on every `v*.*.*` tag:
 
 ```bash
 docker pull ghcr.io/xitee1/bd-archiver:latest
@@ -80,7 +80,7 @@ docker pull ghcr.io/xitee1/bd-archiver:latest
 #### Caveats
 
 - **Drive auto-detection is disabled in containers.** `list_drives()` scans `/sys/block/sr*`, which is not populated by `--device=…` passthrough. Always pass `-D /dev/srN` explicitly when the subcommand uses a drive.
-- **`burn` needs raw SCSI access** (`growisofs` issues SG_IO ioctls). The simplest way is `--privileged`; if you want tighter scoping, `--cap-add=SYS_RAWIO` is the relevant capability.
+- **`burn` needs raw SCSI access** (`xorriso` issues SG_IO ioctls). The simplest way is `--privileged`; if you want tighter scoping, `--cap-add=SYS_RAWIO` is the relevant capability.
 - **`verify <iso-file>` does not work out of the box.** It uses `udisksctl` to loop-mount, which needs a running `udisksd` + dbus inside the container. Easiest workaround: verify ISOs on the host, or pre-mount on the host (`sudo mount -o loop disc.iso /mnt/iso`) and pass the mountpoint instead.
 
 #### Examples
@@ -153,7 +153,7 @@ The ISO files are now generated. This can take a while (multiple hours depending
 After it's done, proceed with burning (x4 speed).
 `bd-archive burn -i /path/to/staging-dir -S 4`
 
-> **Note:** use **blank, unformatted** BD-R discs. `bd-archive` burns with `growisofs -use-the-force-luke=spare=none` to skip the implicit format step. That disables drive-firmware defect management, which roughly **doubles** burn speed (a 4x disc actually burns at 4x instead of 2x) and reclaims the ~256 MiB the drive would otherwise reserve as Outer Spare Area. Application-layer integrity is already covered by par2 FEC + sha512 checksums + a post-burn verify pass. A previously formatted BD-R will still burn, but at the reduced capacity its current format dictates — the fit check on capacity won't account for this.
+> **Note:** use **blank, unformatted** BD-R discs. `bd-archive` burns with `xorriso -as cdrecord`, which does not format a blank BD-R. That keeps drive-firmware defect management off, which roughly **doubles** burn speed (a 4x disc actually burns at 4x instead of 2x) and reclaims the ~256 MiB the drive would otherwise reserve as Outer Spare Area. Application-layer integrity is already covered by par2 FEC + sha512 checksums + a post-burn verify pass. A previously formatted BD-R will still burn, but at the reduced capacity its current format dictates — the fit check on capacity won't account for this.
 
 bd-archiver will now ask you to insert the first disc. After it's inserted, press enter to start the burn process.
 After burning it will automatically verify the data integrity. You may need manual intervention and close the tray before that if it opens automatically by firmware.
@@ -280,7 +280,7 @@ src/bd_archive/
 │   ├── dar.py          # dar create/extract/isolate/sample-compress
 │   ├── par2.py         # par2 + VerifyResult + is_par2_index
 │   ├── mkisofs.py      # ISO9660+UDF builder
-│   ├── growisofs.py    # burn (+ DeviceBusyError, SIGINT double-press abort)
+│   ├── xorriso.py      # burn via xorriso -as cdrecord (+ DeviceBusyError, SIGINT double-press abort)
 │   ├── mount.py        # plain mount/umount
 │   ├── udisks.py       # udisksctl mount/unmount/loop-setup/loop-delete
 │   ├── eject.py        # eject + close_tray + drive_status (CDROM ioctl)

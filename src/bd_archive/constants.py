@@ -24,7 +24,7 @@ DISC_END_MARGIN = 1 * MiB
 POST_BURN_MOUNT_TIMEOUT = 60
 
 # ISO9660 caps the Primary Volume Descriptor's Volume Identifier at 32
-# bytes. mkisofs/growisofs reject longer labels outright. Volume labels
+# bytes. mkisofs/xorriso reject longer labels outright. Volume labels
 # here are "<archive_name>_G<NN>_<NNNN>" — 9 fixed chars for the gen +
 # disc suffixes, leaving 23 chars for the (possibly truncated) name.
 # Filenames *inside* the ISO keep the untruncated archive name, so the

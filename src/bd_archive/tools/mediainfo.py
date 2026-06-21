@@ -14,14 +14,15 @@ def detect_disc_capacity(device: str) -> int | None:
       - `Track Size`: full track extent. Used as fallback when Free
         Blocks reads 0 (rewritable formatted media — DVD+RW, BD-RE).
 
-    No format-descriptor walk: we burn with `-use-the-force-luke=spare=none`
-    (see `tools.growisofs.burn`), which keeps blank BD-R unformatted —
-    no Outer Spare Area reservation, no defect management. The drive
-    then accepts writes up to Free Blocks. If `spare=none` were
-    removed, the drive would format with default OSA (~256 MiB on a
-    25 GB SL BD-R) and Free Blocks would over-report by that amount;
-    in that case capacity would have to come from the MMC-6 32h
-    format-type descriptor in `READ FORMAT CAPACITIES` instead.
+    No format-descriptor walk: we burn with xorriso, which does NOT
+    format a blank BD-R by default (see `tools.xorriso.burn`), so it
+    stays unformatted — no Outer Spare Area reservation, no defect
+    management. The drive then accepts writes up to Free Blocks. If a
+    `blank=`/format command were ever passed to xorriso, the drive
+    would reserve a default OSA (~256 MiB on a 25 GB SL BD-R) and Free
+    Blocks would over-report by that amount; in that case capacity
+    would have to come from the MMC-6 32h format-type descriptor in
+    `READ FORMAT CAPACITIES` instead.
 
     Returns None if no disc, command fails, or output unparseable.
     """
