@@ -9,17 +9,17 @@ from bd_archive.archive.verify import verify_disc
 from bd_archive.constants import DISC_OVERSIZE_TOLERANCE
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
-from bd_archive.tools.growisofs import DeviceBusyError
 from bd_archive.tools.lsof import find_device_holders
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
 from bd_archive.tools.par2 import VerifyResult
+from bd_archive.tools.xorriso import DeviceBusyError
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_disc
 
 
 def cmd_burn(args):
-    check_deps("growisofs", "dvd+rw-mediainfo")
+    check_deps("xorriso", "dvd+rw-mediainfo")
 
     input_dir = Path(args.input)
     images_dir = input_dir / "images"
@@ -86,7 +86,7 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
 
     prompt_disc(f"Insert blank disc {i}/{disc_count}", dio.device)
 
-    # Pre-burn fit check — iso_size is the exact byte count growisofs
+    # Pre-burn fit check — iso_size is the exact byte count xorriso
     # will write. detect_disc_capacity returns the format-aware
     # writable extent.
     if not args.skip_fit_check:
@@ -119,8 +119,8 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
         except DeviceBusyError:
             log.error(
                 f"Optical device {dio.device} is locked by "
-                f"another process (growisofs couldn't grab "
-                f"the associated sg device)."
+                f"another process (xorriso couldn't take "
+                f"exclusive control of the drive)."
             )
             sg = find_sg_device(dio.device)
             holders = find_device_holders(dio.device, sg)
@@ -139,8 +139,8 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
                 sys.exit(1)
     log.ok(f"Disc {i} burned")
 
-    # Post-burn verify. growisofs auto-ejects the tray on finish (we no
-    # longer pass `notray`), which is what generates the kernel
+    # Post-burn verify. xorriso ejects the tray on finish (we pass
+    # `-eject`), which is what generates the kernel
     # media-change event that makes mount actually see the new
     # filesystem. We then wait for the disc to be back in — either via
     # software close-tray (full-size drives) or the user pushing it in

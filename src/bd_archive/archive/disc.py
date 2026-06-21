@@ -3,8 +3,8 @@ from pathlib import Path
 
 from bd_archive.constants import POST_BURN_MOUNT_TIMEOUT
 from bd_archive.tools import eject as eject_tool
-from bd_archive.tools import growisofs, udisks
 from bd_archive.tools import mount as mount_tool
+from bd_archive.tools import udisks, xorriso
 from bd_archive.ui.logger import log
 
 # Close-tray attempt schedule (cumulative seconds from start of wait):
@@ -94,8 +94,8 @@ class DiscIO:
     def wait_for_disc_ready(self) -> None:
         """Block until the drive reports a loaded, ready disc.
 
-        Called right after a burn: growisofs's default post-burn behaviour
-        is to eject the tray, which is the only reliable way on Linux to
+        Called right after a burn: xorriso ejects the tray on finish (we
+        pass `-eject`), which is the only reliable way on Linux to
         invalidate the kernel's cached "Blank BD-R" view of the medium
         (without that media-change event, mount sees the pre-burn blank
         state forever and udisks2 reports the disc as not-mountable).
@@ -143,4 +143,4 @@ class DiscIO:
             time.sleep(1)
 
     def burn(self, iso_path: Path, speed: str | None = None):
-        growisofs.burn(self.device, iso_path, speed)
+        xorriso.burn(self.device, iso_path, speed)
