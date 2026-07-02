@@ -128,6 +128,15 @@ class DiscIO:
                 time.sleep(2)
                 log.ok("Disc loaded")
                 return
+            if status is None:
+                # CDROM ioctl unavailable (odd device, missing permission)
+                # — we can't observe the tray, so hand off to the caller's
+                # mount-with-retry polling instead of looping forever.
+                log.warn(
+                    "Cannot read drive status — proceeding to mount attempts; "
+                    "make sure the disc is loaded"
+                )
+                return
 
             elapsed = time.monotonic() - start
             while (
