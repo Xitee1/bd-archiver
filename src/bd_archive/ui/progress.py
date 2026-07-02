@@ -104,19 +104,37 @@ def copy_with_progress(
     """Like shutil.copy2 (preserves mtime/permissions). For files at or
     above `min_size`, emits a Progress as bytes flow; smaller files copy
     silently to keep par2 indices / sha512 sidecars from spamming.
-    `dst` must be a full file path, not a dir."""
+    `dst` must be a full file path, not a dir.
+
+    The copy goes to `dst.part` first and is renamed into place only
+    once complete, so `dst` never exists half-written. Callers that
+    treat an existing dst as "already copied" (extract's staging) would
+    otherwise trust a truncated file left behind by a Ctrl+C — which
+    sha512 then fails and par2 cannot repair.
+    """
     size = src.stat().st_size
-    if size < min_size:
-        shutil.copy2(src, dst)
-        return
-    with open(src, "rb") as fi, open(dst, "wb") as fo, Progress(label or src.name, size) as p:
-        while True:
-            buf = fi.read(chunk)
-            if not buf:
-                break
-            fo.write(buf)
-            p.advance(len(buf))
-    shutil.copystat(src, dst)
+    tmp = dst.parent / (dst.name + ".part")
+    try:
+        if size < min_size:
+            shutil.copy2(src, tmp)
+        else:
+            with (
+                open(src, "rb") as fi,
+                open(tmp, "wb") as fo,
+                Progress(label or src.name, size) as p,
+            ):
+                while True:
+                    buf = fi.read(chunk)
+                    if not buf:
+                        break
+                    fo.write(buf)
+                    p.advance(len(buf))
+            shutil.copystat(src, tmp)
+        tmp.replace(dst)
+    except BaseException:
+        # Includes KeyboardInterrupt — don't leave .part litter behind.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # Re-exported so callers needing the type for an `advance`-style callback

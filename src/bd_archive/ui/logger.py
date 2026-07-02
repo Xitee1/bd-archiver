@@ -15,8 +15,8 @@ class Logger:
     }
 
     @classmethod
-    def _c(cls, name: str) -> str:
-        return cls.COLORS[name] if sys.stdout.isatty() else ""
+    def _c(cls, name: str, stream=None) -> str:
+        return cls.COLORS[name] if (stream or sys.stdout).isatty() else ""
 
     @classmethod
     def info(cls, msg: str):
@@ -32,7 +32,10 @@ class Logger:
 
     @classmethod
     def error(cls, msg: str):
-        print(f"{cls._c('red')}[ ERR]{cls._c('reset')}  {msg}", file=sys.stderr)
+        # Color keyed to stderr's tty-ness — this line goes to stderr,
+        # so `2>log` must not capture ANSI codes.
+        red, reset = cls._c("red", sys.stderr), cls._c("reset", sys.stderr)
+        print(f"{red}[ ERR]{reset}  {msg}", file=sys.stderr)
 
     @classmethod
     def step(cls, msg: str):

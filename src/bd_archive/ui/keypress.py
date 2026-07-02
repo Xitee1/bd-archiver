@@ -34,18 +34,22 @@ def cbreak_stdin():
 
 
 def read_keypress(timeout: float) -> str | None:
-    """Wait up to `timeout` seconds for a single keypress.
+    """Wait up to `timeout` seconds for a single character on stdin.
 
     Returns the character (lowercased) or None if nothing was pressed.
-    Must be called from within a `cbreak_stdin()` context to read raw
-    single chars. On non-TTY stdin, sleeps for the timeout and returns
-    None — the caller's poll loop still ticks at the normal rate.
+    On a TTY, must be called from within a `cbreak_stdin()` context to
+    read raw single chars. Piped/redirected stdin is read the same way
+    (line buffering on the sender means the char arrives after a
+    newline; the stray newline is picked up and ignored by the caller's
+    next poll). At EOF on a pipe, sleeps for the timeout so the poll
+    loop keeps ticking at the normal rate instead of spinning.
     """
-    if not sys.stdin.isatty():
-        time.sleep(timeout)
-        return None
     rlist, _, _ = select.select([sys.stdin], [], [], timeout)
     if not rlist:
         return None
     ch = sys.stdin.read(1)
-    return ch.lower() if ch else None
+    if not ch:
+        # EOF (closed pipe): select reports readable forever — throttle.
+        time.sleep(timeout)
+        return None
+    return ch.lower()
