@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bd_archive.ui.logger import log
+from bd_archive.ui.prompts import styled_input
 
 
 @dataclass(frozen=True)
@@ -65,9 +66,7 @@ def resolve_device(explicit: str | None) -> str:
     for i, d in enumerate(drives, 1):
         log.info(f"  [{i}] {d.path}  {d.label}")
     while True:
-        resp = (
-            input(f"\033[1;33mSelect drive [1-{len(drives)}] (q = cancel): \033[0m").strip().lower()
-        )
+        resp = styled_input(f"Select drive [1-{len(drives)}] (q = cancel): ").strip().lower()
         if resp == "q":
             log.warn("Cancelled by user")
             sys.exit(0)

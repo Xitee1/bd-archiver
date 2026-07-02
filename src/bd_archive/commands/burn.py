@@ -15,7 +15,7 @@ from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
 from bd_archive.tools.par2 import VerifyResult
 from bd_archive.ui.logger import log
-from bd_archive.ui.prompts import prompt_disc
+from bd_archive.ui.prompts import prompt_disc, styled_input
 
 
 def cmd_burn(args):
@@ -44,6 +44,12 @@ def cmd_burn(args):
     device = resolve_device(args.device)
     dio = DiscIO(device)
 
+    # The set's largest ISO defines the capacity class the whole set was
+    # sized for — the oversize fit check compares against it, so a
+    # half-full last disc doesn't get refused on the same media as the
+    # (full) discs before it.
+    max_iso_bytes = max(iso.stat().st_size for iso in isos)
+
     log.step("Burn disc images")
     log.info(f"Discs:    {disc_count}")
     log.info(f"Device:   {device}")
@@ -58,7 +64,7 @@ def cmd_burn(args):
             sys.exit(1)
 
         try:
-            _burn_one_disc(args, input_dir, iso, i, disc_count, dio)
+            _burn_one_disc(args, input_dir, iso, i, disc_count, dio, max_iso_bytes)
         except KeyboardInterrupt:
             # Top-level handler will print the cancel banner + exit 130.
             # Print the resume hint here so the user sees exactly which
@@ -79,7 +85,9 @@ def cmd_burn(args):
     print(f"  Cleanup:  rm -rf {input_dir}\n")
 
 
-def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, dio: DiscIO):
+def _burn_one_disc(
+    args, input_dir: Path, iso: Path, i: int, disc_count: int, dio: DiscIO, max_iso_bytes: int
+):
     log.step(f"Disc {i}/{disc_count}")
     iso_size = iso.stat().st_size
     log.info(f"ISO: {iso.name} ({human_bytes(iso_size)})")
@@ -88,7 +96,9 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
 
     # Pre-burn fit check — iso_size is the exact byte count growisofs
     # will write. detect_disc_capacity returns the format-aware
-    # writable extent.
+    # writable extent. The too-small check is per-ISO; the oversize
+    # check compares against the largest ISO of the set (a partially
+    # filled last disc is normal — only a wrong media class is not).
     if not args.skip_fit_check:
         actual = detect_disc_capacity(dio.device)
         if actual is None:
@@ -97,12 +107,12 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
             log.error(f"Disc too small: {human_bytes(actual)} < ISO {human_bytes(iso_size)}")
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
             sys.exit(1)
-        elif actual > iso_size * DISC_OVERSIZE_TOLERANCE:
+        elif actual > max_iso_bytes * DISC_OVERSIZE_TOLERANCE:
             pct_over = int((DISC_OVERSIZE_TOLERANCE - 1) * 100)
             log.error(
-                f"Disc too large: {human_bytes(actual)} > "
-                f"{human_bytes(iso_size)} + {pct_over}% — refusing "
-                f"to waste space"
+                f"Disc too large: {human_bytes(actual)} exceeds the set's "
+                f"largest image ({human_bytes(max_iso_bytes)}) by more than "
+                f"{pct_over}% — refusing to waste space"
             )
             log.info("Insert a smaller disc, or pass --skip-fit-check to override.")
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
@@ -130,9 +140,7 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
                     log.info(f"  {h}")
             else:
                 log.info("Common culprits: MakeMKV, K3b, Brasero, or a desktop auto-mount probe.")
-            resp = input(
-                "\033[1;33mClose the program, then press Enter to retry (q = cancel): \033[0m"
-            )
+            resp = styled_input("Close the program, then press Enter to retry (q = cancel): ")
             if resp.strip().lower() == "q":
                 log.warn("Cancelled by user")
                 log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
@@ -165,10 +173,20 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
                 else:
                     try:
                         result = verify_disc(mounted, f"Disc {i} (post-burn)", quiet=True)
-                        if result == VerifyResult.BROKEN:
-                            log.error("Post-burn verification failed!")
-                        else:
+                        # A fresh burn must be flawless: REPAIRABLE means
+                        # the disc already eats into its par2 margin on
+                        # day one — treat it like a failed burn rather
+                        # than shipping it to the shelf pre-damaged.
+                        if result == VerifyResult.OK:
                             verify_ok = True
+                        elif result == VerifyResult.REPAIRABLE:
+                            log.error(
+                                "Post-burn verification found repairable damage — "
+                                "a just-burned disc should be flawless. Consider "
+                                "re-burning this image on fresh media."
+                            )
+                        else:
+                            log.error("Post-burn verification failed!")
                     finally:
                         dio.umount(mounted)
             finally:
@@ -176,9 +194,9 @@ def _burn_one_disc(args, input_dir: Path, iso: Path, i: int, disc_count: int, di
                     mount_dir.rmdir()
             if verify_ok:
                 break
-            resp = input(
-                "\033[1;33mRe-insert the disc if needed, then press Enter "
-                "to retry verification (q = cancel): \033[0m"
+            resp = styled_input(
+                "Re-insert the disc if needed, then press Enter "
+                "to retry verification (q = cancel): "
             )
             if resp.strip().lower() == "q":
                 log.warn("Cancelled by user")

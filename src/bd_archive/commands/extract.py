@@ -62,7 +62,7 @@ def _wait_for_next_disc(dio: DiscIO, mount_dir: Path, target: int) -> Path | Non
     is_stdout_tty = sys.stdout.isatty()
     log.info(f"Waiting for disc {target}... (press 'e' to extract all collected discs)")
     if not sys.stdin.isatty():
-        log.warn("stdin not a TTY — press Ctrl+C to abort instead of 'e'")
+        log.warn("stdin not a TTY — send 'e' followed by a newline to finish collecting")
 
     frame = 0
     try:
@@ -77,7 +77,11 @@ def _wait_for_next_disc(dio: DiscIO, mount_dir: Path, target: int) -> Path | Non
                 if key == "e":
                     return None
 
-                if eject_tool.drive_status(dio.device) == eject_tool.CDS_DISC_OK:
+                # status None = the CDROM ioctl is unavailable (odd device,
+                # missing permission) — fall back to blind mount attempts
+                # so the wait can still complete.
+                status = eject_tool.drive_status(dio.device)
+                if status == eject_tool.CDS_DISC_OK or status is None:
                     mounted, _err = dio.mount(mount_dir)
                     if mounted is not None:
                         return mounted
@@ -102,11 +106,11 @@ def _copy_disc_data(
         for cat in disc_dir.glob(f"{catalog_basename}.*.dar"):
             dest = staging / cat.name
             if not dest.exists():
-                shutil.copy2(cat, dest)
+                copy_with_progress(cat, dest, label=f"copy {cat.name}")
         for cat_hash in disc_dir.glob(f"{catalog_basename}.*.dar.sha512"):
             dest = staging / cat_hash.name
             if not dest.exists():
-                shutil.copy2(cat_hash, dest)
+                copy_with_progress(cat_hash, dest)
 
     slices = sorted(
         p for p in disc_dir.glob(f"{disc_basename}.[0-9]*.dar") if "-catalog" not in p.name
@@ -121,7 +125,7 @@ def _copy_disc_data(
         copy_with_progress(sp, dest, label=f"copy {sp.name}")
         sha = sp.parent / f"{sp.name}.sha512"
         if sha.exists():
-            shutil.copy2(sha, staging / sha.name)
+            copy_with_progress(sha, staging / sha.name)
         copied.append(dest)
     return copied
 
@@ -359,21 +363,40 @@ def cmd_extract(args):
     log.info(f"Chain: {chain_name}")
     log.info(f"Generations: {sorted_gens}")
 
+    # An incomplete chain restores incomplete data: a missing earlier
+    # generation means its file contents are absent, and deletions/
+    # renames recorded in a skipped generation are silently lost. Warn
+    # and let the user decide — they may only have partial media left.
+    missing_gens = sorted(set(range(1, sorted_gens[-1] + 1)) - set(sorted_gens))
+    if missing_gens:
+        log.warn(
+            f"Generation(s) {missing_gens} of this chain were not collected. "
+            f"Files saved only in those generations will be missing, and "
+            f"deletions/renames they recorded will not be applied."
+        )
+        if not prompt_yn("Extract the incomplete chain anyway?", default_yes=False):
+            log.info(f"Slices remain in: {staging}")
+            log.info("Re-run extract and insert the missing generation's discs as well.")
+            sys.exit(1)
+
     all_corrupted: list[str] = []
-    for i, gen in enumerate(sorted_gens):
+    for gen in sorted_gens:
         basename = gen_basenames[gen]
         log.info(f"Gen {gen}: dar -x {basename}")
         catalog_basename = f"{basename}-catalog"
         has_catalog = any(staging.glob(f"{catalog_basename}.*.dar"))
-        # Subsequent generations must overwrite earlier ones (later gens
-        # carry the newer file contents). Gen 1 extracts into a clean
-        # output dir, so overwrite is a no-op there — but we set it
-        # uniformly to keep the call site simple.
+        # Always overwrite (-wa): later generations carry newer file
+        # contents than earlier ones, and a re-run into a non-empty
+        # output dir (the documented repair path after corruption, or a
+        # resume after a crash) must replace existing — possibly stale
+        # or truncated — files. Without -wa, dar's overwrite prompt gets
+        # auto-answered negatively on our piped stdin and silently keeps
+        # the old bytes.
         rc, corrupted = dar.extract_sequential(
             staging / basename,
             output_dir,
             catalog_base=staging / catalog_basename if has_catalog else None,
-            overwrite=i > 0,
+            overwrite=True,
         )
         all_corrupted.extend(corrupted)
         if rc != 0:
