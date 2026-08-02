@@ -7,6 +7,7 @@ from pathlib import Path
 from bd_archive.archive.checksums import verify_slice
 from bd_archive.archive.dar_archive import DiscArchive, find_disc_archives
 from bd_archive.archive.disc import DiscIO
+from bd_archive.constants import EXTRACT_MARKER_NAME
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import dar, par2
@@ -197,6 +198,37 @@ def _cleanup_par2(staging: Path):
         pf.unlink(missing_ok=True)
 
 
+def _check_output_dir(output_dir: Path, work_dir: Path) -> str | None:
+    """Refuse to extract into a directory holding foreign data.
+
+    dar runs with -wa (always overwrite), so any colliding file in the
+    output dir would be silently replaced. The only non-empty dir that
+    is safe to write into is a previous extract of the same chain (the
+    documented repair/resume path) — identified by the marker file this
+    tool drops on every run. Returns the marker's chain name, or None
+    when the dir is fresh; the chain match itself happens once the first
+    disc reveals which chain this run restores.
+    """
+    marker = output_dir / EXTRACT_MARKER_NAME
+    if marker.exists():
+        return marker.read_text().strip() or None
+    foreign = [
+        e
+        for e in output_dir.iterdir()
+        if e.name != "corrupted-files.txt" and e.resolve() != work_dir.resolve()
+    ]
+    if foreign:
+        log.error(f"Output dir {output_dir} already contains data (e.g. '{foreign[0].name}').")
+        log.info("Extraction overwrites colliding files — refusing to restore into")
+        log.info("a directory holding foreign data. Choose an empty -o directory.")
+        log.info(
+            f"(To resume a pre-existing extract made with an older version, create "
+            f"'{EXTRACT_MARKER_NAME}' in it containing the chain name.)"
+        )
+        sys.exit(1)
+    return None
+
+
 def cmd_extract(args):
     check_deps("dar", "par2")
 
@@ -205,6 +237,11 @@ def cmd_extract(args):
 
     workdir_is_default = args.workdir is None
     work_dir = Path(args.workdir) if args.workdir else output_dir / ".bd-archive-work"
+
+    # Guard before anything (incl. staging) is created in the output dir:
+    # a refused run must not leave litter in a directory we don't own.
+    marker_chain = _check_output_dir(output_dir, work_dir)
+
     staging = work_dir / "slices"
     staging.mkdir(parents=True, exist_ok=True)
 
@@ -260,7 +297,22 @@ def cmd_extract(args):
 
             if chain_name is None:
                 names = sorted({a.chain_name for a in archives})
-                chain_name = names[0] if len(names) == 1 else _prompt_chain(names)
+                if marker_chain is not None and marker_chain in names:
+                    # Re-run into a previous extract of this chain (repair
+                    # or resume) — adopt it without prompting, even on a
+                    # packed disc carrying other chains.
+                    chain_name = marker_chain
+                    log.info(f"Resuming previous extract of chain '{chain_name}'")
+                else:
+                    chain_name = names[0] if len(names) == 1 else _prompt_chain(names)
+                if marker_chain is not None and chain_name != marker_chain:
+                    log.error(
+                        f"Output dir holds a previous extract of chain "
+                        f"'{marker_chain}', but this disc carries '{chain_name}'."
+                    )
+                    log.info("Choose an empty -o directory for this chain.")
+                    sys.exit(1)
+                (output_dir / EXTRACT_MARKER_NAME).write_text(chain_name + "\n")
                 log.info(f"Chain: {chain_name}")
 
             matching = [a for a in archives if a.chain_name == chain_name]
