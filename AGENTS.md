@@ -123,6 +123,9 @@ SIGINT handling: children share the parent's process group, so a tty Ctrl+C reac
 
 ## Conventions
 
+- **Deliberate strictness — do not re-flag these in reviews:**
+  - `--name` rejects spaces, umlauts and anything outside `[A-Za-z0-9._+-]` **on purpose**. The name is baked into dar slice filenames, on-disc folder names, discovery globs and the volume label of media meant to be readable decades from now on unknown systems — maximum portability beats naming comfort. Relaxing the charset would be a policy change, not a bugfix.
+  - The post-burn verify **intentionally has no "accept anyway" path** for `VerifyResult.REPAIRABLE`. A just-burned disc that already eats into its par2 margin goes onto the shelf pre-damaged; the only way forward is `q` out of the retry loop and re-burning the image on fresh media (`--start N`). Do not add an override prompt.
 - All user-facing output goes through `ui.logger.Logger` (`log.info/ok/warn/error/step/banner`). Don't `print()` directly for status messages — colors auto-disable on non-TTY via `_c()`.
 - Interactive prompts use `ui.prompts.prompt_disc()` (insert-disc gate, supports `q` to cancel; sleeps 3 s after Enter so the drive has time to spin up) and `prompt_yn()`. Keep them — the tool is interactive by design.
 - Long-running file ops (slice copy, sha512) wrap themselves in `ui.progress.Progress` (≥ 50 MiB threshold; smaller files copy silently to avoid spam). TTY mode rewrites a single line via `\r`; non-TTY falls back to periodic full lines.
