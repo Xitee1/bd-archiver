@@ -13,6 +13,17 @@ from bd_archive.shell.runner import run
 # corruption. We parse the message instead.
 _BAD_CRC_RE = re.compile(r"Error while restoring (.+?) : Bad CRC")
 
+# dar's -P masks are glob patterns, not literal paths: an unescaped
+# "photos/[2024] trip/x.jpg" would exclude a *different* file matching
+# the bracket expression and keep the intended one. Wrapping each glob
+# metacharacter in [] (like Python's glob.escape) makes the mask match
+# the path literally — verified against dar 2.7.
+_GLOB_META_RE = re.compile(r"[*?\[]")
+
+
+def _glob_escape(path: str) -> str:
+    return _GLOB_META_RE.sub(lambda m: f"[{m.group(0)}]", path)
+
 
 def create_sliced(
     base_path: Path,
@@ -39,7 +50,9 @@ def create_sliced(
     the slice files itself).
 
     If excludes is set, each entry is passed to dar as ``-P <path>``,
-    excluding that exact relative subpath from the archive. Used by
+    excluding that exact relative subpath from the archive. Entries are
+    treated as literal paths: glob metacharacters are escaped before
+    being handed to dar (whose -P masks are glob patterns). Used by
     auto-defer to push specific files to a later generation.
 
     If first_slice_bytes is set and differs from slice_bytes, dar
@@ -74,7 +87,7 @@ def create_sliced(
         cmd += ["-A", str(ref_catalog)]
     if excludes:
         for path in excludes:
-            cmd += ["-P", path]
+            cmd += ["-P", _glob_escape(path)]
     if execute_hook is not None:
         cmd += ["-E", execute_hook]
     run(cmd, label="dar")
@@ -83,17 +96,20 @@ def create_sliced(
 def list_catalog_paths(catalog_base: Path) -> set[str]:
     """Return the set of relative paths stored in a dar catalog.
 
-    Runs ``dar -l <catalog_base> -as`` and parses the listing. dar's
+    Runs ``dar -l <catalog_base>`` and parses the listing. dar's
     entry lines use tab separators between the user, group, size, date,
     and filename columns — the filename is always the last tab-separated
     field. Header and separator lines lack tabs entirely, so the
     "contains a tab" filter is sufficient to discard them.
 
-    Directories are included; the consumer (auto-defer pool filter)
-    treats the set as "anything dar already knows about", which keeps
-    the filter conservative.
+    Deliberately no ``-as`` filter: an incremental (gen ≥ 2) catalog
+    records unchanged files as unsaved reference entries, and ``-as``
+    would hide those — making every file archived in an earlier
+    generation look "new" to the delta preview and the auto-defer pool.
+    Directories are included; the consumer treats the set as "anything
+    dar already knows about", which keeps the filter conservative.
     """
-    r = run(["dar", "-l", str(catalog_base), "-as", "-Q"], capture=True, check=True)
+    r = run(["dar", "-l", str(catalog_base), "-Q"], capture=True, check=True)
     paths: set[str] = set()
     for line in r.stdout.splitlines():
         if "\t" not in line:

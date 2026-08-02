@@ -36,3 +36,10 @@ ISO9660_LABEL_NAME_MAX = ISO9660_VOLUME_LABEL_MAX - ISO9660_LABEL_SUFFIX_LEN  # 
 # PAR2 recovery volumes are named "<base>.volNNN+NN.par2"; the index file
 # is plain "<base>.par2". This pattern matches recovery volumes only.
 PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
+
+# Marker file extract drops into its output dir (content: the chain
+# name). It identifies the dir as a bd-archive restore target so a
+# re-run of the same chain (repair/resume) is allowed, while extraction
+# into a dir holding foreign data — which dar's -wa would silently
+# overwrite — is refused.
+EXTRACT_MARKER_NAME = ".bd-archive-extract"

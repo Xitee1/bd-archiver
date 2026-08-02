@@ -1,4 +1,6 @@
 import contextlib
+import os
+import re
 import shlex
 import shutil
 import sys
@@ -37,6 +39,33 @@ from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
+
+# The archive name becomes a dar basename, an on-disc folder name, a
+# glob input (slice/par2 discovery) and part of the -E hook command —
+# restrict it to a filesystem- and glob-safe charset.
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+
+def _validate_name(name: str) -> None:
+    """Reject archive names that would break filename parsing or globs.
+
+    '-catalog' anywhere in the name makes every slice invisible to the
+    substring filters in DarArchive.slices / find_disc_archives (create
+    would build zero discs; existing discs would be unextractable), and
+    a trailing '-gen<N>' collides with the generation suffix.
+    """
+    if not _NAME_RE.match(name):
+        log.error(
+            f"--name '{name}' contains unsupported characters; use letters, "
+            f"digits, '.', '_', '+', '-' (must start with a letter or digit)"
+        )
+        sys.exit(1)
+    if "-catalog" in name:
+        log.error("--name must not contain '-catalog' — reserved for catalog slice files")
+        sys.exit(1)
+    if re.search(r"-gen\d+$", name):
+        log.error("--name must not end in '-gen<N>' — reserved for the generation suffix")
+        sys.exit(1)
 
 
 def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
@@ -100,9 +129,11 @@ def _loop_mounted(iso_path: Path):
             yield mounted
         finally:
             dio.umount(mounted)
-            with contextlib.suppress(OSError):
-                mount_dir.rmdir()
     finally:
+        # rmdir in the outer finally so the tempdir is also cleaned up
+        # when the mount itself failed and we exit above.
+        with contextlib.suppress(OSError):
+            mount_dir.rmdir()
         udisks.loop_delete(loop_dev)
 
 
@@ -164,6 +195,29 @@ def cmd_create(args):
 
     if not 0 <= args.min_last_disc_fill <= 100:
         log.error(f"--min-last-disc-fill must be 0-100, got {args.min_last_disc_fill}")
+        sys.exit(1)
+
+    # par2 needs at least 1%; values above 100% make no sense for FEC.
+    # Out-of-range values previously failed only hours in — a negative
+    # one even made compute_slice_bytes size slices LARGER than the disc.
+    if not 1 <= args.redundancy <= 100:
+        log.error(f"--redundancy must be 1-100, got {args.redundancy}")
+        sys.exit(1)
+
+    _validate_name(args.name)
+
+    # Refuse to build into an images dir that already holds disc images:
+    # burn globs images/disc_*.iso, so a stale ISO from a previous or
+    # cancelled run would get burned alongside (or instead of) the new
+    # set without anyone noticing.
+    stale_isos = sorted(Path(args.output, "images").glob("disc_*.iso"))
+    if stale_isos:
+        log.error(
+            f"{Path(args.output, 'images')} already contains {len(stale_isos)} "
+            f"disc image(s) from a previous run (e.g. {stale_isos[0].name})."
+        )
+        log.info("burn would pick them up together with the new set. Burn or")
+        log.info("delete them first, or choose a different -o output directory.")
         sys.exit(1)
 
     # Hard cap matches the pre-Phase-2 label format (32 - 5) so existing
@@ -497,13 +551,15 @@ def cmd_create(args):
     # its bytes are still hot in the OS page cache, eliminating most
     # SSD read traffic. Phase 3 below skips par2 and just verifies the
     # files are present.
-    # %p/%b can contain spaces if the workdir or archive name does;
-    # dar substitutes literally before passing to /bin/sh, so we
-    # quote the macros here. %N is always digits, no quoting needed.
+    # The slice dir + basename reach the helper via environment (dar's
+    # /bin/sh hook inherits it) rather than %p/%b macros: dar substitutes
+    # those literally into the shell command, so no quoting survives a
+    # workdir path containing quotes, '$' or backticks. %N is always
+    # digits and safe to pass inline.
     log.step("Creating dar archive")
-    par2_hook = (
-        f'{shlex.quote(sys.executable)} -m bd_archive._par2_helper "%p" "%b" %N {cfg.redundancy}'
-    )
+    os.environ["BD_ARCHIVE_SLICE_DIR"] = str(tmp_dir)
+    os.environ["BD_ARCHIVE_SLICE_BASENAME"] = cfg.dar_name
+    par2_hook = f"{shlex.quote(sys.executable)} -m bd_archive._par2_helper %N {cfg.redundancy}"
     dar_archive.create(
         source,
         slice_bytes,

@@ -28,6 +28,9 @@ packages = ["src/bd_archive"]
 line-length = 100
 target-version = "py311"
 src = ["src"]
+# Historical plan documents contain illustrative Python snippets; newer
+# ruff versions format code blocks inside Markdown and would churn them.
+exclude = ["docs"]
 
 [tool.ruff.lint]
 select = [

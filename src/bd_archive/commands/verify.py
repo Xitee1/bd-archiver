@@ -43,9 +43,11 @@ def cmd_verify(args):
                 result = verify_disc(mounted, f"ISO {target.name}")
             finally:
                 dio.umount(mounted)
-                with contextlib.suppress(OSError):
-                    mount_dir.rmdir()
         finally:
+            # Outer finally so the tempdir is also cleaned up when the
+            # mount failed and we exit above.
+            with contextlib.suppress(OSError):
+                mount_dir.rmdir()
             udisks.loop_delete(loop_dev)
         sys.exit(result.value)
 
