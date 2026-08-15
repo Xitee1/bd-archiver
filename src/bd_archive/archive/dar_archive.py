@@ -28,6 +28,17 @@ def dar_basename(filename: str) -> str:
     return _SLICE_SUFFIX_RE.sub("", filename)
 
 
+def slice_number(filename: str) -> int | None:
+    """Slice number from a dar filename (``photos-gen1.0003.dar`` → 3).
+
+    Which slices of a generation are staged decides whether extract can
+    read the archive sequentially (needs 1..k without gaps) or has to
+    fall back to random access via the catalog.
+    """
+    m = _SLICE_SUFFIX_RE.search(filename)
+    return int(m.group(0)[1:-4]) if m else None
+
+
 def parse_dar_filename(filename: str) -> tuple[str, int, bool] | None:
     """Parse a dar slice or catalog filename.
 
