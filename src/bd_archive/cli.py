@@ -162,6 +162,18 @@ def build_parser() -> argparse.ArgumentParser:
         "<output>/.bd-archive-work/; specify a tmpfs "
         "path here to keep scratch off disk)",
     )
+    ex.add_argument(
+        "--catalog",
+        nargs="+",
+        default=None,
+        metavar="FILE",
+        help="Isolated catalog file(s) of the chain, e.g. the "
+        "<name>-gen<N>-catalog.0001.dar that create persists next to the "
+        "images. Only needed when restoring from a partial disc set "
+        "whose disc 1 (which carries the catalog) is not among the "
+        "supplied discs — with it, the files stored on the discs you do "
+        "have can still be restored. One file per generation.",
+    )
 
     return p
 

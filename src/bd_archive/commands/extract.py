@@ -2,12 +2,23 @@ import contextlib
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from bd_archive.archive.checksums import verify_slice
-from bd_archive.archive.dar_archive import DiscArchive, find_disc_archives
+from bd_archive.archive.dar_archive import (
+    DiscArchive,
+    dar_basename,
+    find_disc_archives,
+    parse_dar_filename,
+    slice_number,
+)
 from bd_archive.archive.disc import DiscIO
-from bd_archive.constants import EXTRACT_MARKER_NAME
+from bd_archive.constants import (
+    CORRUPTED_FILES_NAME,
+    EXTRACT_MARKER_NAME,
+    MISSING_FILES_NAME,
+)
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import dar, par2
@@ -198,6 +209,167 @@ def _cleanup_par2(staging: Path):
         pf.unlink(missing_ok=True)
 
 
+@dataclass(frozen=True)
+class _GenPlan:
+    """How one generation of the chain gets handed to dar.
+
+    `slice_numbers` is what actually made it into staging. A set that
+    starts at 1 without gaps can be read sequentially (dar's tape mode,
+    independent of the catalog); anything else needs random access,
+    which only works with a catalog but restores from any subset of
+    slices — that is what makes single-disc restores possible.
+    """
+
+    generation: int
+    basename: str
+    catalog_base: Path | None
+    slice_numbers: list[int]
+    sequential: bool
+
+    @property
+    def gaps(self) -> list[int]:
+        """Slice numbers missing below the highest staged one. Slices
+        past that are invisible to us — only the catalog knows how many
+        there are."""
+        if not self.slice_numbers:
+            return []
+        return sorted(set(range(1, self.slice_numbers[-1])) - set(self.slice_numbers))
+
+
+def _staged_slice_numbers(staging: Path, basename: str) -> list[int]:
+    nums = [
+        n
+        for p in staging.glob(f"{basename}.[0-9]*.dar")
+        if "-catalog" not in p.name and (n := slice_number(p.name)) is not None
+    ]
+    return sorted(nums)
+
+
+def _resolve_catalog_args(raw_paths: list[str] | None, chain_name: str) -> dict[int, Path]:
+    """Map --catalog arguments to ``{generation: catalog basename}``.
+
+    Takes the isolated catalog slice files `create` persists next to the
+    images (``<name>-gen<N>-catalog.0001.dar``) and strips the slice
+    suffix, since that is what dar's -A wants. Rejects files belonging
+    to another chain — restoring with a foreign catalog would produce
+    nonsense rather than an error.
+    """
+    catalogs: dict[int, Path] = {}
+    for raw in raw_paths or []:
+        path = Path(raw)
+        if not path.is_file():
+            log.error(f"--catalog file does not exist: {path}")
+            sys.exit(1)
+        parsed = parse_dar_filename(path.name)
+        if parsed is None or not parsed[2]:
+            log.error(
+                f"--catalog must point to a dar catalog slice "
+                f"(<name>[-gen<N>]-catalog.NNNN.dar); got '{path.name}'"
+            )
+            sys.exit(1)
+        name, gen, _ = parsed
+        if name != chain_name:
+            log.error(
+                f"--catalog '{path.name}' belongs to chain '{name}', "
+                f"but this restore is for '{chain_name}'."
+            )
+            sys.exit(1)
+        catalogs[gen] = path.parent / dar_basename(path.name)
+    return catalogs
+
+
+def _plan_generation(
+    gen: int, basename: str, staging: Path, external_catalogs: dict[int, Path]
+) -> _GenPlan:
+    """Pick catalog source and read mode for one generation."""
+    catalog_basename = f"{basename}-catalog"
+    staged_catalog = staging / catalog_basename
+    catalog_base: Path | None = None
+    if any(staging.glob(f"{catalog_basename}.*.dar")):
+        catalog_base = staged_catalog
+    elif gen in external_catalogs:
+        catalog_base = external_catalogs[gen]
+
+    nums = _staged_slice_numbers(staging, basename)
+    # Contiguous from slice 1: sequential read works and stays the
+    # default — it does not depend on the catalog being usable.
+    contiguous = nums == list(range(1, len(nums) + 1))
+    return _GenPlan(gen, basename, catalog_base, nums, contiguous or catalog_base is None)
+
+
+def _confirm_partial_sets(plans: dict[int, _GenPlan], staging: Path) -> bool:
+    """Warn about generations whose slice set has holes and ask once.
+
+    Returns False when the user declines. A complete set (the normal
+    case) produces no output at all.
+    """
+    partial = [p for p in plans.values() if p.gaps]
+    if not partial:
+        return True
+
+    for plan in partial:
+        log.warn(
+            f"Gen {plan.generation}: slice(s) {plan.gaps} were not supplied "
+            f"(staged: {plan.slice_numbers})."
+        )
+        if not plan.sequential:
+            log.info(
+                "  Restoring the files stored on the supplied slices — this needs "
+                "the LAST disc of the set (it carries the slice layout). The rest "
+                f"is listed in {MISSING_FILES_NAME}."
+            )
+        elif plan.gaps[0] == 1:
+            # No catalog and no slice 1: neither read mode can even open
+            # the archive. Say so before dar's cryptic abort.
+            log.warn(
+                f"  Slice 1 is missing and no catalog is available for Gen "
+                f"{plan.generation} — nothing can be restored from these discs. "
+                f"Supply the generation's catalog via --catalog (plus the last "
+                f"disc of the set), or restore starting from disc 1."
+            )
+        else:
+            # Sequential read walks forward from slice 1 and stops at the
+            # first hole; a catalog would let it skip.
+            log.warn(
+                f"  No catalog for Gen {plan.generation} — only slices "
+                f"1-{plan.gaps[0] - 1} can be restored. Pass the isolated catalog "
+                f"via --catalog to restore the files held by the later slices too."
+            )
+
+    if not prompt_yn("Restore from the incomplete slice set?", default_yes=False):
+        log.info(f"Slices remain in: {staging}")
+        log.info("Re-run extract and supply the missing disc(s) as well.")
+        return False
+    return True
+
+
+def _cleanup_skipped(skipped: list[str], output_dir: Path) -> list[str]:
+    """Remove the 0-byte placeholders dar leaves for files whose slice
+    was absent, and return their paths relative to the output dir.
+
+    dar creates the inode before it discovers it cannot fill it, so a
+    partial restore otherwise looks complete while consisting of empty
+    files — dangerous if the result is backed up again. Anything that
+    is not empty is kept (it holds data from an earlier generation) and
+    still reported.
+    """
+    reported: list[str] = []
+    out_resolved = output_dir.resolve()
+    for raw in skipped:
+        path = Path(raw)
+        try:
+            rel = str(path.resolve().relative_to(out_resolved))
+        except ValueError:
+            # Outside the output dir — never touch it, just report.
+            reported.append(raw)
+            continue
+        reported.append(rel)
+        with contextlib.suppress(OSError):
+            if path.is_file() and path.stat().st_size == 0:
+                path.unlink()
+    return reported
+
+
 def _check_output_dir(output_dir: Path, work_dir: Path) -> str | None:
     """Refuse to extract into a directory holding foreign data.
 
@@ -215,7 +387,8 @@ def _check_output_dir(output_dir: Path, work_dir: Path) -> str | None:
     foreign = [
         e
         for e in output_dir.iterdir()
-        if e.name != "corrupted-files.txt" and e.resolve() != work_dir.resolve()
+        if e.name not in (CORRUPTED_FILES_NAME, MISSING_FILES_NAME)
+        and e.resolve() != work_dir.resolve()
     ]
     if foreign:
         log.error(f"Output dir {output_dir} already contains data (e.g. '{foreign[0].name}').")
@@ -431,48 +604,80 @@ def cmd_extract(args):
             log.info("Re-run extract and insert the missing generation's discs as well.")
             sys.exit(1)
 
+    external_catalogs = _resolve_catalog_args(args.catalog, chain_name)
+    plans = {
+        gen: _plan_generation(gen, gen_basenames[gen], staging, external_catalogs)
+        for gen in sorted_gens
+    }
+    if not _confirm_partial_sets(plans, staging):
+        sys.exit(1)
+
     all_corrupted: list[str] = []
+    all_skipped: list[str] = []
+    stopped: list[str] = []
     for gen in sorted_gens:
-        basename = gen_basenames[gen]
-        log.info(f"Gen {gen}: dar -x {basename}")
-        catalog_basename = f"{basename}-catalog"
-        has_catalog = any(staging.glob(f"{catalog_basename}.*.dar"))
+        plan = plans[gen]
+        mode = "sequential" if plan.sequential else "random access via catalog"
+        log.info(f"Gen {gen}: dar -x {plan.basename} ({mode})")
         # Always overwrite (-wa): later generations carry newer file
         # contents than earlier ones, and a re-run into a non-empty
         # output dir (the documented repair path after corruption, or a
         # resume after a crash) must replace existing — possibly stale
         # or truncated — files. Without -wa, dar's overwrite prompt gets
-        # auto-answered negatively on our piped stdin and silently keeps
-        # the old bytes.
-        rc, corrupted = dar.extract_sequential(
-            staging / basename,
+        # auto-answered negatively (no terminal) and silently keeps the
+        # old bytes.
+        res = dar.extract(
+            staging / plan.basename,
             output_dir,
-            catalog_base=staging / catalog_basename if has_catalog else None,
+            catalog_base=plan.catalog_base,
             overwrite=True,
+            sequential=plan.sequential,
         )
-        all_corrupted.extend(corrupted)
-        if rc != 0:
-            log.error(f"Gen {gen} dar extract failed (exit {rc})")
+        all_corrupted.extend(res.corrupted)
+        all_skipped.extend(_cleanup_skipped(res.skipped, output_dir))
+        if res.missing_slice == dar.LAST_SLICE:
+            # Random access could not even open the archive: the final
+            # slice carries the slice layout, so it is never optional.
+            log.error(
+                f"Gen {gen}: the last disc of the set was not supplied — dar needs "
+                f"it to open the archive, so nothing could be restored from the "
+                f"supplied disc(s)."
+            )
+            log.info("  Re-run with the last disc of this generation included.")
+            stopped.append(f"Gen {gen}: not restored — last disc of the set missing")
+        elif res.missing_slice is not None:
+            # Sequential read hit the end of what we staged. Everything
+            # up to that point is restored; the rest needs another disc.
+            log.warn(
+                f"Gen {gen}: stopped at {res.missing_slice} — that slice was not "
+                f"supplied. Files stored beyond it are missing from the output."
+            )
+            stopped.append(f"Gen {gen}: sequential read stopped at {res.missing_slice}")
+        elif res.returncode != 0:
+            log.error(f"Gen {gen} dar extract failed (exit {res.returncode})")
             log.info(f"Slices remain in: {staging}")
             log.info(
-                f"Manual retry: dar -x {staging / basename} -R {output_dir} --sequential-read -wa"
+                f"Manual retry: dar -x {staging / plan.basename} -R {output_dir} "
+                f"{'--sequential-read ' if plan.sequential else ''}-wa"
             )
             sys.exit(1)
 
-    if not all_corrupted and not unrepairable_slices:
+    if not all_corrupted and not unrepairable_slices and not all_skipped and not stopped:
         log.ok("Extraction complete!")
     else:
         log.warn(
-            f"Extraction finished with corruption: "
-            f"{len(all_corrupted)} file(s) reported by dar, "
-            f"{len(unrepairable_slices)} slice(s) unrepairable"
+            f"Extraction finished incomplete: "
+            f"{len(all_corrupted)} file(s) with bad CRC, "
+            f"{len(unrepairable_slices)} slice(s) unrepairable, "
+            f"{len(all_skipped)} file(s) not restored (slice not supplied)"
+            + (f", {len(stopped)} generation(s) cut short" if stopped else "")
         )
 
     # Write corrupted-files.txt manifest into output_dir (NOT into the
     # workdir, which may be auto-cleaned) when anything went sideways.
     manifest_path: Path | None = None
     if all_corrupted or unrepairable_slices:
-        manifest_path = output_dir / "corrupted-files.txt"
+        manifest_path = output_dir / CORRUPTED_FILES_NAME
         lines = [
             "# bd-archive: corrupted-files manifest",
             "# Files listed here are present in the output but their bytes",
@@ -503,6 +708,43 @@ def cmd_extract(args):
         manifest_path.write_text("\n".join(lines) + "\n")
         log.warn(f"Wrote {manifest_path}")
 
+    # Files whose slice was never supplied are a separate category: not
+    # damaged, simply absent from the output. Their own manifest doubles
+    # as the shopping list of what a later run with more discs recovers.
+    missing_path: Path | None = None
+    if all_skipped or stopped:
+        missing_path = output_dir / MISSING_FILES_NAME
+        lines = [
+            "# bd-archive: missing-files manifest",
+            "# Content of this archive that was NOT restored, because the",
+            "# slice holding it was not among the supplied discs/images.",
+            "# Where dar created empty placeholders, bd-archive removed them",
+            "# again — those files are absent from the output, not empty.",
+            "# A listed file that DOES exist in the output was cut off mid-way",
+            "# (its data ran into a slice that was not supplied): treat it as",
+            "# unusable until it has been restored again.",
+            "# Re-run `bd-archive extract` into this same output dir with the",
+            "# missing disc(s) to fill them in.",
+            "",
+        ]
+        if stopped:
+            lines.append(f"## {len(stopped)} generation(s) cut short:")
+            lines += stopped
+            lines.append("# Sequential read cannot skip a gap: everything stored past the")
+            lines.append("# named slice is missing. Supplying the generation's catalog via")
+            lines.append("# --catalog together with the LAST disc of the set lets dar reach")
+            lines.append("# the files on the discs you do have.")
+            lines.append("")
+        if all_skipped:
+            lines.append(f"## {len(all_skipped)} file(s) not restored:")
+            lines += all_skipped
+        missing_path.write_text("\n".join(lines) + "\n")
+        log.warn(f"Wrote {missing_path}")
+    else:
+        # A re-run that recovered everything must not leave the previous
+        # run's list of holes behind.
+        (output_dir / MISSING_FILES_NAME).unlink(missing_ok=True)
+
     # Sum extracted size BEFORE cleaning the workdir, since the default
     # workdir lives under output_dir and we'd otherwise count its bytes.
     total = sum(
@@ -520,11 +762,13 @@ def cmd_extract(args):
     print(f"  Size:         {human_bytes(total)}")
     if manifest_path is not None:
         print(f"  CORRUPT:      {manifest_path}")
+    if missing_path is not None:
+        print(f"  MISSING:      {missing_path}")
     if not workdir_is_default:
         print(f"\n  Cleanup staging: rm -rf {work_dir}")
     print()
 
-    # Non-zero exit when corruption was detected so scripts know the
-    # restore was not fully clean.
-    if all_corrupted or unrepairable_slices:
+    # Non-zero exit when the restore was not fully clean — corruption
+    # found, or content left out because its slice was not supplied.
+    if all_corrupted or unrepairable_slices or all_skipped or stopped:
         sys.exit(1)

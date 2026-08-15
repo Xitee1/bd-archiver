@@ -43,3 +43,11 @@ PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
 # into a dir holding foreign data — which dar's -wa would silently
 # overwrite — is refused.
 EXTRACT_MARKER_NAME = ".bd-archive-extract"
+
+# Reports extract writes into its output dir when a restore was not
+# clean: files present but unverifiable (bad CRC / unrepairable slice)
+# and files that could not be restored at all because the slice holding
+# them was not among the discs supplied. Both are extract's own output,
+# so a re-run into that dir must not treat them as foreign data.
+CORRUPTED_FILES_NAME = "corrupted-files.txt"
+MISSING_FILES_NAME = "missing-files.txt"

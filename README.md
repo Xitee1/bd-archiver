@@ -7,7 +7,7 @@ Four subcommands form a build-then-burn pipeline:
 - `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. Supports full archives and incrementals (via `--base`). No burning.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
 - `verify`   — Check disc / directory / ISO integrity via PAR2. Exit code reflects state.
-- `extract`  — Restore archive from discs with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end.
+- `extract`  — Restore archive from discs with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end. Partial sets (down to a single disc) restore what they hold.
 
 Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
 
@@ -248,6 +248,7 @@ bd-archive extract -o /path/to/output [options]
 | `-o, --output`   | required                       | Where extracted files land |
 | `-D, --device`   | auto-detect                    | Optical drive. Auto-picks the only drive present; prompts if multiple. |
 | `-w, --workdir`  | `<output>/.bd-archive-work/`   | Staging dir for slices. Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
+| `--catalog`      | —                              | Isolated catalog file(s), one per generation. Only needed for partial restores that don't include disc 1 — see below. |
 
 The chain name is auto-detected from the first disc's filenames — there is no `-n` flag. Discs from multiple generations of the same chain may be inserted in any order; the tool detects each disc's generation from its filenames (`<name>-gen<N>.NNNN.dar`). If the first disc is a packed disc carrying more than one chain (see `--pack-with`), a numbered prompt asks which chain to restore; archives of other chains on shared discs are ignored automatically.
 
@@ -258,6 +259,27 @@ The output directory must be empty on the first run — extraction overwrites co
 After each disc, the tool asks whether to continue. Once you stop, it runs `dar -x` for each generation found in staging, in order: Gen 1 extracts into the output dir, then Gen 2 extracts on top, and so on — always with overwrite, so a re-run into the same output dir (e.g. after repairing a damaged disc) replaces stale files instead of keeping them. Files modified in later generations replace the older versions; deletions recorded in later catalogs are honoured. Partial restores work too — losing all discs of one generation leaves a hole in the chain, but earlier and later gens still restore what they hold; the tool warns and asks for confirmation before extracting an incomplete chain.
 
 Per-file `Bad CRC` lines from dar plus any slices that failed sha512 *and* par2 are recorded in `<output>/corrupted-files.txt`, and `extract` exits with code `1` so scripts can detect a non-clean restore. The output dir still contains whatever dar managed to extract — best-effort, never silently corrupt.
+
+#### Restoring from a single disc / a partial set
+
+You don't need the whole set. Insert whichever discs you have, press `e`, and `extract` restores what those discs hold:
+
+```bash
+# just the last disc of the set, using the catalog create left next to the images
+bd-archive extract -o /path/to/output --catalog /path/to/staging-dir/myarchive-gen1-catalog.0001.dar
+```
+
+What is restorable depends on which discs you supply — this follows from dar's on-media format, not from bd-archive:
+
+| Discs supplied | Result |
+|---|---|
+| **Disc 1**, then any number in order | Everything up to the first gap. No catalog needed. |
+| Any subset **including the last disc**, plus a catalog | Every file stored completely on the supplied discs. |
+| Only middle discs (no disc 1, no last disc) | Nothing — dar cannot open the archive: disc 1 carries the archive header, the last disc the slice layout. |
+
+The catalog is on **disc 1** and is also written next to the images by `create` (`<name>-gen<N>-catalog.0001.dar`) — keep that file in your normal backup, it is tiny and turns any later disc into a usable restore source. Without disc 1, pass it via `--catalog` (one file per generation).
+
+Before restoring an incomplete set, `extract` shows which slices are missing and asks for confirmation. Afterwards `<output>/missing-files.txt` lists everything that could not be restored, and the exit code is `1`. Files dar creates as empty placeholders are removed, so a partial restore never looks complete; a file that *is* listed but exists in the output was cut off at a disc boundary and is unusable until refetched. Re-running `extract` into the same output dir with the missing discs fills the gaps and deletes the manifest again.
 
 For maximum throughput on SSD-hosted archives, point `-w` at a tmpfs path (`/dev/shm/bd-extract`) — a 25 GB slice fits in RAM and never hits disk during staging.
 

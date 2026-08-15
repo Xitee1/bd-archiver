@@ -1,7 +1,9 @@
 import contextlib
+import os
 import re
+import signal
 import subprocess
-import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from bd_archive.shell.runner import run
@@ -12,6 +14,23 @@ from bd_archive.shell.runner import run
 # with code 0 anyway — so we cannot rely on the exit code to detect
 # corruption. We parse the message instead.
 _BAD_CRC_RE = re.compile(r"Error while restoring (.+?) : Bad CRC")
+
+# Printed per file when dar wanted a slice we don't have and the missing
+# slice question was answered "no" (see the no-terminal note on extract()).
+# dar still creates the entry, so these paths exist in the output as
+# 0-byte placeholders — the caller has to deal with them.
+_SKIPPED_RE = re.compile(r"^(.+) not restored \(user choice\)$")
+
+# A slice dar cannot do without: sequential read stops at the first hole
+# (first pattern), random access needs the final slice because the slice
+# layout lives in its trailer (second pattern). Either way dar aborts the
+# run with exit code 4 after restoring whatever came before.
+_MISSING_SLICE_RE = re.compile(r"User refused to continue while asking: (\S+) is required")
+_MISSING_LAST_RE = re.compile(r"The last file of the set is not present")
+
+# Stands in for the final slice, whose name dar does not print (it does
+# not know it either — that is the point).
+LAST_SLICE = "the last slice of the set"
 
 # dar's -P masks are glob patterns, not literal paths: an unescaped
 # "photos/[2024] trip/x.jpg" would exclude a *different* file matching
@@ -151,82 +170,124 @@ def compress(archive_path: Path, source: Path, compression: str, comp_level: str
     run(cmd, label="dar")
 
 
-def extract_sequential(
+def _kill_group(proc: subprocess.Popen, grace_s: int = 5) -> None:
+    """Terminate a start_new_session child and everything it spawned.
+
+    proc.terminate() would only reach the child itself; dar shells out
+    (e.g. for -E hooks), so we signal the process group it leads. Falls
+    back to the plain child signals if the group is already gone.
+    """
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        try:
+            proc.wait(timeout=grace_s)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    proc.wait()
+
+
+@dataclass
+class ExtractResult:
+    """Outcome of one `dar -x` run.
+
+    `returncode` alone is not enough to judge a restore: dar exits 0
+    even when per-file CRC errors occurred, and exits 4 when it gave up
+    on a missing slice after already restoring part of the archive.
+    """
+
+    returncode: int
+    corrupted: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    missing_slice: str | None = None
+
+
+def extract(
     base_path: Path,
     output_dir: Path,
     catalog_base: Path | None = None,
     overwrite: bool = False,
-) -> tuple[int, list[str]]:
-    """Extract a dar archive with --sequential-read.
+    sequential: bool = True,
+) -> ExtractResult:
+    """Extract a dar archive, skipping whatever slices are absent.
 
-    Feeds ESC bytes on stdin in a background thread so dar's
-    "missing slice" prompts auto-skip — disaster recovery from a
-    partial disc set restores ~95% of files without intervention.
-    With a complete slice set, no prompts fire and the ESC stream
-    goes unused.
+    dar asks the user to provide missing slices. It reads that answer
+    from `/dev/tty`, **not** from stdin, so piping anything into the
+    child cannot answer it — with a terminal attached dar simply blocks
+    forever. Running it in its own session (`start_new_session=True`)
+    removes the controlling terminal, which puts dar in its documented
+    "No terminal found for user interaction" mode: every question is
+    answered negatively, i.e. missing slices are skipped instead of
+    waited for. That is what makes a partial slice set restorable
+    unattended.
+
+    Side effect of that isolation: dar no longer receives the tty's
+    SIGINT, so KeyboardInterrupt has to terminate it explicitly.
+
+    `sequential` picks the read mode:
+
+    * True (default) — `--sequential-read`, the tape-like mode that
+      works without a usable catalog but must start at slice 1 and
+      cannot skip a gap: refusing a missing slice aborts the run
+      (exit 4, `missing_slice` set) with whatever came before restored.
+    * False — random-access mode, which needs a catalog (`catalog_base`
+      or the one at the end of the last slice) plus the archive's final
+      slice, whose trailer holds the slice layout. In exchange it
+      restores from any subset of the remaining slices, reporting each
+      unreachable file in `skipped` (dar leaves those behind as 0-byte
+      placeholders). Without the final slice dar refuses to open the
+      archive at all and `missing_slice` comes back as LAST_SLICE.
 
     Set overwrite=True to make dar replace existing files without
     prompting (`-wa`). Required when extracting an incremental on
     top of a previously-extracted generation, where later gens
     update files that earlier gens already restored.
-
-    Returns (exit_code, corrupted_files). corrupted_files contains
-    the paths dar reported as "Bad CRC" during extract — these
-    files were (partially) written to output and need attention.
-    dar 2.7 exits with code 0 even when CRC errors occurred, so
-    the caller must check this list, not just the exit code.
     """
-    cmd = ["dar", "-x", str(base_path), "-R", str(output_dir), "-O", "--sequential-read"]
+    cmd = ["dar", "-x", str(base_path), "-R", str(output_dir), "-O"]
+    if sequential:
+        cmd.append("--sequential-read")
     if overwrite:
         cmd.append("-wa")
     if catalog_base is not None:
         # -A uses the isolated catalog as rescue source — handles
         # corruption of the in-archive catalog (PAR2 covers slice
         # bytes but the embedded catalog inside the slice can still
-        # be lost past PAR2's repair threshold).
+        # be lost past PAR2's repair threshold), and is what makes
+        # random-access mode work on a partial slice set.
         cmd += ["-A", str(catalog_base)]
 
     proc = subprocess.Popen(
-        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
     )
-    assert proc.stdin is not None and proc.stdout is not None
+    assert proc.stdout is not None
 
-    def _feed_esc():
-        try:
-            while True:
-                proc.stdin.write("\x1b")
-                proc.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError):
-            pass
-
-    threading.Thread(target=_feed_esc, daemon=True).start()
-    corrupted: list[str] = []
+    result = ExtractResult(returncode=0)
     try:
         for line in proc.stdout:
             print(f"  [dar] {line}", end="")
-            m = _BAD_CRC_RE.search(line)
-            if m:
-                corrupted.append(m.group(1).strip())
+            if m := _BAD_CRC_RE.search(line):
+                result.corrupted.append(m.group(1).strip())
+            elif m := _SKIPPED_RE.match(line.strip()):
+                result.skipped.append(m.group(1).strip())
+            elif m := _MISSING_SLICE_RE.search(line):
+                result.missing_slice = m.group(1).strip()
+            elif _MISSING_LAST_RE.search(line):
+                result.missing_slice = LAST_SLICE
         proc.wait()
     except KeyboardInterrupt:
-        # dar shares our process group → SIGINT already reached it.
-        # Wait for it to die, then escalate if needed.
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+        # Own session → the tty's SIGINT never reached dar; kill it here.
+        # Signal the whole process group (dar is its leader, see
+        # start_new_session) so nothing it spawned outlives the cancel.
+        _kill_group(proc)
         raise
-    finally:
-        # dar has exited → its end of the stdin pipe is gone. The
-        # ESC-feeder daemon thread may still hold a buffered write;
-        # closing here triggers its except branch and lets us swallow
-        # the BrokenPipeError instead of leaking it through the
-        # TextIOWrapper finalizer at GC time.
-        with contextlib.suppress(BrokenPipeError, OSError):
-            proc.stdin.close()
-    return proc.returncode, corrupted
+    result.returncode = proc.returncode
+    return result
