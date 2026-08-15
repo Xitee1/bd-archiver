@@ -6,7 +6,7 @@ from pathlib import Path
 
 from bd_archive.archive.checksums import verify_slice
 from bd_archive.archive.dar_archive import DiscArchive, find_disc_archives
-from bd_archive.archive.disc import DiscIO
+from bd_archive.archive.disc import DiscIO, LoopMountError, loop_mounted
 from bd_archive.constants import EXTRACT_MARKER_NAME
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
@@ -90,6 +90,158 @@ def _wait_for_next_disc(dio: DiscIO, mount_dir: Path, target: int) -> Path | Non
         if is_stdout_tty:
             sys.stdout.write("\r\033[K")
             sys.stdout.flush()
+
+
+class _DeviceSource:
+    """Discs handed to us one at a time through a physical drive.
+
+    Disc 1 waits at the classic press-Enter prompt so the user can read
+    the header first; discs >= 2 auto-detect. The set is open-ended —
+    open_next() returns None only when the user pressed 'e'.
+    """
+
+    item_label = "Disc"
+
+    def __init__(self, device: str):
+        self.dio = DiscIO(device)
+        self._mount_dir: Path | None = None
+        self._mounted: Path | None = None
+
+    def log_source(self):
+        log.info(f"Device:   {self.dio.device}")
+
+    def log_hint(self):
+        log.info("Insert discs from any generation, in any order. The tool")
+        log.info("detects generations from filenames and extracts the chain")
+        log.info("in order at the end.")
+
+    def _remember(self, mount_dir: Path, mounted: Path | None) -> Path | None:
+        if mounted is None:
+            with contextlib.suppress(OSError):
+                mount_dir.rmdir()
+            return None
+        self._mount_dir, self._mounted = mount_dir, mounted
+        return mounted
+
+    def open_next(self, target: int) -> Path | None:
+        mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
+        if target == 1:
+            mounted = _mount_with_prompt(self.dio, mount_dir, f"Insert disc {target}")
+            if mounted is None:
+                # User gave up on mounting the very first disc — nothing
+                # was collected, so this is a failure, not a clean stop.
+                self._remember(mount_dir, None)
+                sys.exit(1)
+        else:
+            # None here = 'e' pressed → done collecting.
+            mounted = _wait_for_next_disc(self.dio, mount_dir, target)
+        return self._remember(mount_dir, mounted)
+
+    def reopen_current(self, disc_num: int) -> Path | None:
+        mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
+        mounted = _mount_with_prompt(
+            self.dio, mount_dir, f"Re-insert disc {disc_num} for par2 repair"
+        )
+        return self._remember(mount_dir, mounted)
+
+    def close_current(self):
+        if self._mounted is not None:
+            self.dio.umount(self._mounted)
+        if self._mount_dir is not None:
+            with contextlib.suppress(OSError):
+                self._mount_dir.rmdir()
+        self._mounted = self._mount_dir = None
+        self.dio.eject()
+
+
+class _IsoSource:
+    """A fixed, ordered list of ISO images, loop-mounted one at a time.
+
+    Same per-disc flow as a physical drive, minus the interaction: the
+    set is known up front, so open_next() walks its own cursor and
+    returns None once the list is exhausted. A failed image is fatal —
+    the user named it explicitly, so silently skipping it would hide a
+    typo or a truncated download.
+    """
+
+    item_label = "Image"
+
+    def __init__(self, isos: list[Path]):
+        self._isos = isos
+        self._cursor = 0
+        self._current: Path | None = None
+        self._stack: contextlib.ExitStack | None = None
+
+    def log_source(self):
+        log.info(f"Images:   {len(self._isos)} ISO file(s)")
+        for iso in self._isos:
+            log.info(f"            {iso}")
+
+    def log_hint(self):
+        log.info("Reading from ISO images instead of discs. Generations are")
+        log.info("detected from filenames and extracted in order at the end.")
+
+    def _mount(self, iso: Path) -> Path:
+        stack = contextlib.ExitStack()
+        try:
+            mounted = stack.enter_context(loop_mounted(iso, prefix="bd-extract-"))
+        except LoopMountError as e:
+            stack.close()
+            log.error(str(e))
+            sys.exit(1)
+        self._stack = stack
+        return mounted
+
+    def open_next(self, target: int) -> Path | None:
+        if self._cursor >= len(self._isos):
+            return None
+        iso = self._isos[self._cursor]
+        self._cursor += 1
+        self._current = iso
+        log.info(f"Image {self._cursor}/{len(self._isos)}: {iso.name}")
+        return self._mount(iso)
+
+    def reopen_current(self, disc_num: int) -> Path | None:
+        assert self._current is not None
+        log.info(f"Re-mounting {self._current.name} for par2 repair")
+        return self._mount(self._current)
+
+    def close_current(self):
+        if self._stack is not None:
+            self._stack.close()
+            self._stack = None
+
+
+def _resolve_iso_paths(raw_paths: list[str]) -> list[Path]:
+    """Expand the --iso arguments into an ordered list of image files.
+
+    A directory expands to its `disc_*.iso` in lexical (= numerical,
+    they are zero-padded) order, also looking in `<dir>/images/` so
+    pointing at a create run's output dir just works. Files are taken
+    as given. Duplicates are dropped so an accidental
+    `--iso out/images out/images/disc_0001.iso` doesn't process an
+    image twice.
+    """
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for raw in raw_paths:
+        p = Path(raw)
+        if p.is_dir():
+            found = sorted(p.glob("disc_*.iso")) or sorted((p / "images").glob("disc_*.iso"))
+            if not found:
+                log.error(f"No disc_*.iso found in {p} or {p / 'images'}")
+                sys.exit(1)
+        elif p.is_file():
+            found = [p]
+        else:
+            log.error(f"--iso path does not exist: {p}")
+            sys.exit(1)
+        for iso in found:
+            key = iso.resolve()
+            if key not in seen:
+                seen.add(key)
+                resolved.append(iso)
+    return resolved
 
 
 def _copy_disc_data(
@@ -232,6 +384,15 @@ def _check_output_dir(output_dir: Path, work_dir: Path) -> str | None:
 def cmd_extract(args):
     check_deps("dar", "par2")
 
+    # Resolve the disc source first: bad --iso paths and a failed drive
+    # detection abort here, before the output dir exists.
+    source: _DeviceSource | _IsoSource
+    if args.iso:
+        check_deps("udisksctl")
+        source = _IsoSource(_resolve_iso_paths(args.iso))
+    else:
+        source = _DeviceSource(resolve_device(args.device))
+
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -245,16 +406,11 @@ def cmd_extract(args):
     staging = work_dir / "slices"
     staging.mkdir(parents=True, exist_ok=True)
 
-    device = resolve_device(args.device)
-    dio = DiscIO(device)
-
     log.step("Restore archive from discs")
-    log.info(f"Device:   {device}")
+    source.log_source()
     log.info(f"Output:   {output_dir}")
     log.info(f"Staging:  {staging}")
-    log.info("Insert discs from any generation, in any order. The tool")
-    log.info("detects generations from filenames and extracts the chain")
-    log.info("in order at the end.")
+    source.log_hint()
 
     # Per-generation state. Catalog verification and dar basename live
     # under each gen because the chain may mix legacy (gen 1 without
@@ -269,22 +425,11 @@ def cmd_extract(args):
         target = disc_num + 1
 
         # ── 1. Mount disc ─────────────────────────────────────────────────
-        # Disc 1 keeps the classic press-Enter prompt so the user can read
-        # the header info before the run starts. Discs ≥ 2 auto-detect:
-        # poll drive + stdin, return on disc-ready or user pressing 'e'.
-        mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
-        if target == 1:
-            mounted = _mount_with_prompt(dio, mount_dir, f"Insert disc {target}")
-            if mounted is None:
-                mount_dir.rmdir()
-                sys.exit(1)
-        else:
-            mounted = _wait_for_next_disc(dio, mount_dir, target)
-            if mounted is None:
-                # 'e' pressed → done collecting, proceed to extraction
-                with contextlib.suppress(OSError):
-                    mount_dir.rmdir()
-                break
+        # None = the source is done handing out discs ('e' pressed on a
+        # drive, list exhausted on --iso) → proceed to extraction.
+        mounted = source.open_next(target)
+        if mounted is None:
+            break
 
         try:
             # Detect every archive on the disc: per-archive top-level
@@ -292,7 +437,7 @@ def cmd_extract(args):
             # flat discs. A packed (shared) disc carries several.
             archives = find_disc_archives(mounted)
             if not archives:
-                log.error("No dar files found on disc — try another")
+                log.error(f"No dar files found on this {source.item_label.lower()} — skipping")
                 continue
 
             if chain_name is None:
@@ -345,10 +490,7 @@ def cmd_extract(args):
                 log.ok(f"  {len(copied)} slice(s) staged")
                 staged.append((arc, copied))
         finally:
-            dio.umount(mounted)
-            with contextlib.suppress(OSError):
-                mount_dir.rmdir()
-            dio.eject()
+            source.close_current()
 
         # ── 3. Verify catalogs for generations that just landed ──────────
         for arc, _ in staged:
@@ -374,12 +516,8 @@ def cmd_extract(args):
 
         # ── 5. Damage path: re-mount disc, fetch par2, repair ────────────
         if failed:
-            mount_dir = Path(tempfile.mkdtemp(prefix="bd-mount-"))
-            mounted = _mount_with_prompt(
-                dio, mount_dir, f"Re-insert disc {disc_num} for par2 repair"
-            )
+            mounted = source.reopen_current(disc_num)
             if mounted is None:
-                mount_dir.rmdir()
                 sys.exit(1)
             try:
                 for sp, arc in failed:
@@ -395,10 +533,7 @@ def cmd_extract(args):
                     )
                     unrepairable_slices.append(sp.name)
             finally:
-                dio.umount(mounted)
-                with contextlib.suppress(OSError):
-                    mount_dir.rmdir()
-                dio.eject()
+                source.close_current()
             _cleanup_par2(staging)
 
         # Report current chain collection state.
@@ -406,7 +541,7 @@ def cmd_extract(args):
         log.info(f"Chain so far: Gen {gens_collected} ({disc_num} disc(s) total)")
 
     if chain_name is None:
-        log.error("No discs processed")
+        log.error(f"No {source.item_label.lower()}s processed")
         sys.exit(1)
 
     # ── Extract: one dar -x per generation in order ──────────────────────
@@ -515,7 +650,7 @@ def cmd_extract(args):
     log.step("Restore complete")
     print(f"\n  Chain:        {chain_name}")
     print(f"  Generations:  {sorted_gens}")
-    print(f"  Discs:        {disc_num}")
+    print(f"  {source.item_label + 's:':<14}{disc_num}")
     print(f"  Output:       {output_dir}")
     print(f"  Size:         {human_bytes(total)}")
     if manifest_path is not None:

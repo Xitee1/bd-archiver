@@ -1,3 +1,5 @@
+import contextlib
+import tempfile
 import time
 from pathlib import Path
 
@@ -14,6 +16,49 @@ from bd_archive.ui.logger import log
 # motors; after that we fall through to passive polling, leaving the
 # user to push a slim-drive disc back in by hand.
 _CLOSE_TRAY_SCHEDULE_S = (0, 5, 15, 30, 50)
+
+
+class LoopMountError(RuntimeError):
+    """An ISO could not be loop-mounted (loop-setup or mount failed)."""
+
+
+@contextlib.contextmanager
+def loop_mounted(iso_path: Path, prefix: str = "bd-iso-"):
+    """Loop-mount an ISO read-only via udisksctl and yield the mount path.
+
+    Lets every ISO-reading code path (verify's `.iso` target, create's
+    --pack-with, extract's --iso source) treat an image exactly like a
+    mounted disc — same `find_disc_archives` / `verify_disc` logic runs
+    on top. Requires `udisksctl` (Polkit, no root needed); callers must
+    check_deps for it.
+
+    Raises LoopMountError when loop-setup or the mount fails; the caller
+    decides how fatal that is.
+    """
+    ok, loop_dev, message = udisks.loop_setup(str(iso_path.resolve()))
+    if not ok:
+        raise LoopMountError(f"loop-setup failed for {iso_path}: {message}")
+    assert loop_dev is not None
+
+    time.sleep(0.5)  # let udev settle so the loop device is ready
+    dio = DiscIO(loop_dev)
+    mount_dir = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
+        mounted, mount_err = dio.mount(mount_dir)
+        if mounted is None:
+            raise LoopMountError(
+                f"Could not mount {iso_path}" + (f": {mount_err}" if mount_err else "")
+            )
+        try:
+            yield mounted
+        finally:
+            dio.umount(mounted)
+    finally:
+        # rmdir in the outer finally so the tempdir is also cleaned up
+        # when the mount itself failed.
+        with contextlib.suppress(OSError):
+            mount_dir.rmdir()
+        udisks.loop_delete(loop_dev)
 
 
 def find_sg_device(block_device: str) -> str | None:
