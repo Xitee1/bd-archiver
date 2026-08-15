@@ -4,8 +4,6 @@ import re
 import shlex
 import shutil
 import sys
-import tempfile
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +15,7 @@ from bd_archive.archive.dar_archive import (
     find_disc_archives,
     parse_dar_filename,
 )
-from bd_archive.archive.disc import DiscIO
+from bd_archive.archive.disc import LoopMountError, loop_mounted
 from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
 from bd_archive.archive.source_scan import (
     SourceFile,
@@ -33,7 +31,7 @@ from bd_archive.constants import (
 )
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
-from bd_archive.tools import mkisofs, udisks
+from bd_archive.tools import mkisofs
 from bd_archive.tools.dar import list_catalog_paths
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
@@ -102,39 +100,15 @@ def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
 
 @contextlib.contextmanager
 def _loop_mounted(iso_path: Path):
-    """Loop-mount an ISO read-only via udisksctl and yield the mount path.
-
-    Used by --pack-with to read the leftover ISO's contents — once
-    briefly for inspection, once while disc 1's combined image is
-    built. Mirrors the verify command's ISO branch. Exits with a
-    user-readable error if loop-setup or mount fails.
-    """
-    ok, loop_dev, message = udisks.loop_setup(str(iso_path))
-    if not ok:
-        log.error(f"loop-setup failed for {iso_path}: {message}")
-        sys.exit(1)
-    assert loop_dev is not None
-
-    time.sleep(0.5)  # let udev settle so the loop device is ready
-    dio = DiscIO(loop_dev)
-    mount_dir = Path(tempfile.mkdtemp(prefix="bd-pack-"))
+    """Loop-mount a --pack-with ISO, exiting with a readable error on
+    failure. Used twice: briefly for inspection, then while disc 1's
+    combined image is built."""
     try:
-        mounted, mount_err = dio.mount(mount_dir)
-        if mounted is None:
-            log.error(f"Could not mount {iso_path}")
-            if mount_err:
-                log.error(f"  {mount_err}")
-            sys.exit(1)
-        try:
+        with loop_mounted(iso_path, prefix="bd-pack-") as mounted:
             yield mounted
-        finally:
-            dio.umount(mounted)
-    finally:
-        # rmdir in the outer finally so the tempdir is also cleaned up
-        # when the mount itself failed and we exit above.
-        with contextlib.suppress(OSError):
-            mount_dir.rmdir()
-        udisks.loop_delete(loop_dev)
+    except LoopMountError as e:
+        log.error(str(e))
+        sys.exit(1)
 
 
 def _inspect_pack_iso(pack_path: Path, new_dar_name: str) -> set[str]:

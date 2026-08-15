@@ -1,15 +1,12 @@
 import contextlib
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-from bd_archive.archive.disc import DiscIO
+from bd_archive.archive.disc import DiscIO, LoopMountError, loop_mounted
 from bd_archive.archive.verify import verify_disc
 from bd_archive.shell.deps import check_deps
-from bd_archive.tools import udisks
 from bd_archive.tools.optical import resolve_device
-from bd_archive.tools.par2 import VerifyResult
 from bd_archive.ui.logger import log
 
 
@@ -22,33 +19,12 @@ def cmd_verify(args):
         # run the same verify_disc on the mount, then tear down.
         # Lets users verify pre-built images before burning.
         check_deps("udisksctl")
-        ok, loop_dev, message = udisks.loop_setup(str(target.resolve()))
-        if not ok:
-            log.error(f"loop-setup failed: {message}")
-            sys.exit(1)
-        assert loop_dev is not None
-
-        time.sleep(0.5)  # let udev settle so the loop device is ready
-        dio = DiscIO(loop_dev)
-        mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
-        result = VerifyResult.BROKEN
         try:
-            mounted, mount_err = dio.mount(mount_dir)
-            if mounted is None:
-                log.error(f"Could not mount {loop_dev}")
-                if mount_err:
-                    log.error(f"  {mount_err}")
-                sys.exit(1)
-            try:
+            with loop_mounted(target, prefix="bd-verify-") as mounted:
                 result = verify_disc(mounted, f"ISO {target.name}")
-            finally:
-                dio.umount(mounted)
-        finally:
-            # Outer finally so the tempdir is also cleaned up when the
-            # mount failed and we exit above.
-            with contextlib.suppress(OSError):
-                mount_dir.rmdir()
-            udisks.loop_delete(loop_dev)
+        except LoopMountError as e:
+            log.error(str(e))
+            sys.exit(1)
         sys.exit(result.value)
 
     elif target.is_block_device():

@@ -146,13 +146,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── extract ─────────────────────────────────────────────────────────
-    ex = sub.add_parser("extract", help="Restore archive from discs")
+    ex = sub.add_parser("extract", help="Restore archive from discs or ISO images")
     ex.add_argument("-o", "--output", required=True, help="Output directory")
-    ex.add_argument(
+    ex_source = ex.add_mutually_exclusive_group()
+    ex_source.add_argument(
         "-D",
         "--device",
         default=None,
         help="Optical drive device (auto-detected if omitted)",
+    )
+    ex_source.add_argument(
+        "-i",
+        "--iso",
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help="Restore from ISO images instead of physical discs. Takes ISO "
+        "files and/or directories; a directory expands to its sorted "
+        "disc_*.iso (also looking in <dir>/images/, i.e. a create run's "
+        "output dir works as-is). Images are read in the given order, "
+        "no prompting between them.",
     )
     ex.add_argument(
         "-w",
