@@ -7,7 +7,7 @@ Four subcommands form a build-then-burn pipeline:
 - `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. Supports full archives and incrementals (via `--base`). No burning.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
 - `verify`   — Check disc / directory / ISO integrity via PAR2. Exit code reflects state.
-- `extract`  — Restore archive from discs with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end.
+- `extract`  — Restore archive from discs (or straight from ISO images via `-i`) with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end.
 
 Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
 
@@ -81,7 +81,7 @@ docker pull ghcr.io/xitee1/bd-archiver:latest
 
 - **Drive auto-detection is disabled in containers.** `list_drives()` scans `/sys/block/sr*`, which is not populated by `--device=…` passthrough. Always pass `-D /dev/srN` explicitly when the subcommand uses a drive.
 - **`burn` needs raw SCSI access** (`growisofs` issues SG_IO ioctls). The simplest way is `--privileged`; if you want tighter scoping, `--cap-add=SYS_RAWIO` is the relevant capability.
-- **`verify <iso-file>` does not work out of the box.** It uses `udisksctl` to loop-mount, which needs a running `udisksd` + dbus inside the container. Easiest workaround: verify ISOs on the host, or pre-mount on the host (`sudo mount -o loop disc.iso /mnt/iso`) and pass the mountpoint instead.
+- **`verify <iso-file>` and `extract -i <iso>` do not work out of the box.** Both use `udisksctl` to loop-mount, which needs a running `udisksd` + dbus inside the container. Easiest workaround: run those on the host, or pre-mount on the host (`sudo mount -o loop disc.iso /mnt/iso`) and pass the mountpoint to `verify` instead.
 
 #### Examples
 
@@ -247,6 +247,7 @@ bd-archive extract -o /path/to/output [options]
 |---|---|---|
 | `-o, --output`   | required                       | Where extracted files land |
 | `-D, --device`   | auto-detect                    | Optical drive. Auto-picks the only drive present; prompts if multiple. |
+| `-i, --iso`      | —                              | Restore from ISO images instead of discs (mutually exclusive with `-D`). Takes ISO files and/or directories. |
 | `-w, --workdir`  | `<output>/.bd-archive-work/`   | Staging dir for slices. Override to put scratch on tmpfs/RAM. Auto-removed on success when default. |
 
 The chain name is auto-detected from the first disc's filenames — there is no `-n` flag. Discs from multiple generations of the same chain may be inserted in any order; the tool detects each disc's generation from its filenames (`<name>-gen<N>.NNNN.dar`). If the first disc is a packed disc carrying more than one chain (see `--pack-with`), a numbered prompt asks which chain to restore; archives of other chains on shared discs are ignored automatically.
@@ -260,6 +261,23 @@ After each disc, the tool asks whether to continue. Once you stop, it runs `dar 
 Per-file `Bad CRC` lines from dar plus any slices that failed sha512 *and* par2 are recorded in `<output>/corrupted-files.txt`, and `extract` exits with code `1` so scripts can detect a non-clean restore. The output dir still contains whatever dar managed to extract — best-effort, never silently corrupt.
 
 For maximum throughput on SSD-hosted archives, point `-w` at a tmpfs path (`/dev/shm/bd-extract`) — a 25 GB slice fits in RAM and never hits disk during staging.
+
+#### Restoring from ISO images
+
+`-i/--iso` reads the archive from image files instead of physical discs — no drive, no burning, no prompting between images:
+
+```bash
+# a whole create run: the directory expands to its sorted disc_*.iso
+# (also looks in <dir>/images/, so the create output dir works as-is)
+bd-archive extract -o /path/to/output -i /path/to/staging-dir
+
+# or hand-picked images, in any order
+bd-archive extract -o /path/to/output -i /backup/disc_0002.iso /backup/disc_0001.iso
+```
+
+Everything else is identical to a disc restore: chain/generation detection, the chain picker on packed images, SHA-512 verification per slice, and PAR2 repair (the affected image is simply re-mounted). Images are loop-mounted via `udisksctl`, so no root is needed — but `udisksctl` must be installed for this mode.
+
+Two typical uses: a full **dry run** of a fresh `create` before burning anything (`verify` checks each image's integrity, `extract -i` proves the data actually restores), and restoring from ISO backups kept on a hard disk instead of optical media.
 
 #### Legacy (pre-incremental) archives
 
@@ -293,7 +311,7 @@ src/bd_archive/
 │   ├── checksums.py    # SHA-512 verification
 │   ├── config.py       # ArchiveConfig + write_readme
 │   ├── dar_archive.py  # DarArchive class
-│   ├── disc.py         # DiscIO (mount/with-retry/umount/eject/close-tray/burn) + find_sg_device
+│   ├── disc.py         # DiscIO (mount/with-retry/umount/eject/close-tray/burn) + find_sg_device + loop_mounted (ISO)
 │   ├── sizing.py       # compute_slice_bytes + measure_compression_ratio
 │   ├── source_scan.py  # SourceScan + scan_source
 │   └── verify.py       # verify_disc()
