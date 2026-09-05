@@ -31,16 +31,36 @@ Optional: `lsof` (better diagnostics when the optical device is locked by anothe
 
 ### Python package
 
-Requires Python ≥ 3.11. It's recommended to use a virtual environment:
+Requires Python ≥ 3.11. With `uv` installed, the recommended setup is a
+globally available, editable tool (run from this repository):
+
+```bash
+uv tool install --editable .
+bd-archive --help
+```
+
+`uv` keeps the Python dependencies in an isolated tool environment and exposes
+`bd-archive` on your user PATH, so you can run it from any directory without
+activating a virtual environment or using `sudo`. If the command is not found,
+run `uv tool update-shell` and restart your shell.
+
+Source changes apply immediately. Keep this checkout in place; if you move it,
+reinstall with `uv tool install --force --editable /new/path/to/bd-archiver`.
+After an update that changes dependencies, refresh the tool environment with:
+
+```bash
+uv tool upgrade bd-archive
+```
+
+To uninstall, run `uv tool uninstall bd-archive`. The external system tools
+listed above are still required.
+
+For development with linting tools, use a project-local virtual environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 
-# For production
-pip install .
-
-# For development
 pip install -e '.[dev]'
 
 bd-archive -h # show bd-archive usage
@@ -53,15 +73,27 @@ To re-activate the virtual environment after closing the terminal, type `source 
 
 `bd-archive` ships with [`argcomplete`](https://github.com/kislyuk/argcomplete) support for bash/zsh tab-completion of subcommands, flags, and path arguments.
 
-**Per-user (recommended):** add to `~/.bashrc` (or `~/.zshrc`):
+**Per-user (recommended):** for the `uv tool` installation, add to `~/.bashrc`
+(or `~/.zshrc`):
+
+```bash
+eval "$("$(uv tool dir)/bd-archive/bin/register-python-argcomplete" bd-archive)"
+```
+
+The completion helper belongs to the tool's isolated environment; `uv` does not
+put dependency commands on PATH. With an activated project-local virtual
+environment, use this instead:
 
 ```bash
 eval "$(register-python-argcomplete bd-archive)"
 ```
 
-Reload the shell (`exec bash`) and `bd-archive <TAB>` works.
+Restart your shell and `bd-archive <TAB>` works. For zsh, initialize completion
+with `autoload -U compinit; compinit` before the `eval` line if your shell
+configuration does not already do so.
 
-**System-wide:** if you use several argcomplete-based tools, activate the global hook once instead:
+**System-wide:** if you use several argcomplete-based tools and have argcomplete
+installed system-wide, activate the global hook once instead:
 
 ```bash
 sudo activate-global-python-argcomplete
