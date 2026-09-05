@@ -4,18 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Python package (`bd_archive`, Python 3.11+ — uses `match`, `int | None`, etc.) that archives a directory tree onto one or more Blu-ray discs using `dar` (slicing/compression) and `par2` (forward error correction). Built with `hatchling`; installed via `pip install .`, exposes the `bd-archive` console script. No tests.
+Python package (`bd_archive`, Python 3.11+ — uses `match`, `int | None`, etc.) that archives a directory tree onto one or more Blu-ray discs using `dar` (slicing/compression) and `par2` (forward error correction). Built with `hatchling`; recommended user install via `uv tool install --editable .`, exposes the globally available `bd-archive` console script in an isolated tool environment. No tests.
 
 ## Running
 
 ```bash
+# globally available editable tool for users (no venv activation required)
+uv tool install --editable .
+# refresh dependencies after pyproject.toml changes
+uv tool upgrade bd-archive
+
 # editable install in a project-local venv (.venv/ is gitignored)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
-# or invoke as a module without install (no venv needed for --help)
-PYTHONPATH=src python3 -m bd_archive ...
+# or invoke as a module from the project-local venv
+.venv/bin/python -m bd_archive ...
 ```
 
 ```bash
