@@ -47,7 +47,8 @@ def cmd_burn(args):
     # The set's largest ISO defines the capacity class the whole set was
     # sized for — the oversize fit check compares against it, so a
     # half-full last disc doesn't get refused on the same media as the
-    # (full) discs before it.
+    # (full) discs before it. A single image may be intentionally partial
+    # (especially with --raw), so its size cannot identify a media class.
     max_iso_bytes = max(iso.stat().st_size for iso in isos)
 
     log.step("Burn disc images")
@@ -99,6 +100,7 @@ def _burn_one_disc(
     # writable extent. The too-small check is per-ISO; the oversize
     # check compares against the largest ISO of the set (a partially
     # filled last disc is normal — only a wrong media class is not).
+    # Single-image sets permit unused space, retaining the hard lower bound.
     if not args.skip_fit_check:
         actual = detect_disc_capacity(dio.device)
         if actual is None:
@@ -107,7 +109,7 @@ def _burn_one_disc(
             log.error(f"Disc too small: {human_bytes(actual)} < ISO {human_bytes(iso_size)}")
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
             sys.exit(1)
-        elif actual > max_iso_bytes * DISC_OVERSIZE_TOLERANCE:
+        elif disc_count > 1 and actual > max_iso_bytes * DISC_OVERSIZE_TOLERANCE:
             pct_over = int((DISC_OVERSIZE_TOLERANCE - 1) * 100)
             log.error(
                 f"Disc too large: {human_bytes(actual)} exceeds the set's "

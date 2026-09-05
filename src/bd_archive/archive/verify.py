@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_PAR2_INDEX
 from bd_archive.tools import par2
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
 from bd_archive.ui.logger import log
@@ -23,7 +24,16 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
     # rglob, not glob: foldered discs keep each archive's files in a
     # top-level <name>-gen<N>/ directory (and a packed disc carries
     # several); legacy flat discs still match at the root.
-    par2_indices = [p for p in sorted(disc_path.rglob("*.par2")) if is_par2_index(p)]
+    raw_metadata = disc_path / RAW_METADATA_DIR
+    raw = (raw_metadata / RAW_MARKER).is_file()
+    if raw:
+        # The set records paths relative to the disc root, while its
+        # recovery files live in a dedicated metadata directory. Payload
+        # .par2 files are ordinary data, not additional archive indices.
+        index = raw_metadata / RAW_PAR2_INDEX
+        par2_indices = [index] if index.is_file() else []
+    else:
+        par2_indices = [p for p in sorted(disc_path.rglob("*.par2")) if is_par2_index(p)]
     if not par2_indices:
         # Nothing verifiable is not "verified OK" — a wrong disc, an
         # empty mount, or a botched burn must not pass.
@@ -34,7 +44,7 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
     for par2_index in par2_indices:
         if not quiet:
             log.info(f"PAR2 check: {par2_index.relative_to(disc_path)}")
-        result = par2.verify(par2_index)
+        result = par2.verify(par2_index, base_dir=disc_path) if raw else par2.verify(par2_index)
         if result == VerifyResult.OK:
             if not quiet:
                 log.ok("PAR2: data intact")

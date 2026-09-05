@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Python package (`bd_archive`, Python 3.11+ — uses `match`, `int | None`, etc.) that archives a directory tree onto one or more Blu-ray discs using `dar` (slicing/compression) and `par2` (forward error correction). Built with `hatchling`; recommended user install via `uv tool install --editable .`, exposes the globally available `bd-archive` console script in an isolated tool environment. No tests.
+Python package (`bd_archive`, Python 3.11+ — uses `match`, `int | None`, etc.) that archives a directory tree onto one or more Blu-ray discs using `dar` (slicing/compression) and `par2` (forward error correction), or onto one directly readable data disc via `create --raw`. Built with `hatchling`; recommended user install via `uv tool install --editable .`, exposes the globally available `bd-archive` console script in an isolated tool environment. Tests: `.venv/bin/python -m unittest discover -s tests` (external-tool integration tests skip when tools are absent).
 
 ## Running
 
@@ -38,6 +38,7 @@ bd-archive extract  -o <output> [-D /dev/srN | -i <iso|dir>...] [-w <workdir>]
 
 External binaries required at runtime, enforced per-subcommand via `check_deps()`:
 - `create`: `dar`, `par2`, `mkisofs`, `dvd+rw-mediainfo`, plus `udisksctl` when `--pack-with` is used (loop-mounts the leftover ISO)
+- `create --raw`: `par2`, `mkisofs`, plus `dvd+rw-mediainfo` only without `-b`; no dar dependency
 - `burn`: `growisofs`, `dvd+rw-mediainfo`
 - `verify`: `par2`, plus `udisksctl` when the target is an `.iso` file (loop-mount)
 - `extract`: `dar`, `par2`, plus `udisksctl` when `-i/--iso` is used (loop-mounts each image)
@@ -86,6 +87,8 @@ src/bd_archive/
 Layering: `commands/` → `archive/` → `tools/` → `shell/`. Lower layers never import from higher ones. `ui/` is cross-cutting and importable from every layer (it itself uses `shell.format` for byte formatting).
 
 ## Architecture (v5: build-then-burn separation)
+
+**Raw single-disc mode:** `create --raw` dispatches to `commands/create_raw.py` before dar dependency checks. `archive/raw.py` inventories regular files/directories, rejecting links, special files, line-break filenames and the reserved top-level `.bd-archive` path; stat signatures detect source changes during creation. Original source paths are grafted at the disc root with UDF + ISO9660/Rock Ridge. `.bd-archive/raw-v1` identifies the format, with `recovery.par2`, recovery volumes and a README beside it. `par2 create -B<source> -R ... <source>/*` protects all non-empty files, using relative paths without staging payload copies. `verify_disc` detects this marker and verifies only that recovery index with `-B<disc-root>` (payload `.par2` files are ordinary data). Empty files/directories are preserved but not PAR2-protected. The preview estimates redundancy; `mkisofs -print-size` after PAR2 and a post-build size check enforce a single-disc hard limit. The ISO is published to `images/disc_0001.iso` only after size and source-stability checks pass. Compression, incrementals, packing and deferral are incompatible. `extract` remains dar-specific; raw files open/copy directly, with manual repair on a writable copy documented in the on-disc README. `burn` permits unused space for any single-image set, while retaining the too-small check; the oversize-media guard still applies to multi-image sets.
 
 Four subcommands form a pipeline. `create` previews disc count + last-disc fill before prompting for confirmation, so users can dry-run sizing without committing.
 
