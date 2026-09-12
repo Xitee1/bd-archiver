@@ -42,7 +42,7 @@ class DiscFolderTests(unittest.TestCase):
                 [("Archive/file.dar", self.payload)],
                 "Test_G01_0001",
                 "bd-archive test",
-                100,
+                32768,
                 **kwargs,
             )
 
@@ -140,7 +140,7 @@ class DiscFolderTests(unittest.TestCase):
     def test_burn_uses_folder_after_remeasurement_and_preserves_fit_gate(self):
         folder = self.prepare()
         args = argparse.Namespace(skip_fit_check=False, no_verify=True, speed="4")
-        for capacity, burns in ((100, True), (99, False), (None, False)):
+        for capacity, burns in ((32768, True), (32767, False), (None, False)):
             drive = Mock(device="/dev/test")
             with (
                 self.subTest(capacity=capacity),

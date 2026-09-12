@@ -104,7 +104,7 @@ class ReflinkTests(unittest.TestCase):
             patch("bd_archive.archive.disc_folder.log.info") as info,
         ):
             folder = prepare_folder(
-                self.root / "disc", [("payload", self.source)], "Test", "test", 100
+                self.root / "disc", [("payload", self.source)], "Test", "test", 32768
             )
         copy.assert_called_once_with(self.source, folder.root / "payload")
         self.assertEqual((folder.root / "payload").read_bytes(), b"original contents")
@@ -139,7 +139,7 @@ class ReflinkTests(unittest.TestCase):
                 [("cloned", self.source), ("copied", copied), ("moved", moved)],
                 "Test",
                 "test",
-                100,
+                32768,
                 move_sources={moved},
             )
         self.assertEqual(clone_mock.call_count, 2)
@@ -157,7 +157,7 @@ class ReflinkTests(unittest.TestCase):
             patch("bd_archive.archive.disc_folder.copy_with_progress") as copy,
             self.assertRaises(OSError),
         ):
-            prepare_folder(self.root / "disc", [("payload", self.source)], "Test", "test", 100)
+            prepare_folder(self.root / "disc", [("payload", self.source)], "Test", "test", 32768)
         copy.assert_not_called()
         self.assertEqual(list((self.root / "disc").iterdir()), [])
 
@@ -279,7 +279,7 @@ class ReflinkFilesystemTests(unittest.TestCase):
             patch("bd_archive.archive.disc_folder.log.info") as info,
         ):
             folder = prepare_folder(
-                self.root / "disc", [("payload", self.source)], "Test", "test", 2_000_000
+                self.root / "disc", [("payload", self.source)], "Test", "test", 2_031_616
             )
         copy.assert_not_called()
         self.assertIn("reflinked 1.0 MiB; copied 0 B; moved 0 B", info.call_args.args[0])

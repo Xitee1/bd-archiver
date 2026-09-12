@@ -6,6 +6,7 @@ from pathlib import Path
 
 from bd_archive.archive.disc import DiscIO, find_sg_device
 from bd_archive.archive.disc_folder import DiscFolder, load_disc_set
+from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.archive.verify import verify_disc
 from bd_archive.constants import DISC_OVERSIZE_TOLERANCE
 from bd_archive.shell.deps import check_deps
@@ -62,7 +63,9 @@ def cmd_burn(args):
     # (especially in raw mode), so its size cannot identify a media class.
     try:
         max_iso_bytes = max(
-            disc.measure() if isinstance(disc, DiscFolder) else disc.stat().st_size
+            disc_write_bytes(
+                disc.measure() if isinstance(disc, DiscFolder) else disc.stat().st_size
+            )
             for disc in discs
         )
     except ValueError as exc:
@@ -129,9 +132,10 @@ def _burn_one_disc(
     # Measure after the potentially long insertion prompt. Folder burns use
     # the identical mkisofs options, without writing an intermediate ISO.
     iso_size = folder.measure() if folder is not None else iso.stat().st_size
+    write_bytes = disc_write_bytes(iso_size)
 
-    # Pre-burn fit check — iso_size is the exact byte count growisofs
-    # will write. detect_disc_capacity returns the format-aware
+    # growisofs pads both input paths to full 32-KiB write blocks.
+    # Include that padding in the hard fit gate. detect_disc_capacity returns the
     # writable extent. The too-small check is per-ISO; the oversize
     # check compares against the largest ISO of the set (a partially
     # filled last disc is normal — only a wrong media class is not).
@@ -144,8 +148,11 @@ def _burn_one_disc(
                     "Could not detect disc capacity; retry or explicitly use --skip-fit-check"
                 )
             log.warn("Could not detect disc capacity — skipping fit check")
-        elif actual < iso_size:
-            log.error(f"Disc too small: {human_bytes(actual)} < required {human_bytes(iso_size)}")
+        elif actual < write_bytes:
+            log.error(
+                f"Disc too small: {actual} bytes available < {write_bytes} bytes required "
+                "(including 32-KiB write padding)"
+            )
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
             sys.exit(1)
         elif disc_count > 1 and actual > max_iso_bytes * DISC_OVERSIZE_TOLERANCE:
@@ -159,7 +166,10 @@ def _burn_one_disc(
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
             sys.exit(1)
         else:
-            log.ok(f"Disc capacity {human_bytes(actual)} fits disc data {human_bytes(iso_size)}")
+            log.ok(
+                f"Disc capacity {human_bytes(actual)} fits required write size "
+                f"{human_bytes(write_bytes)} (including 32-KiB write padding)"
+            )
 
     # Burn (with sg-busy retry)
     log.info("Burning...")

@@ -2,6 +2,9 @@ import re
 
 MiB = 1024 * 1024
 
+# growisofs pads both ISO input and streamed filesystems to full write blocks.
+DISC_WRITE_BLOCK = 32 * 1024
+
 # Refuse to burn if disc capacity exceeds staging size by more than this
 # factor — guards against wasting a larger disc on a smaller archive
 # (e.g. a 50 GB BD-DL when the archive was sized for 25 GB BD-R).
@@ -15,8 +18,8 @@ PAR2_AND_MISC_OVERHEAD = 4 * MiB
 
 # Tiny extra margin between the sizing target and the format-aware
 # writable capacity, to absorb ISO9660+UDF metadata growth that exceeds
-# the slice estimate. The hard limit remains the ISO file size check
-# against raw_capacity post-build.
+# the slice estimate. The hard limit checks the final image size rounded
+# to DISC_WRITE_BLOCK against raw_capacity.
 DISC_END_MARGIN = 1 * MiB
 
 # Seconds to wait for a freshly burned disc to become mountable before

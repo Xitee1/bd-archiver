@@ -17,6 +17,7 @@ from bd_archive.archive.raw import (
     validate_raw_source_name,
     write_raw_checksums,
 )
+from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import (
     DISC_END_MARGIN,
     PAR2_AND_MISC_OVERHEAD,
@@ -104,7 +105,7 @@ def _create_raw(args):
     # Count the real directory/filesystem overhead before expensive PAR2 work.
     payload_entries = [(source.name, source)]
     payload_iso_size = mkisofs.estimate_size(payload_entries, label, publisher, rock_ridge=True)
-    if payload_iso_size > capacity:
+    if disc_write_bytes(payload_iso_size) > capacity:
         raise ValueError(
             "Source does not fit on one disc even without PAR2; use a larger disc. "
             + _DAR_MODE_HINT
@@ -166,9 +167,11 @@ def _create_raw(args):
                 )
             else:
                 estimate = (
-                    mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
-                    + (total * args.redundancy + 99) // 100
-                    + (PAR2_AND_MISC_OVERHEAD if recovery_enabled else 0)
+                    disc_write_bytes(
+                        mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
+                        + (total * args.redundancy + 99) // 100
+                        + (PAR2_AND_MISC_OVERHEAD if recovery_enabled else 0)
+                    )
                     + DISC_END_MARGIN
                 )
             log.info(f"Source:          {source}")
@@ -218,10 +221,11 @@ def _create_raw(args):
                     )
 
             iso_size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
-            if iso_size > capacity:
+            if disc_write_bytes(iso_size) > capacity:
                 raise ValueError(
-                    f"Disc data ({human_bytes(iso_size)}) exceeds disc capacity "
-                    f"({human_bytes(capacity)}); use a larger disc or reduce -r. " + _DAR_MODE_HINT
+                    f"Required write size ({disc_write_bytes(iso_size)} bytes including "
+                    f"32-KiB write padding) exceeds disc capacity ({capacity} bytes); "
+                    "use a larger disc or reduce -r. " + _DAR_MODE_HINT
                 )
             images.mkdir(parents=True, exist_ok=True)
             if not args.iso:
@@ -248,10 +252,10 @@ def _create_raw(args):
                     pending = Path(build_dir) / "disc.iso"
                     log.step("Building directly readable disc image")
                     mkisofs.build(pending, entries, label, publisher, rock_ridge=True)
-                    if pending.stat().st_size > capacity:
+                    if disc_write_bytes(pending.stat().st_size) > capacity:
                         raise ValueError(
-                            "Built ISO exceeds disc capacity; no burnable image was saved. "
-                            + _DAR_MODE_HINT
+                            "Built ISO exceeds disc capacity including 32-KiB write padding; "
+                            "no burnable image was saved. " + _DAR_MODE_HINT
                         )
                     if scan_raw_source(source) != inventory:
                         raise ValueError(
@@ -288,7 +292,9 @@ def _plan_auto_recovery(metadata, entries, label, publisher, sizing, capacity):
             for path, size in zip((index, volume), sizing.file_sizes(count), strict=True):
                 with path.open("wb") as placeholder:
                     placeholder.truncate(size)
-            size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
+            size = disc_write_bytes(
+                mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
+            )
             if size <= target:
                 best, estimate = count, size
                 low = count + 1

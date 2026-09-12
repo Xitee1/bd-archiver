@@ -7,6 +7,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import mkisofs, reflink
 from bd_archive.ui.logger import log
@@ -135,9 +136,11 @@ def prepare_folder(
         destination, volume_label, publisher, rock_ridge, 0, tree_signature(destination)
     )
     folder.image_bytes = folder.measure()
-    if folder.image_bytes > capacity:
+    write_bytes = disc_write_bytes(folder.image_bytes)
+    if write_bytes > capacity:
         raise ValueError(
-            f"Disc requires {folder.image_bytes} bytes, exceeding writable capacity {capacity}"
+            f"Disc requires {write_bytes} bytes including 32-KiB write padding, "
+            f"exceeding writable capacity {capacity}"
         )
     log.info(
         "File transfer: "

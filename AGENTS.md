@@ -33,6 +33,10 @@ The error names the conflicting relative paths before archive/recovery creation.
 - `archive/disc_folder.py` materializes disc contents, checks exact filesystem
   size with `mkisofs -print-size`, and publishes `discs/manifest.json` only after
   the complete folder set succeeds. The manifest remains outside disc contents.
+- `archive/sizing.py:disc_write_bytes` rounds image lengths up to growisofs's
+  32-KiB write blocks. Creation and burn capacity gates use this padded length
+  for folders and ISOs, as does raw recovery planning. Manifest `image_bytes`
+  remains the unpadded filesystem size; older manifests need no migration.
 - DAR slices/recovery move from scratch without rewriting on the same filesystem;
   cross-filesystem workdirs require copies. Non-moved files, including raw
   payload and packed archive files, try a reflink before a normal progress copy.

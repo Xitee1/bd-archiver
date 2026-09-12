@@ -22,7 +22,11 @@ from bd_archive.archive.disc_folder import (
     save_disc_set,
     tree_signature,
 )
-from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
+from bd_archive.archive.sizing import (
+    compute_slice_bytes,
+    disc_write_bytes,
+    measure_compression_ratio,
+)
 from bd_archive.archive.source_scan import (
     SourceFile,
     list_source_files,
@@ -665,8 +669,11 @@ def cmd_create(args):
             if args.iso:
                 mkisofs.build(disc_path, entries, volume_label, publisher)
                 iso_size = disc_path.stat().st_size
-                if iso_size > raw_capacity:
-                    log.error(f"Disc {i} ISO exceeds writable capacity ({raw_capacity} bytes)")
+                if disc_write_bytes(iso_size) > raw_capacity:
+                    log.error(
+                        f"Disc {i} ISO requires {disc_write_bytes(iso_size)} bytes including "
+                        f"32-KiB write padding, exceeding writable capacity ({raw_capacity} bytes)"
+                    )
                     disc_path.unlink()
                     sys.exit(1)
             else:
