@@ -2,8 +2,8 @@ from pathlib import Path
 
 from bd_archive.archive.checksums import verify_manifest
 from bd_archive.archive.dar_archive import parse_dar_filename
-from bd_archive.archive.raw import RAW_CHECKSUMS
-from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_PAR2_INDEX
+from bd_archive.archive.raw import RAW_CHECKSUMS, is_raw_metadata_name
+from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_PAR2_INDEX, RAW_ROOT_MARKER
 from bd_archive.shell.deps import check_deps
 from bd_archive.tools import par2
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
@@ -28,11 +28,11 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
     # rglob, not glob: foldered discs keep each archive's files in a
     # top-level <name>-gen<N>/ directory (and a packed disc carries
     # several); legacy flat discs still match at the root.
-    raw_metadata = disc_path / RAW_METADATA_DIR
-    raw = (raw_metadata / RAW_MARKER).is_file()
+    raw_v2 = (disc_path / RAW_ROOT_MARKER).is_file()
+    raw_metadata = disc_path if raw_v2 else disc_path / RAW_METADATA_DIR
+    raw = raw_v2 or (raw_metadata / RAW_MARKER).is_file()
     if raw:
-        # The set records paths relative to the disc root, while its
-        # recovery files live in a dedicated metadata directory. Payload
+        # Both layouts record paths relative to the disc root. Payload
         # .par2 files are ordinary data, not additional archive indices.
         index = raw_metadata / RAW_PAR2_INDEX
         par2_indices = [index] if index.is_file() else []
@@ -41,7 +41,14 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
     manifests: dict[Path, tuple[Path, set[Path] | None]] = {}
     if raw and not par2_indices:
         payload = {
-            p for p in disc_path.rglob("*") if p.is_file() and not p.is_relative_to(raw_metadata)
+            p
+            for p in disc_path.rglob("*")
+            if p.is_file()
+            and (
+                not (p.parent == disc_path and is_raw_metadata_name(p.name))
+                if raw_v2
+                else not p.is_relative_to(raw_metadata)
+            )
         }
         manifests[raw_metadata / RAW_CHECKSUMS] = (disc_path, payload)
     elif not raw:

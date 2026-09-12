@@ -203,9 +203,9 @@ bd-archive create -s /path/to/media -n Media -o /path/to/disc-output
 bd-archive burn -i /path/to/disc-output
 ```
 
-The original files and directory structure appear at the disc root. They are
-neither compressed nor wrapped in an archive: open/play them directly, or copy
-them with your file manager. `extract` is for dar archives and is unnecessary
+The source folder appears at the disc root, keeping its original name and
+contents. Files are neither compressed nor wrapped in an archive: open/play
+them directly, or copy them with your file manager. `extract` is for dar archives and is unnecessary
 for raw discs. This creates a UDF + ISO9660/Rock Ridge **data disc**, not an
 authored Blu-ray Video disc; a standalone player needs support for data discs
 and the media's file formats/codecs.
@@ -227,14 +227,32 @@ SHA-512 detects damaged or missing data but cannot repair it (exit code 2).
 Missing, empty or malformed checksums also fail verification. On packed discs,
 archives with PAR2 and archives with only SHA-512 are both checked.
 
-Recovery files, instructions and a `checksums.sha512` manifest live in the reserved
-`.bd-archive/` directory. The manifest automatically covers **every source
-file**, including hidden and empty files, without modifying the source tree.
+Recovery files, `README.txt` and a `checksums.sha512` manifest sit beside the
+source folder at the disc root. For `-s /path/to/media`, the layout is:
+
+```text
+/
+├── media/
+│   └── … original files and directories …
+├── README.txt
+├── checksums.sha512
+├── recovery.par2
+├── recovery.vol….par2
+└── .bd-archive-raw-v2
+```
+
+The hidden marker identifies the raw format for `bd-archive verify`; ordinary
+file access, `sha512sum` and PAR2 do not need it. `-r 0` omits the recovery files.
+The folder name comes from the source directory; `-n` still sets the archive
+name used in the disc label and README.
+
+The manifest automatically covers **every source file**, including hidden and
+empty files, without modifying the source tree.
 To check the SHA-512 hashes, change into the disc root (or a complete copied
 disc directory) and run:
 
 ```bash
-sha512sum -c .bd-archive/checksums.sha512
+sha512sum -c checksums.sha512
 ```
 
 `verify` and the automatic post-burn check use PAR2 when present, otherwise
@@ -254,22 +272,29 @@ while still rejecting media too small for that image.
 Raw mode cannot be combined with compression (except `-c none`), `--level`,
 `--base`, `--pack-with`, `--sample`, `--ratio`, or auto-deferral. It preserves
 regular files and directories, including hidden files and empty directories;
-symlinks, special files, filenames containing line breaks, and sources with
-a top-level `.bd-archive` directory are rejected. With PAR2 enabled, at least
-one file must be non-empty. Empty files and filesystem metadata are not protected by PAR2.
+symlinks, special files and filenames containing line breaks are rejected.
+The source folder's own name must not collide with the root metadata names
+shown above (case-insensitive); those names are allowed inside the source folder.
+With PAR2 enabled, at least one file must be non-empty. Empty files and
+filesystem metadata are not protected by PAR2.
 Keep the source unchanged during creation, and put output/workdir outside
 the source tree. Scratch contains only recovery data and checksum/format metadata, with no payload copy.
 
-If files become damaged, copy the disc contents **including `.bd-archive/`**
+If files become damaged, copy the **entire disc, including the recovery files**
 to writable storage, change into the copied directory and run:
 
 ```bash
 chmod -R u+rwX .  # if the copy retained the disc's read-only permissions
-par2 repair -B. .bd-archive/recovery.par2
+par2 repair -B. recovery.par2
 ```
 
 Repair works on the writable copy; reading or playing an intact file requires
 no repair software.
+
+Existing raw discs with payload files at the root and metadata in `.bd-archive/`
+remain supported by `verify`. For those discs, use
+`sha512sum -c .bd-archive/checksums.sha512` and
+`par2 repair -B. .bd-archive/recovery.par2` from the copied disc root.
 
 ### create + burn
 First, create the ISOs:
