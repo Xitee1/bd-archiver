@@ -23,13 +23,36 @@ def create(target_file: Path, redundancy: int):
     )
 
 
-def verify(par2_index: Path) -> VerifyResult:
+def create_tree(source: Path, par2_index: Path, redundancy: int):
+    """Protect a tree, recording filenames relative to source.
+
+    Pass the wildcard literally: par2's own recursive expansion includes
+    dotfiles and avoids the OS argument-size limit for large file trees.
+    The output must live outside source.
+    """
+    run(
+        [
+            "par2",
+            "create",
+            f"-B{source}",
+            f"-r{redundancy}",
+            "-n1",
+            "-R",
+            str(par2_index),
+            str(source / "*"),
+        ],
+        label="par2",
+    )
+
+
+def verify(par2_index: Path, *, base_dir: Path | None = None) -> VerifyResult:
     # par2cmdline exit codes: 0 = all files OK, 1 = repair possible,
     # 2 = repair not possible. Maps directly onto VerifyResult, so we
     # use passthrough to let par2 paint its "Scanning: X%" progress
     # straight to the terminal — verify takes ~20 min on a 25 GB BD-R
     # and is otherwise a black screen.
-    r = run(["par2", "verify", str(par2_index)], check=False, passthrough=True)
+    base_args = [f"-B{base_dir}"] if base_dir is not None else []
+    r = run(["par2", "verify", *base_args, str(par2_index)], check=False, passthrough=True)
     if r.returncode == 0:
         return VerifyResult.OK
     if r.returncode == 1:

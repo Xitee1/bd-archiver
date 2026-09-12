@@ -1,10 +1,10 @@
 # bd-archiver
 
-Archive data to Blu-ray discs with `dar` + `par2`.
+Archive data to Blu-ray discs with `dar` + `par2`, or as directly readable files with `--raw` + `par2`.
 
 Four subcommands form a build-then-burn pipeline:
 
-- `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. Supports full archives and incrementals (via `--base`). No burning.
+- `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. Supports full archives and incrementals (via `--base`), or one directly readable data disc (`--raw`). No burning.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
 - `verify`   — Check disc / directory / ISO integrity via PAR2. Exit code reflects state.
 - `extract`  — Restore archive from discs (or straight from ISO images via `-i`) with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end.
@@ -28,6 +28,10 @@ sudo apt install dar par2 growisofs genisoimage udisks2
 ```
 
 Optional: `lsof` (better diagnostics when the optical device is locked by another process).
+
+`dar` is not required for `create --raw`, `burn`, or `verify`. Raw creation
+needs `par2` and `mkisofs`, plus `dvd+rw-mediainfo` unless capacity is supplied
+with `-b`. Verifying an ISO file also needs `udisksctl`.
 
 ### Python package
 
@@ -168,6 +172,58 @@ Let's say you have 199GB worth of images on an HDD that you want to archive onto
 Before you start, you check that the output dir has at least 250GB (total amount (199GB) + disc size (25GB) + some buffer).
 
 Because it's all images, you opt for no compression (images don't compress good).
+
+### Directly readable files on one disc (no dar)
+
+For videos, music, photos, or other files that should open directly from the
+disc, use `--raw`:
+
+```bash
+bd-archive create --raw -s /path/to/media -n Media -o /path/to/disc-output -r 5
+bd-archive burn -i /path/to/disc-output
+```
+
+The original files and directory structure appear at the disc root. They are
+neither compressed nor wrapped in an archive: open/play them directly, or copy
+them with your file manager. `extract` is for dar archives and is unnecessary
+for raw discs. This creates a UDF + ISO9660/Rock Ridge **data disc**, not an
+authored Blu-ray Video disc; a standalone player needs support for data discs
+and the media's file formats/codecs.
+
+The default 5% PAR2 redundancy (`-r 1` through `-r 100`) protects non-empty file
+contents across the whole tree. Recovery files and instructions live in the
+reserved `.bd-archive/` directory. `verify` and the automatic post-burn check
+work as usual, without dar:
+
+```bash
+bd-archive verify /path/to/disc-output/images/disc_0001.iso
+```
+
+Everything, including recovery data and filesystem overhead, must fit on
+**one disc**. Creation checks the exact ISO size and refuses an oversized
+image. Use `-b BYTES` to build without a drive, or leave it off to detect the
+inserted disc's capacity. For a single image, `burn` permits unused disc space
+while still rejecting media too small for that image.
+
+`--raw` cannot be combined with compression (except `-c none`), `--level`,
+`--base`, `--pack-with`, `--sample`, `--ratio`, or auto-deferral. It preserves
+regular files and directories, including hidden files and empty directories;
+symlinks, special files, filenames containing line breaks, and sources with
+a top-level `.bd-archive` directory are rejected. At least one file must be
+non-empty. Empty files and filesystem metadata are not protected by PAR2.
+Keep the source unchanged during creation, and put output/workdir outside
+the source tree. Scratch contains only recovery data, with no payload copy.
+
+If files become damaged, copy the disc contents **including `.bd-archive/`**
+to writable storage, change into the copied directory and run:
+
+```bash
+chmod -R u+rwX .  # if the copy retained the disc's read-only permissions
+par2 repair -B. .bd-archive/recovery.par2
+```
+
+Repair works on the writable copy; reading or playing an intact file requires
+no repair software.
 
 ### create + burn
 First, create the ISOs:

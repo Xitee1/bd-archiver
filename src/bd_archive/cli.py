@@ -16,7 +16,7 @@ from bd_archive.ui.logger import Logger, log
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="bd-archive",
-        description="Archive data to Blu-ray discs with dar + par2",
+        description="Archive data to Blu-ray discs with dar or directly readable files + par2",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True, help="Available commands")
@@ -26,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument("-s", "--source", required=True, help="Source directory")
     cr.add_argument("-n", "--name", required=True, help="Archive name")
     cr.add_argument("-o", "--output", required=True, help="Output directory for ISO images")
+    cr.add_argument(
+        "--raw",
+        action="store_true",
+        help="Build one disc with directly readable files + PAR2, without dar. "
+        "All data and redundancy must fit on one disc; no compression or incrementals.",
+    )
     cr.add_argument(
         "-w",
         "--workdir",
@@ -53,9 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument(
         "-c",
         "--compression",
-        default="zstd",
+        default=None,
         choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
-        help="Compression algorithm (default: zstd)",
+        help="Compression algorithm (default: zstd; none with --raw)",
     )
     cr.add_argument("-l", "--level", help="Compression level")
     cr.add_argument(

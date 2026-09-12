@@ -43,3 +43,8 @@ PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
 # into a dir holding foreign data — which dar's -wa would silently
 # overwrite — is refused.
 EXTRACT_MARKER_NAME = ".bd-archive-extract"
+
+# Raw-disc v1 metadata. Payload paths remain relative to the disc root.
+RAW_METADATA_DIR = ".bd-archive"
+RAW_MARKER = "raw-v1"
+RAW_PAR2_INDEX = "recovery.par2"
