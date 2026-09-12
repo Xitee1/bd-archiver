@@ -179,7 +179,7 @@ For videos, music, photos, or other files that should open directly from the
 disc, use `--raw`:
 
 ```bash
-bd-archive create --raw -s /path/to/media -n Media -o /path/to/disc-output -r 5
+bd-archive create --raw -s /path/to/media -n Media -o /path/to/disc-output
 bd-archive burn -i /path/to/disc-output
 ```
 
@@ -190,10 +190,26 @@ for raw discs. This creates a UDF + ISO9660/Rock Ridge **data disc**, not an
 authored Blu-ray Video disc; a standalone player needs support for data discs
 and the media's file formats/codecs.
 
-The default 5% PAR2 redundancy (`-r 1` through `-r 100`) protects non-empty file
-contents across the whole tree. Recovery files and instructions live in the
-reserved `.bd-archive/` directory. `verify` and the automatic post-burn check
-work as usual, without dar:
+By default, raw mode fills the remaining disc capacity with PAR2 recovery
+for all non-empty source files. Sizing includes SHA-512 checksums, filesystem
+and PAR2 overhead, and a 1 MiB safety margin. Recovery is allocated in whole
+blocks, so a small remainder stays unused; even less than 1% redundancy is
+possible. If there is no room for a recovery block and the required metadata,
+creation stops. Set `-r 1` through `-r 100` to request a fixed percentage instead.
+The default for dar archives remains 5%.
+
+Recovery files, instructions and a `checksums.sha512` manifest live in the reserved
+`.bd-archive/` directory. The manifest automatically covers **every source
+file**, including hidden and empty files, without modifying the source tree.
+To check the SHA-512 hashes, change into the disc root (or a complete copied
+disc directory) and run:
+
+```bash
+sha512sum -c .bd-archive/checksums.sha512
+```
+
+`verify` and the automatic post-burn check continue to use PAR2 and work as
+usual, without dar:
 
 ```bash
 bd-archive verify /path/to/disc-output/images/disc_0001.iso
@@ -212,7 +228,7 @@ symlinks, special files, filenames containing line breaks, and sources with
 a top-level `.bd-archive` directory are rejected. At least one file must be
 non-empty. Empty files and filesystem metadata are not protected by PAR2.
 Keep the source unchanged during creation, and put output/workdir outside
-the source tree. Scratch contains only recovery data, with no payload copy.
+the source tree. Scratch contains only recovery data and checksum/format metadata, with no payload copy.
 
 If files become damaged, copy the disc contents **including `.bd-archive/`**
 to writable storage, change into the copied directory and run:
