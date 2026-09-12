@@ -15,7 +15,7 @@ compression, incrementals or packing.
 
 `bd-archive create --help` separates the options by mode:
 
-- **Common options (raw and dar):** source, name, output, mode, workdir,
+- **Options for both modes (raw and dar):** source, name, output, mode, workdir,
   redundancy, device, capacity and confirmation. PAR2 defaults to filling the
   remaining space in raw mode and to 5% in DAR mode.
 - **DAR archive options (`-m dar`):** `--compression`, `--level`, `--base`,

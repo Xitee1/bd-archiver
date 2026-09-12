@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── create ──────────────────────────────────────────────────────────
     cr = sub.add_parser("create", help="Prepare archive + staging (no burning)")
-    common = cr.add_argument_group("Common options (raw and dar)")
+    common = cr.add_argument_group("Options for both modes (raw and dar)")
     common.add_argument("-s", "--source", required=True, help="Source directory")
     common.add_argument("-n", "--name", required=True, help="Archive name")
     common.add_argument("-o", "--output", required=True, help="Output directory for ISO images")
