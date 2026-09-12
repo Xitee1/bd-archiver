@@ -551,10 +551,10 @@ index 7292b32..18af467 100644
  restored files; [Verification](Verification) explains how to check recovery files
  as well. Budget space for all staged slices plus restored data.
 diff --git a/Raw-data-discs.md b/Raw-data-discs.md
-index 672c56f..c9d2999 100644
+index 672c56f..4967711 100644
 --- a/Raw-data-discs.md
 +++ b/Raw-data-discs.md
-@@ -34,17 +34,38 @@ for how the tool chooses between these checks.
+@@ -34,21 +34,43 @@ for how the tool chooses between these checks.
  ## What fits and what is supported
  
  The payload, checksums, recovery data and filesystem overhead must all fit on
@@ -600,7 +600,13 @@ index 672c56f..c9d2999 100644
  
  The source folder's name must not collide, ignoring case, with root metadata
  names such as `README.txt`, `checksums.sha512`, `recovery.par2`, recovery-volume
-@@ -59,10 +80,10 @@ Open the source folder from the mounted disc, or copy it with your file manager.
+-names or `.bd-archive-raw-v2`. Those names are allowed *inside* the source folder.
++names or the former marker name `.bd-archive-raw-v2` (reserved for compatibility).
++No marker file is created or required. Those names are allowed *inside* the source folder.
+ 
+ Compression, incrementals, packing, compression previews and deferral require
+ `-m dar`. Raw mode accepts `-c none`, but rejects `--level` even with `-c none`.
+@@ -59,10 +81,10 @@ Open the source folder from the mounted disc, or copy it with your file manager.
  This is a UDF + ISO9660/Rock Ridge data disc. Playback on standalone hardware
  depends on that player's data-disc and codec support.
  
@@ -668,7 +674,7 @@ index b2d7a61..93bf2c4 100644
  An invalid isolated catalog is discarded from staging. It can be collected
  again from a disc that carries a copy; current sets put it on disc 1 only. The
 diff --git a/Storage-and-layout.md b/Storage-and-layout.md
-index c5e14b2..52352a5 100644
+index c5e14b2..78ffcd1 100644
 --- a/Storage-and-layout.md
 +++ b/Storage-and-layout.md
 @@ -8,20 +8,44 @@ output; `-w` selects working storage. By default, work lives under
@@ -763,7 +769,7 @@ index c5e14b2..52352a5 100644
  
  Burning uses `spare=none` to avoid a new spare-area reservation on blank,
  unformatted BD-R media. Detection does not walk format-capacity descriptors;
-@@ -64,28 +103,45 @@ the inserted disc independently, subject to the exceptions on [Burning](Burning)
+@@ -64,28 +103,44 @@ the inserted disc independently, subject to the exceptions on [Burning](Burning)
  
  ## Output on disk
  
@@ -781,8 +787,7 @@ index c5e14b2..52352a5 100644
 +        ├── README.txt
 +        ├── checksums.sha512
 +        ├── recovery.par2
-+        ├── recovery.vol....par2
-+        └── .bd-archive-raw-v2
++        └── recovery.vol....par2
  ```
  
 -DAR output (example with two discs):
@@ -819,7 +824,27 @@ index c5e14b2..52352a5 100644
  
  ## Files on a raw disc
  
-@@ -132,6 +188,6 @@ A packed disc contains a folder for each archive/generation. Labels look like
+@@ -98,14 +153,14 @@ For source `/data/media`:
+ ├── README.txt
+ ├── checksums.sha512
+ ├── recovery.par2
+-├── recovery.vol....par2
+-└── .bd-archive-raw-v2
++└── recovery.vol....par2
+ ```
+ 
+ Recovery files are omitted with `-r 0`. Checksums and PAR2 record paths relative
+-to the disc root, including `media/`. The marker identifies the layout for the
+-verifier. Older raw discs use `.bd-archive/raw-v1` and keep metadata under
+-`.bd-archive/`; verification supports both layouts.
++to the disc root, including `media/`. The verifier recognizes the layout from
++`recovery.par2` or `checksums.sha512`; no format marker is created or required.
++Older raw discs keep metadata under `.bd-archive/`; verification supports both
++layouts, including existing discs with the former marker files.
+ 
+ ## Files on a DAR disc
+ 
+@@ -132,6 +187,6 @@ A packed disc contains a folder for each archive/generation. Labels look like
  ISO9660 limit, so the name portion may be shortened. DAR filenames keep the full
  name and determine chain/generation identity during restoration.
  
@@ -875,10 +900,10 @@ index b0eff06..3659873 100644
  ## Disc is reported too large
  
 diff --git a/Verification.md b/Verification.md
-index 27af961..6f22bc6 100644
+index 27af961..6d0268b 100644
 --- a/Verification.md
 +++ b/Verification.md
-@@ -7,15 +7,16 @@ payload. It supports raw and DAR layouts, including packed and legacy discs.
+@@ -7,18 +7,24 @@ payload. It supports raw and DAR layouts, including packed and legacy discs.
  # Disc in the auto-detected drive.
  bd-archive verify
  
@@ -890,21 +915,30 @@ index 27af961..6f22bc6 100644
  bd-archive verify /data/photos-gen1/images/disc_0001.iso
  ```
  
- For a copied disc, pass the copied **disc root**, including hidden format markers
- and metadata. For an ISO, pass the image file; a create output directory is not
+-For a copied disc, pass the copied **disc root**, including hidden format markers
+-and metadata. For an ISO, pass the image file; a create output directory is not
 -expanded into its images by `verify`. That expansion belongs to `extract -i`.
++For a copied disc, pass the copied **disc root**, including checksums and
++recovery files. For an ISO, pass the image file; a create output directory is not
 +expanded into its disc folders or images by `verify`. That expansion belongs to `extract -i`.
  
  ## How checks are selected
  
-@@ -67,9 +68,17 @@ failure also exit with **1**. Read the diagnostic output before treating code 1
++Raw discs are recognized by `recovery.par2` or `checksums.sha512` at the disc
++root (or under `.bd-archive/` for legacy discs). No format marker is required.
++Root verification files take precedence over metadata-like names inside the
++source folder. Old marker files remain compatible but are no longer created.
++
+ PAR2 is preferred when present. It checks the data described by its index and
+ the recovery packets, without a second full SHA-512 read. A PAR2 failure does
+ not fall back to SHA-512 to hide damaged recovery information.
+@@ -67,9 +73,17 @@ failure also exit with **1**. Read the diagnostic output before treating code 1
  as proof that repair is possible. Ctrl+C/EOF cancellation through the top-level
  handler exits with 130; invalid CLI syntax uses argparse's exit code 2.
  
 -## Check all images
 +## Check all prepared discs
- 
--This shell loop stops at the first non-OK result:
++
 +For default folder output, this loop stops at the first non-OK result:
 +
 +```bash
@@ -912,7 +946,8 @@ index 27af961..6f22bc6 100644
 +  bd-archive verify "$disc" || break
 +done
 +```
-+
+ 
+-This shell loop stops at the first non-OK result:
 +For optional ISO output:
  
  ```bash

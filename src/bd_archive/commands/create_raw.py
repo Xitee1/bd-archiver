@@ -22,7 +22,6 @@ from bd_archive.constants import (
     DISC_END_MARGIN,
     PAR2_AND_MISC_OVERHEAD,
     RAW_PAR2_INDEX,
-    RAW_ROOT_MARKER,
 )
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
@@ -130,9 +129,6 @@ def _create_raw(args):
         with tempfile.TemporaryDirectory(prefix="raw-", dir=work) as scratch:
             metadata = Path(scratch) / "metadata"
             metadata.mkdir()
-            (metadata / RAW_ROOT_MARKER).write_text(
-                "bd-archive raw disc format 2\n", encoding="utf-8"
-            )
             (metadata / "README.txt").write_text(
                 f"{args.name} — directly readable data disc\n"
                 f"Created by {publisher}; PAR2 redundancy: {redundancy}\n\n"

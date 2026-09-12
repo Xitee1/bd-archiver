@@ -378,7 +378,6 @@ class RawIntegrationTests(unittest.TestCase):
                 self.source.name,
                 "README.txt",
                 "checksums.sha512",
-                RAW_ROOT_MARKER,
                 "recovery.par2",
                 *[p.name for p in restored.glob("recovery.vol*.par2")],
             },

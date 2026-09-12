@@ -69,13 +69,12 @@ class ChecksumVerificationTests(unittest.TestCase):
 
     def raw_v2(self):
         # A source named .bd-archive containing raw-v1 must not be mistaken
-        # for the legacy metadata directory when a v2 marker is present.
+        # for the legacy metadata directory; no marker is needed.
         source = self.disc / RAW_METADATA_DIR
         source.mkdir()
         for name in (RAW_MARKER, "README.txt", "checksums.sha512", "recovery.par2", "empty"):
             (source / name).write_bytes(b"" if name == "empty" else name.encode())
         inventory = scan_raw_source(source)
-        (self.disc / RAW_ROOT_MARKER).write_text("bd-archive raw disc format 2\n")
         (self.disc / "README.txt").write_text("Instructions")
         manifest = self.disc / "checksums.sha512"
         write_raw_checksums(source, inventory, manifest, path_prefix=source.name)
@@ -97,6 +96,29 @@ class ChecksumVerificationTests(unittest.TestCase):
         self.verify(VerifyResult.BROKEN)
         manifest.unlink()
         self.verify(VerifyResult.BROKEN)
+
+    def test_old_root_marker_is_optional_metadata(self):
+        self.raw_v2()
+        (self.disc / RAW_ROOT_MARKER).write_text("bd-archive raw disc format 2\n")
+        self.verify(VerifyResult.OK)
+
+    def test_root_par2_without_manifest_or_marker_takes_precedence(self):
+        _, manifest = self.raw_v2()
+        manifest.unlink()
+        index = self.disc / "recovery.par2"
+        index.touch()
+        for result in VerifyResult:
+            with (
+                patch("bd_archive.archive.verify.check_deps"),
+                patch("bd_archive.archive.verify.par2.verify", return_value=result) as verify,
+            ):
+                self.verify(result)
+            verify.assert_called_once_with(index, base_dir=self.disc)
+
+    def test_legacy_sha512_without_marker(self):
+        self.raw()
+        (self.disc / RAW_METADATA_DIR / RAW_MARKER).unlink()
+        self.verify(VerifyResult.OK)
 
     def test_both_raw_layouts_verify_only_the_disc_recovery_index(self):
         for v2 in (False, True):
