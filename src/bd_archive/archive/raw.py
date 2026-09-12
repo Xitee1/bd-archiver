@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bd_archive.archive.checksums import _hash_file_sha512
+from bd_archive.archive.hardlinks import HardlinkTracker
 from bd_archive.constants import PAR2_RECOVERY_RE, RAW_PAR2_INDEX, RAW_ROOT_MARKER
 from bd_archive.ui.progress import Progress
 
@@ -119,10 +120,11 @@ def scan_raw_source(source: Path) -> list[RawEntry]:
     """Inventory all files/dirs without silently skipping unsupported entries.
 
     Keep stat signatures to catch edits between PAR2 creation and ISO build.
-    A raw data disc is not a Unix metadata backup: links and special files
-    are rejected rather than followed or silently omitted.
+    A raw data disc is not a Unix metadata backup: symlinks and special files
+    are rejected, as are multiple hardlink names within the selected tree.
     """
     entries = []
+    hardlinks = HardlinkTracker()
 
     def visit(directory):
         with os.scandir(directory) as children:
@@ -147,6 +149,9 @@ def scan_raw_source(source: Path) -> list[RawEntry]:
                 )
                 if stat.S_ISDIR(st.st_mode):
                     visit(path)
+                else:
+                    hardlinks.add(rel, st.st_dev, st.st_ino)
 
     visit(source)
+    hardlinks.check()
     return sorted(entries, key=lambda entry: entry.path)

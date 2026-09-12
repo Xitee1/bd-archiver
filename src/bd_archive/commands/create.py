@@ -281,6 +281,8 @@ def cmd_create(args):
 
     log.info("Scanning source...")
     scan = scan_source(source)
+    if args.min_last_disc_fill == 0:
+        scan.hardlinks.check()
 
     slice_bytes = compute_slice_bytes(sizing_target, scan.catalog_est, args.redundancy)
     if slice_bytes == 0:
@@ -457,6 +459,12 @@ def cmd_create(args):
                         "Lower --min-last-disc-fill or skip the run."
                     )
                     sys.exit(1)
+
+    # Deferral changes which source names are included in this archive.
+    # Unchanged paths in incremental sources still belong to the archive tree;
+    # the mtime-based delta preview is not an exclusion list.
+    if args.min_last_disc_fill > 0:
+        scan.hardlinks.check({file.rel_path for file in deferred_files})
 
     last_disc_free = max(0, sizing_target - last_disc_content)
     last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))

@@ -24,6 +24,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 selects the original `images/disc_NNNN.iso` workflow described in detail below.
 This output choice is independent of `-m raw|dar`.
 
+Both modes reject multiple regular-file names with the same `(st_dev, st_ino)`
+within the selected source, for folder and ISO output. External hardlinks and
+independent copies/reflinks are allowed. DAR validation excludes auto-deferred
+paths; incremental preview heuristics do not exclude unchanged source names.
+The error names the conflicting relative paths before archive/recovery creation.
+
 - `archive/disc_folder.py` materializes disc contents, checks exact filesystem
   size with `mkisofs -print-size`, and publishes `discs/manifest.json` only after
   the complete folder set succeeds. The manifest remains outside disc contents.

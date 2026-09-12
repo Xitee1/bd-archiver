@@ -79,7 +79,7 @@ index d5fad68..d2e1c33 100644
  backup for future incrementals.
  
 diff --git a/CLI-reference.md b/CLI-reference.md
-index e96e118..346f98a 100644
+index e96e118..96969d3 100644
 --- a/CLI-reference.md
 +++ b/CLI-reference.md
 @@ -9,13 +9,14 @@ commands; each command's `--help` describes its arguments.
@@ -99,7 +99,19 @@ index e96e118..346f98a 100644
  | `-m`, `--mode` | `raw` | `raw` or `dar` |
  | `-w`, `--workdir` | `<output>/.bd-archive-work/` | Dedicated temporary storage |
  | `-D`, `--device` | Auto-detect | Drive for capacity detection |
-@@ -36,7 +37,7 @@ name throughout an incremental chain.
+@@ -29,6 +30,11 @@ digits, `.`, `_`, `+` or `-`. Names may not contain `-catalog` or end in
+ `-gen<N>` with a numeric N. Spaces and umlauts are not accepted. Keep the same
+ name throughout an incremental chain.
+ 
++Both modes reject multiple hardlink names within the selected source tree,
++including with `--iso`. The check uses filesystem and inode identity, not file
++content or the total link count. Links outside the source are irrelevant;
++independent copies and reflinks are allowed. DAR auto-deferred paths do not count.
++
+ ### DAR options
+ 
+ | Option | Default | Meaning |
+@@ -36,7 +42,7 @@ name throughout an incremental chain.
  | `-c`, `--compression` | `zstd` | `zstd`, `lzma`, `lz4`, `gzip`, `bzip2`, `none` |
  | `-l`, `--level` | DAR's default (`9`) | Compression level forwarded to DAR; zstd 1–22, others 1–9; ignored with `-c none` |
  | `--base` | None | Previous catalog slice file for an incremental |
@@ -108,7 +120,7 @@ index e96e118..346f98a 100644
  | `--min-last-disc-fill` | `0` / off | Target fill percentage `0`–`100`; defer newest eligible files using the preview estimate |
  | `--ratio` | `1.0` | Estimated compressed output/input ratio |
  | `--sample` | None | Sample directory to compress for a measured ratio |
-@@ -57,10 +58,10 @@ bd-archive burn -i OUTPUT [options]
+@@ -57,10 +63,10 @@ bd-archive burn -i OUTPUT [options]
  
  | Option | Default | Meaning |
  | --- | --- | --- |
@@ -121,7 +133,7 @@ index e96e118..346f98a 100644
  | `--no-verify` | Off | Skip post-burn verification |
  | `--skip-fit-check` | Off | Disable both too-small and oversized-media checks |
  
-@@ -89,7 +90,7 @@ bd-archive extract -o OUTPUT [-D DEVICE | -i PATH ...] [-w WORKDIR]
+@@ -89,7 +95,7 @@ bd-archive extract -o OUTPUT [-D DEVICE | -i PATH ...] [-w WORKDIR]
  | --- | --- | --- |
  | `-o`, `--output` | Required | Empty directory or a previous restore of this chain |
  | `-D`, `--device` | Auto-detect if no `-i` | Optical drive |
@@ -131,7 +143,7 @@ index e96e118..346f98a 100644
  
  Restores DAR only. No `-n` is needed: chain identity comes from the archive
 diff --git a/DAR-archives.md b/DAR-archives.md
-index ca7a6b1..ee4b6de 100644
+index ca7a6b1..0460bb1 100644
 --- a/DAR-archives.md
 +++ b/DAR-archives.md
 @@ -1,7 +1,8 @@
@@ -144,7 +156,22 @@ index ca7a6b1..ee4b6de 100644
  that needs multiple discs, compression or incremental generations.
  
  ```bash
-@@ -65,24 +66,29 @@ DAR defaults to `-r 5`. Recovery is generated separately for each data slice,
+@@ -17,6 +18,14 @@ Use a fresh output directory and a dedicated workdir. Keep both outside the
+ source and keep the source stable. Raw mode enforces path separation; DAR mode
+ does not provide the same overlap/source-change guards.
+ 
++Multiple hardlink names within the selected source tree are rejected before
++DAR archive creation, for both folder and ISO output. External hardlinks and
++independent copies/reflinks are allowed. With auto-deferral, only names remaining
++in this run are checked; sample compression and deferral planning can therefore
++precede rejection. Incremental preview estimates do not exclude unchanged names
++from this validation: those paths still belong to the archive tree. The error
++lists conflicting relative paths. See [Troubleshooting](Troubleshooting).
++
+ ## Compression and the preview
+ 
+ The default compression algorithm is `zstd`. Supported CLI choices are `zstd`,
+@@ -65,24 +74,29 @@ DAR defaults to `-r 5`. Recovery is generated separately for each data slice,
  so a damaged disc uses its own recovery files. Use a fixed percentage from
  1 through 100, or `-r 0` / `-r none` for SHA-512 only.
  
@@ -181,10 +208,10 @@ index ca7a6b1..ee4b6de 100644
  ## Archive names
  
 diff --git a/Development.md b/Development.md
-index ab5f40b..2e2df0d 100644
+index ab5f40b..85e3fed 100644
 --- a/Development.md
 +++ b/Development.md
-@@ -47,9 +47,25 @@ The dependency direction is `commands → archive → tools → shell`.
+@@ -47,9 +47,31 @@ The dependency direction is `commands → archive → tools → shell`.
  new slice data may still be in the operating system's page cache.
  
  Raw creation inventories the source and checks stat signatures after hashing,
@@ -210,10 +237,16 @@ index ab5f40b..2e2df0d 100644
 +metadata preservation, cancellation and fatal errors. Real clone tests create
 +small temporary fixtures on the project's filesystem and verify independence
 +after edits to the source and clone. Those tests skip when reflinks are unsupported.
++
++`archive/hardlinks.py` tracks regular-file paths by `(st_dev, st_ino)` in the
++raw and DAR source scans. Creation rejects repeated identities among selected
++paths; DAR checks after auto-deferral when enabled. Tests cover external links,
++independent copies/reflinks, empty files, filesystem identity, exclusion handling
++and rejection before archive or recovery generation in both output formats.
  
  `archive.verify.verify_disc` is shared by standalone verification and the
  post-burn check. `extract` stages and verifies slices itself, fetching PAR2 only
-@@ -82,8 +98,8 @@ and links to this wiki. Put workflows here, and update the CLI reference when
+@@ -82,8 +104,8 @@ and links to this wiki. Put workflows here, and update the CLI reference when
  `build_parser()` or command validation changes. Wiki pages use extensionless
  relative links and `_Sidebar.md` for navigation.
  
@@ -224,7 +257,7 @@ index ab5f40b..2e2df0d 100644
  The most relevant implementation locations are:
  
  | Documentation | Source to review |
-@@ -94,7 +110,7 @@ The most relevant implementation locations are:
+@@ -94,7 +116,7 @@ The most relevant implementation locations are:
  | Burning | `commands/burn.py`, `tools/growisofs.py`, `archive/disc.py` |
  | Integrity scope | `archive/verify.py`, `archive/checksums.py`, `commands/verify.py` |
  | Restore and staging | `commands/extract.py`, `tools/dar.py` |
@@ -494,10 +527,10 @@ index 7292b32..18af467 100644
  restored files; [Verification](Verification) explains how to check recovery files
  as well. Budget space for all staged slices plus restored data.
 diff --git a/Raw-data-discs.md b/Raw-data-discs.md
-index 672c56f..df63db6 100644
+index 672c56f..bbc577d 100644
 --- a/Raw-data-discs.md
 +++ b/Raw-data-discs.md
-@@ -34,17 +34,28 @@ for how the tool chooses between these checks.
+@@ -34,17 +34,35 @@ for how the tool chooses between these checks.
  ## What fits and what is supported
  
  The payload, checksums, recovery data and filesystem overhead must all fit on
@@ -510,8 +543,17 @@ index 672c56f..df63db6 100644
 +With `--iso`, the completed ISO is checked again before publication.
  
  Regular files and directories, including hidden entries and empty directories,
- are supported. Links, special files, and names containing line breaks are
- rejected. With recovery enabled, at least one file must be non-empty.
+-are supported. Links, special files, and names containing line breaks are
+-rejected. With recovery enabled, at least one file must be non-empty.
++are supported. Symbolic links, special files, and names containing line breaks
++are rejected. With recovery enabled, at least one file must be non-empty.
++
++Multiple hardlink names within the source tree are rejected during the initial
++scan, before sizing, checksums or recovery generation, for both folder and ISO
++output. The error lists the conflicting relative paths. A hardlink outside the
++source tree does not cause rejection. Independent copies, including reflinks,
++are allowed. Select just one hardlink name, or explicitly create independent
++copies if you intend to store the content multiple times on disc.
  
  Keep the source and output/workdir trees separate: neither may contain the
 -other. Keep the source unchanged until creation finishes. No extra payload copy
@@ -531,7 +573,7 @@ index 672c56f..df63db6 100644
  
  The source folder's name must not collide, ignoring case, with root metadata
  names such as `README.txt`, `checksums.sha512`, `recovery.par2`, recovery-volume
-@@ -59,10 +70,10 @@ Open the source folder from the mounted disc, or copy it with your file manager.
+@@ -59,10 +77,10 @@ Open the source folder from the mounted disc, or copy it with your file manager.
  This is a UDF + ISO9660/Rock Ridge data disc. Playback on standalone hardware
  depends on that player's data-disc and codec support.
  
@@ -753,10 +795,10 @@ index c5e14b2..0f905e0 100644
  Legacy flat DAR layouts and filenames without `-gen<N>` remain readable; the
  latter are interpreted as generation 1.
 diff --git a/Troubleshooting.md b/Troubleshooting.md
-index b0eff06..604a7df 100644
+index b0eff06..3659873 100644
 --- a/Troubleshooting.md
 +++ b/Troubleshooting.md
-@@ -31,16 +31,25 @@ limit. A DAR archive reduces those files to slices for recovery purposes.
+@@ -31,16 +31,37 @@ limit. A DAR archive reduces those files to slices for recovery purposes.
  ## Raw creation rejects a path or reports source changes
  
  Use separate, non-overlapping source, output and workdir trees. Keep the source
@@ -767,11 +809,23 @@ index b0eff06..604a7df 100644
  collide with the disc-root metadata. See [Raw data discs](Raw-data-discs).
  
 -## Output already contains disc images
-+## Output already contains discs or images
++## Hardlinks within the selected source
  
 -Creation refuses an output whose `images/` contains `disc_*.iso`. Use a new output
 -directory so old and new sets cannot be mixed. Creation has no resume option;
 -a partially completed run is not automatically a burnable complete set.
++Creation stops when multiple selected regular-file names refer to the same inode
++on the same filesystem. The error lists conflicting relative paths. This applies
++to raw and DAR creation, with either folder or ISO output. External hardlinks do
++not count, and neither do paths explicitly deferred by DAR auto-deferral.
++
++Select a source containing only one of the linked names, or explicitly prepare
++independent copies if duplicate content on disc is intentional. Reflink copies
++are independent files and remain allowed. The program does not alter your source
++or silently convert hardlinks.
++
++## Output already contains discs or images
++
 +Creation refuses an output with a non-empty `discs/` or existing
 +`images/disc_*.iso`. Use a fresh output so old and new sets cannot be mixed.
 +Creation has no resume option. A folder set without a valid `discs/manifest.json`
