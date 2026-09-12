@@ -6,7 +6,7 @@ Four subcommands form a build-then-burn pipeline:
 
 - `create`   — Build one directly readable data disc with PAR2 recovery (default: `-m raw`). Use `-m dar` to slice/compress data across multiple discs, with full archives and incrementals (via `--base`). No burning.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
-- `verify`   — Check disc / directory / ISO integrity via PAR2. Exit code reflects state.
+- `verify`   — Check disc / directory / ISO integrity via PAR2, or SHA-512 when PAR2 is absent. Exit code reflects state.
 - `extract`  — Restore archive from discs (or straight from ISO images via `-i`) with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end.
 
 `-m/--mode` accepts `raw` (default) or `dar` and replaces the former `--raw` flag.
@@ -51,6 +51,7 @@ Optional: `lsof` (better diagnostics when the optical device is locked by anothe
 `dar` is not required for `create -m raw`, `burn`, or `verify`. Raw creation
 needs `par2` and `mkisofs`, plus `dvd+rw-mediainfo` unless capacity is supplied
 with `-b`. Verifying an ISO file also needs `udisksctl`.
+With `create -r 0` (or `-r none`), neither mode requires `par2` for creation.
 
 ### Python package
 
@@ -217,6 +218,15 @@ possible. If there is no room for a recovery block and the required metadata,
 creation stops. Set `-r 1` through `-r 100` to request a fixed percentage instead.
 The default for dar archives remains 5%.
 
+In either mode, use `-r 0` or `-r none` to skip PAR2 entirely: no recovery
+files are generated and `par2` is not required for creation. SHA-512 checksums
+are still written (the raw manifest or DAR slice sidecars). `verify` and the
+automatic post-burn check use these checksums when PAR2 is absent, without
+requiring `par2` or `sha512sum` to be installed. No extra burn options are needed.
+SHA-512 detects damaged or missing data but cannot repair it (exit code 2).
+Missing, empty or malformed checksums also fail verification. On packed discs,
+archives with PAR2 and archives with only SHA-512 are both checked.
+
 Recovery files, instructions and a `checksums.sha512` manifest live in the reserved
 `.bd-archive/` directory. The manifest automatically covers **every source
 file**, including hidden and empty files, without modifying the source tree.
@@ -227,8 +237,8 @@ disc directory) and run:
 sha512sum -c .bd-archive/checksums.sha512
 ```
 
-`verify` and the automatic post-burn check continue to use PAR2 and work as
-usual, without dar:
+`verify` and the automatic post-burn check use PAR2 when present, otherwise
+SHA-512, without dar:
 
 ```bash
 bd-archive verify /path/to/disc-output/images/disc_0001.iso
@@ -245,8 +255,8 @@ Raw mode cannot be combined with compression (except `-c none`), `--level`,
 `--base`, `--pack-with`, `--sample`, `--ratio`, or auto-deferral. It preserves
 regular files and directories, including hidden files and empty directories;
 symlinks, special files, filenames containing line breaks, and sources with
-a top-level `.bd-archive` directory are rejected. At least one file must be
-non-empty. Empty files and filesystem metadata are not protected by PAR2.
+a top-level `.bd-archive` directory are rejected. With PAR2 enabled, at least
+one file must be non-empty. Empty files and filesystem metadata are not protected by PAR2.
 Keep the source unchanged during creation, and put output/workdir outside
 the source tree. Scratch contains only recovery data and checksum/format metadata, with no payload copy.
 

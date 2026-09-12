@@ -35,15 +35,22 @@ def write_readme(
     readme_path: Path, cfg: ArchiveConfig, disc_num: int, total_discs: int, slice_name: str
 ):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    recovery_help = (
+        f"          par2 verify {slice_name}.par2\n"
+        f"REPAIR:   par2 repair {slice_name}.par2\n"
+        "DEPENDS:  pacman -S dar par2cmdline  |  apt install dar par2\n"
+        if cfg.redundancy
+        else "REPAIR:   Unavailable (PAR2 disabled).\n"
+        "          bd-archive verify uses SHA-512 checksums.\n"
+        "DEPENDS:  pacman -S dar  |  apt install dar\n"
+    )
     readme_path.write_text(
         f"BD-ARCHIVE | {cfg.name} | Gen {cfg.generation} | Disc {disc_num}/{total_discs}"
         f" | {ts} | Capacity {human_bytes(cfg.disc_bytes)}"
         f" | PAR2 {cfg.redundancy}% | {cfg.comp_str}\n\n"
         f"RESTORE:  dar -x {cfg.dar_name} -R /target\n"
         f"VERIFY:   sha512sum -c {slice_name}.sha512\n"
-        f"          par2 verify {slice_name}.par2\n"
-        f"REPAIR:   par2 repair {slice_name}.par2\n"
-        f"DEPENDS:  pacman -S dar par2cmdline  |  apt install dar par2\n"
+        f"{recovery_help}"
         f"\nCHAIN:    Name '{cfg.name}' identifies this archive chain.\n"
         f"          Future incremental generations must use the same name.\n"
     )

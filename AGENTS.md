@@ -40,12 +40,14 @@ External binaries required at runtime, enforced per-subcommand via `check_deps()
 - `create -m dar`: `dar`, `par2`, `mkisofs`, `dvd+rw-mediainfo`, plus `udisksctl` when `--pack-with` is used (loop-mounts the leftover ISO)
 - `create -m raw`: `par2`, `mkisofs`, plus `dvd+rw-mediainfo` only without `-b`; no dar dependency
 - `burn`: `growisofs`, `dvd+rw-mediainfo`
-- `verify`: `par2`, plus `udisksctl` when the target is an `.iso` file (loop-mount)
+- `verify`: `par2` only when PAR2 indices exist; otherwise SHA-512 runs in Python. ISO files additionally require `udisksctl` (loop-mount).
 - `extract`: `dar`, `par2`, plus `udisksctl` when `-i/--iso` is used (loop-mounts each image)
 
 `udisksctl` is also used as a Polkit-based mount fallback in `DiscIO.mount` when plain `mount` fails (no permission). `mount`, `umount`, `eject` are NOT enforced — assumed to be present as part of util-linux. `lsof` is optional, used by `tools.lsof.find_device_holders` for diagnostics when the burn device is busy; gracefully no-ops if missing. Python dep: `argcomplete>=3.0` (pulled via `pyproject.toml`, used for shell tab-completion).
 
-`verify` exits with `VerifyResult.value` (0=OK, 1=REPAIRABLE, 2=BROKEN) — useful for scripting. A target with **no par2 files at all** is BROKEN (exit 2), not OK: "nothing verifiable" must not pass, e.g. when the wrong disc is mounted. `extract` exits with `1` whenever it wrote a `corrupted-files.txt` (per-file Bad CRC from dar OR slices that failed sha512+par2), `0` on a fully clean restore.
+`create -r 0` and `create -r none` skip PAR2 generation and its dependency in both modes, retaining SHA-512 checksums. The omitted-option defaults remain automatic recovery in raw mode and 5% in DAR mode.
+
+`verify` exits with `VerifyResult.value` (0=OK, 1=REPAIRABLE, 2=BROKEN) — useful for scripting. Without PAR2, it falls back to SHA-512. Missing, empty or malformed checksums and missing or damaged payloads are BROKEN (exit 2): "nothing verifiable" must not pass, e.g. when the wrong disc is mounted. SHA-512 cannot repair data. `extract` exits with `1` whenever it wrote a `corrupted-files.txt` (per-file Bad CRC from dar OR slices that failed sha512+par2), `0` on a fully clean restore.
 
 ## Package layout
 
@@ -105,7 +107,7 @@ Four subcommands form a pipeline. `create` previews disc count + last-disc fill 
 
 The build-then-burn separation makes mid-burn sizing failures **constructively impossible**: the ISO exists and is size-checked before any drive is touched. `burn` is a pure file-to-device copy.
 
-`archive/verify.py:verify_disc` is shared between standalone `verify` (block device / dir / ISO file) and the post-burn check inside `burn`. It is **par2-only**: par2 is self-verifying (each packet carries an MD5), so a single par2 pass catches both slice corruption and damage to the par2 files themselves — running sha512 alongside it would just double the disc-read time without expanding coverage. The `.sha512` sidecars dar emits stay on disc; they're used by `extract`, which goes per-slice via `archive/checksums.py:verify_slice` (sha512 on local staging) and reaches for `tools.par2` only when a slice fails — this avoids reading the disc multiple times and surfaces *which* slice is damaged, not just whether the disc as a whole is repairable.
+`archive/verify.py:verify_disc` is shared between standalone `verify` (block device / dir / ISO file) and the post-burn check inside `burn`. PAR2 remains preferred for protected data: a single pass checks both data and recovery packets, without an additional SHA-512 payload read. Without the raw recovery index, verification reads `.bd-archive/checksums.sha512` relative to the disc root and requires coverage of every payload file. Unprotected DAR slices and catalogs use their sibling `.sha512` files; mixed protected/unprotected archives on packed or legacy flat discs are checked together. PAR2 failures never fall back to SHA-512 to mask recovery damage. The checksum reader supports GNU filename escapes, rejects paths outside its base directory, and reports byte progress. `extract` continues to use `archive/checksums.py:verify_slice` on staging and fetches PAR2 only when a slice fails.
 
 ### Slice sizing (`archive/sizing.py`)
 

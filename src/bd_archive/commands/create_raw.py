@@ -60,8 +60,9 @@ def _create_raw(args):
             f"Raw mode cannot be combined with {', '.join(incompatible)}; "
             "use -m dar for these options"
         )
-    if args.redundancy is not None and not 1 <= args.redundancy <= 100:
-        raise ValueError(f"--redundancy must be 1-100, got {args.redundancy}")
+    if args.redundancy is not None and not 0 <= args.redundancy <= 100:
+        raise ValueError(f"--redundancy must be 0-100 or none, got {args.redundancy}")
+    recovery_enabled = args.redundancy != 0
     if args.bytes is not None and args.bytes <= 0:
         raise ValueError("--bytes must be positive")
 
@@ -77,7 +78,9 @@ def _create_raw(args):
     if list(images.glob("disc_*.iso")):
         raise ValueError(f"{images} already contains disc images; choose another output directory")
 
-    deps = ["par2", "mkisofs"]
+    deps = ["mkisofs"]
+    if recovery_enabled:
+        deps.append("par2")
     if args.bytes is None:
         deps.append("dvd+rw-mediainfo")
     check_deps(*deps)
@@ -92,7 +95,7 @@ def _create_raw(args):
     inventory = scan_raw_source(source)
     files = [entry for entry in inventory if stat.S_ISREG(entry.mode)]
     total = sum(entry.size for entry in files)
-    if total == 0:
+    if total == 0 and recovery_enabled:
         raise ValueError("Raw mode needs at least one non-empty file for PAR2 protection")
 
     publisher = f"bd-archive v{__version__}"
@@ -107,6 +110,18 @@ def _create_raw(args):
     redundancy = (
         "automatic (remaining disc capacity)" if args.redundancy is None else f"{args.redundancy}%"
     )
+    recovery_help = (
+        "Verify with: bd-archive verify <disc-mountpoint-or-iso>\n"
+        "PAR2 protects non-empty file contents, not filesystem metadata or empty files.\n"
+        "To repair, copy the entire disc (including .bd-archive/) to a writable\n"
+        "directory, change into that directory and run:\n"
+        "  chmod -R u+rwX .  # if copied files are still read-only\n"
+        "  par2 repair -B. .bd-archive/recovery.par2\n"
+        "The read-only disc itself cannot be repaired in place.\n"
+        if recovery_enabled
+        else "PAR2 is disabled; recovery data is unavailable.\n"
+        "Verify with: bd-archive verify <disc-mountpoint-or-iso> (SHA-512).\n"
+    )
     work.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="raw-", dir=work) as scratch:
@@ -117,16 +132,10 @@ def _create_raw(args):
                 f"{args.name} — directly readable data disc\n"
                 f"Created by {publisher}; PAR2 redundancy: {redundancy}\n\n"
                 "Open/play files directly from the disc. No dar or extraction is needed.\n"
-                "Verify with: bd-archive verify <disc-mountpoint-or-iso>\n"
                 "checksums.sha512 covers every source file, including empty files.\n"
                 "To check hashes, change into the disc root and run:\n"
                 "  sha512sum -c .bd-archive/checksums.sha512\n"
-                "PAR2 protects non-empty file contents, not filesystem metadata or empty files.\n"
-                "To repair, copy the entire disc (including .bd-archive/) to a writable\n"
-                "directory, change into that directory and run:\n"
-                "  chmod -R u+rwX .  # if copied files are still read-only\n"
-                "  par2 repair -B. .bd-archive/recovery.par2\n"
-                "The read-only disc itself cannot be repaired in place.\n",
+                f"{recovery_help}",
                 encoding="utf-8",
             )
             manifest = metadata / RAW_CHECKSUMS
@@ -150,22 +159,25 @@ def _create_raw(args):
                 estimate = (
                     mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
                     + (total * args.redundancy + 99) // 100
-                    + PAR2_AND_MISC_OVERHEAD
+                    + (PAR2_AND_MISC_OVERHEAD if recovery_enabled else 0)
                     + DISC_END_MARGIN
                 )
             log.info(f"Source:          {source}")
             log.info(f"Files:           {len(files)} ({human_bytes(total)})")
             log.info(f"Disc capacity:   {human_bytes(capacity)}")
-            log.info(f"PAR2 redundancy: {redundancy} across all non-empty files")
+            if recovery_enabled:
+                log.info(f"PAR2 redundancy: {redundancy} across all non-empty files")
+            else:
+                log.info("PAR2 disabled; verification uses SHA-512 checksums.")
             log.info(f"Estimated ISO:   {human_bytes(estimate)} (including overhead allowance)")
             log.info(
                 "Layout: original paths at disc root; "
-                "recovery data and checksums.sha512 in .bd-archive/"
+                "archive metadata and checksums.sha512 in .bd-archive/"
             )
             log.info("Keep the source unchanged until creation finishes.")
             if estimate > capacity:
                 log.warn(
-                    "Estimated size exceeds capacity; the exact size will be checked after PAR2. "
+                    "Estimated size exceeds capacity; the exact size will be checked before build. "
                     + _DAR_MODE_HINT
                 )
             if not args.yes and not prompt_yn("Create directly readable disc image?"):
@@ -176,25 +188,26 @@ def _create_raw(args):
             write_raw_checksums(source, inventory, manifest)
             if scan_raw_source(source) != inventory:
                 raise ValueError("Source changed while hashing; retry with an unchanged source")
-            index = metadata / RAW_PAR2_INDEX
-            log.step("Creating PAR2 recovery data")
-            if sizing is not None:
-                par2.create_tree(
-                    source, index, block_size=sizing.block_size, recovery_blocks=recovery_blocks
-                )
-            else:
-                par2.create_tree(source, index, args.redundancy)
-            if not index.is_file() or not list(metadata.glob("recovery.vol*.par2")):
-                raise ValueError("PAR2 did not produce both an index and recovery data")
-            if scan_raw_source(source) != inventory:
-                raise ValueError(
-                    "Source changed while creating PAR2; retry with an unchanged source"
-                )
+            if recovery_enabled:
+                index = metadata / RAW_PAR2_INDEX
+                log.step("Creating PAR2 recovery data")
+                if sizing is not None:
+                    par2.create_tree(
+                        source, index, block_size=sizing.block_size, recovery_blocks=recovery_blocks
+                    )
+                else:
+                    par2.create_tree(source, index, args.redundancy)
+                if not index.is_file() or not list(metadata.glob("recovery.vol*.par2")):
+                    raise ValueError("PAR2 did not produce both an index and recovery data")
+                if scan_raw_source(source) != inventory:
+                    raise ValueError(
+                        "Source changed while creating PAR2; retry with an unchanged source"
+                    )
 
             iso_size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
             if iso_size > capacity:
                 raise ValueError(
-                    f"Data + PAR2 ISO ({human_bytes(iso_size)}) exceeds disc capacity "
+                    f"ISO ({human_bytes(iso_size)}) exceeds disc capacity "
                     f"({human_bytes(capacity)}); use a larger disc or reduce -r. " + _DAR_MODE_HINT
                 )
             images.mkdir(parents=True, exist_ok=True)
