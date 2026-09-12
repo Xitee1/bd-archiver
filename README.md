@@ -1,19 +1,23 @@
 # bd-archiver
 
-Archive data to Blu-ray discs with `dar` + `par2`, or as directly readable files with `--raw` + `par2`.
+Archive data to Blu-ray discs as directly readable files + `par2` (default), or use `-m dar` for compressed archives spanning multiple discs.
 
 Four subcommands form a build-then-burn pipeline:
 
-- `create`   — Slice + compress source, build PAR2 recovery, assemble per-disc ISO images. Supports full archives and incrementals (via `--base`), or one directly readable data disc (`--raw`). No burning.
+- `create`   — Build one directly readable data disc with PAR2 recovery (default: `-m raw`). Use `-m dar` to slice/compress data across multiple discs, with full archives and incrementals (via `--base`). No burning.
 - `burn`     — Burn pre-built ISO images to discs (resumable).
 - `verify`   — Check disc / directory / ISO integrity via PAR2. Exit code reflects state.
 - `extract`  — Restore archive from discs (or straight from ISO images via `-i`) with auto-repair via PAR2. Whole-chain mode: insert discs from any generation in any order; the tool walks the chain at the end.
+
+`-m/--mode` accepts `raw` (default) or `dar` and replaces the former `--raw` flag.
+Existing DAR creation commands now need `-m dar`, including commands using
+compression, incrementals or packing.
 
 Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
 
 ### Chain identity = archive name
 
-Incremental archives form a **chain**: a Full (Gen 1), then any number of incremental generations (Gen 2, 3, …) that record only what changed since the previous gen. The archive name from `-n` is the chain's identity — **use the same `-n` for every generation of the same chain**. Renaming between generations breaks chain detection at extract time. The volume label shows generation + disc number; the human-readable name in `-n` should be picked for the long term, even if its meaning drifts (an archive named `family-2024-batch1` can grow to hold years of new family photos — its name doesn't have to stay literally accurate, but it must stay literally the same).
+In DAR mode (`-m dar`), incremental archives form a **chain**: a Full (Gen 1), then any number of incremental generations (Gen 2, 3, …) that record only what changed since the previous gen. The archive name from `-n` is the chain's identity — **use the same `-n` for every generation of the same chain**. Renaming between generations breaks chain detection at extract time. The volume label shows generation + disc number; the human-readable name in `-n` should be picked for the long term, even if its meaning drifts (an archive named `family-2024-batch1` can grow to hold years of new family photos — its name doesn't have to stay literally accurate, but it must stay literally the same).
 
 ## Installation
 
@@ -29,7 +33,7 @@ sudo apt install dar par2 growisofs genisoimage udisks2
 
 Optional: `lsof` (better diagnostics when the optical device is locked by another process).
 
-`dar` is not required for `create --raw`, `burn`, or `verify`. Raw creation
+`dar` is not required for `create -m raw`, `burn`, or `verify`. Raw creation
 needs `par2` and `mkisofs`, plus `dvd+rw-mediainfo` unless capacity is supplied
 with `-b`. Verifying an ISO file also needs `udisksctl`.
 
@@ -123,14 +127,14 @@ docker pull ghcr.io/xitee1/bd-archiver:latest
 
 Host paths used below: source data at `/data/src`, output at `/data/out`. Adjust to taste.
 
-**create** (build per-disc ISOs from a source tree):
+**create** (build DAR archives across one or more discs):
 
 ```bash
 docker run --rm -it \
   --device=/dev/sr0 \
   -v /data:/data \
   ghcr.io/xitee1/bd-archiver:latest \
-  create -s /data/src -n my-archive -o /data/out -D /dev/sr0
+  create -m dar -s /data/src -n my-archive -o /data/out -D /dev/sr0
 ```
 
 If you don't want to mount the drive at all (e.g. driveless build with a fixed capacity), drop `--device` and pass `-b <bytes>` instead of `-D`:
@@ -139,7 +143,7 @@ If you don't want to mount the drive at all (e.g. driveless build with a fixed c
 docker run --rm -it \
   -v /data:/data \
   ghcr.io/xitee1/bd-archiver:latest \
-  create -s /data/src -n my-archive -o /data/out -b 25025314816
+  create -m dar -s /data/src -n my-archive -o /data/out -b 25025314816
 ```
 
 **burn** (write ISOs to disc):
@@ -176,10 +180,10 @@ Because it's all images, you opt for no compression (images don't compress good)
 ### Directly readable files on one disc (no dar)
 
 For videos, music, photos, or other files that should open directly from the
-disc, use `--raw`:
+disc, use the default raw mode (or explicitly pass `-m raw` / `--mode raw`):
 
 ```bash
-bd-archive create --raw -s /path/to/media -n Media -o /path/to/disc-output
+bd-archive create -s /path/to/media -n Media -o /path/to/disc-output
 bd-archive burn -i /path/to/disc-output
 ```
 
@@ -217,11 +221,12 @@ bd-archive verify /path/to/disc-output/images/disc_0001.iso
 
 Everything, including recovery data and filesystem overhead, must fit on
 **one disc**. Creation checks the exact ISO size and refuses an oversized
-image. Use `-b BYTES` to build without a drive, or leave it off to detect the
+image, with a hint to use `-m dar` (or `--mode dar`) to split the archive
+across multiple discs. Use `-b BYTES` to build without a drive, or leave it off to detect the
 inserted disc's capacity. For a single image, `burn` permits unused disc space
 while still rejecting media too small for that image.
 
-`--raw` cannot be combined with compression (except `-c none`), `--level`,
+Raw mode cannot be combined with compression (except `-c none`), `--level`,
 `--base`, `--pack-with`, `--sample`, `--ratio`, or auto-deferral. It preserves
 regular files and directories, including hidden files and empty directories;
 symlinks, special files, filenames containing line breaks, and sources with
@@ -243,13 +248,13 @@ no repair software.
 
 ### create + burn
 First, create the ISOs:
-`bd-archive create -s /path/to/images -o /path/to/staging-dir --name "My_image_archive" -c none`
+`bd-archive create -m dar -s /path/to/images -o /path/to/staging-dir --name "My_image_archive" -c none`
 
 Now the folder is scanned and an overview is provided with the amount of discs and other useful information.
 You notice that it says the last disk will only be filled with 300 MB.
 Images don't compress good, but you can still get a little bit out of it, so you decline and run again with the default compression:
 
-`bd-archive create -s /path/to/images --name "My_image_archive" -c none`
+`bd-archive create -m dar -s /path/to/images --name "My_image_archive" -c none`
 
 Now it fits perfectly and you safe a disc. You confirm with `y`.
 The ISO files are now generated. This can take a while (multiple hours depending on the storage device of the output dir).
@@ -279,7 +284,7 @@ Exit codes: `0` OK, `1` repairable, `2` broken.
 Some time later you have a new batch of photos you want to add to the same archive. Rather than re-burning everything from scratch, build an **incremental** generation that contains only the delta:
 
 ```bash
-bd-archive create \
+bd-archive create -m dar \
     -s /path/to/images \
     -n "My_image_archive" \
     --base /path/to/staging-dir/My_image_archive-gen1-catalog.0001.dar \
@@ -303,7 +308,7 @@ The tool will prompt you to insert disc 1 - x. `dar` supports partial restore, s
 While extracting, it will automatically check for data integrity and fix everything it can with the help of par2.
 
 ```bash
-bd-archive create -s /path/to/images -n "My_image_archive" \
+bd-archive create -m dar -s /path/to/images -n "My_image_archive" \
     --base /path/to/gen1/My_image_archive-gen1-catalog.0001.dar \
     -o /path/to/gen2 -c none --min-last-disc-fill 50
 ```
@@ -317,7 +322,7 @@ Without `--base` (i.e. on a Full archive), `--min-last-disc-fill` still works bu
 Sometimes the last disc of a set stays mostly empty no matter how you tune compression or deferral (e.g. 7 GB on a 100 GB BDXL). If you have **not burned that last ISO yet**, hold on to it and let the *next* archive fill the disc:
 
 ```bash
-bd-archive create -s /path/to/new-data -n "New_archive" \
+bd-archive create -m dar -s /path/to/new-data -n "New_archive" \
     -o /path/to/new-staging \
     --pack-with /path/to/old-staging/images/disc_0003.iso
 ```
@@ -335,11 +340,11 @@ Burn the new set as usual — disc 1 goes onto the blank disc you had reserved f
 
 Restores are unaffected: `extract` finds each archive in its own folder and ignores the other one. A disc carrying two generations of the *same* chain — e.g. gen 1's tail packed together with gen 2's start — contributes both generations in a single insertion. `verify` checks every archive on the disc in one pass.
 
-This also works with leftover ISOs from older bd-archive versions (flat file layout) — their contents are re-foldered automatically. And since a combined ISO is itself an ordinary ISO, the pattern repeats: leave the new set's last ISO unburned and pass it to the next `create --pack-with`.
+This also works with leftover ISOs from older bd-archive versions (flat file layout) — their contents are re-foldered automatically. And since a combined ISO is itself an ordinary ISO, the pattern repeats: leave the new set's last ISO unburned and pass it to the next `create -m dar --pack-with`.
 
 #### On-disc layout
 
-Discs created from this version on place each archive's files in a top-level folder named `<name>-gen<N>/` (slices, par2, sha512, README — plus the catalog on disc 1). Older flat-layout discs remain fully readable by `verify` and `extract`.
+DAR discs created from this version on place each archive's files in a top-level folder named `<name>-gen<N>/` (slices, par2, sha512, README — plus the catalog on disc 1). Older flat-layout discs remain fully readable by `verify` and `extract`.
 
 ### extract — whole-chain restore
 

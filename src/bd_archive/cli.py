@@ -27,10 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument("-n", "--name", required=True, help="Archive name")
     cr.add_argument("-o", "--output", required=True, help="Output directory for ISO images")
     cr.add_argument(
-        "--raw",
-        action="store_true",
-        help="Build one disc with directly readable files + PAR2, without dar. "
-        "All data and redundancy must fit on one disc; no compression or incrementals.",
+        "-m",
+        "--mode",
+        choices=["raw", "dar"],
+        default="raw",
+        help="Creation mode (default: raw). raw: directly readable files + PAR2 on one disc; "
+        "dar: archive with compression, incrementals and splitting across multiple discs.",
     )
     cr.add_argument(
         "-w",
@@ -45,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--redundancy",
         type=int,
         default=None,
-        help="PAR2 redundancy in %% (default: 5; --raw: fill remaining disc capacity)",
+        help="PAR2 redundancy in %% (default: raw fills remaining disc capacity; dar uses 5%%)",
     )
     cr.add_argument(
         "-D",
@@ -65,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--compression",
         default=None,
         choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
-        help="Compression algorithm (default: zstd; none with --raw)",
+        help="Compression algorithm (default: none in raw mode; zstd in dar mode)",
     )
     cr.add_argument("-l", "--level", help="Compression level")
     cr.add_argument(

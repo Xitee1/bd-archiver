@@ -111,10 +111,10 @@ def scan_raw_source(source: Path) -> list[RawEntry]:
                 if rel.split("/")[0].casefold() == RAW_METADATA_DIR.casefold():
                     raise ValueError(f"{RAW_METADATA_DIR}/ is reserved for raw-disc recovery data")
                 if "\n" in rel or "\r" in rel:
-                    raise ValueError(f"--raw does not support line breaks in filenames: {rel!r}")
+                    raise ValueError(f"Raw mode does not support line breaks in filenames: {rel!r}")
                 st = child.stat(follow_symlinks=False)
                 if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
-                    raise ValueError(f"--raw supports regular files and directories only: {rel}")
+                    raise ValueError(f"Raw mode supports regular files and directories only: {rel}")
                 entries.append(
                     RawEntry(
                         rel,
