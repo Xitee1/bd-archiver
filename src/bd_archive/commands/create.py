@@ -169,6 +169,8 @@ def cmd_create(args):
             sys.exit(1)
         cmd_create_raw(args)
         return
+    if args.redundancy is None:
+        args.redundancy = 5
     if args.compression is None:
         args.compression = "zstd"
     deps = ["dar", "par2", "mkisofs", "dvd+rw-mediainfo"]

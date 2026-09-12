@@ -41,7 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
         "tmpfs path here to keep scratch off disk)",
     )
     cr.add_argument(
-        "-r", "--redundancy", type=int, default=5, help="PAR2 redundancy in %% (default: 5)"
+        "-r",
+        "--redundancy",
+        type=int,
+        default=None,
+        help="PAR2 redundancy in %% (default: 5; --raw: fill remaining disc capacity)",
     )
     cr.add_argument(
         "-D",

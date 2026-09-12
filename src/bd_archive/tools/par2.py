@@ -23,19 +23,34 @@ def create(target_file: Path, redundancy: int):
     )
 
 
-def create_tree(source: Path, par2_index: Path, redundancy: int):
+def create_tree(
+    source: Path,
+    par2_index: Path,
+    redundancy: int | None = None,
+    *,
+    block_size: int | None = None,
+    recovery_blocks: int | None = None,
+):
     """Protect a tree, recording filenames relative to source.
 
     Pass the wildcard literally: par2's own recursive expansion includes
     dotfiles and avoids the OS argument-size limit for large file trees.
     The output must live outside source.
     """
+    if recovery_blocks is not None:
+        if redundancy is not None or block_size is None or recovery_blocks < 1:
+            raise ValueError("Explicit recovery blocks require a block size and no percentage")
+        sizing = [f"-s{block_size}", f"-c{recovery_blocks}"]
+    else:
+        if redundancy is None:
+            raise ValueError("Specify redundancy or recovery blocks")
+        sizing = [f"-r{redundancy}"]
     run(
         [
             "par2",
             "create",
             f"-B{source}",
-            f"-r{redundancy}",
+            *sizing,
             "-n1",
             "-R",
             str(par2_index),
