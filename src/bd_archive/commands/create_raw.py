@@ -1,4 +1,4 @@
-"""Build a single directly readable ISO with whole-tree PAR2 protection."""
+"""Prepare a directly readable disc folder or ISO with whole-tree PAR2 protection."""
 
 import contextlib
 import shlex
@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from bd_archive import __version__
+from bd_archive.archive.disc_folder import check_output_available, prepare_folder, save_disc_set
 from bd_archive.archive.raw import (
     MAX_PAR2_BLOCKS,
     RAW_CHECKSUMS,
@@ -75,9 +76,8 @@ def _create_raw(args):
     for path in (output, work):
         if path.is_relative_to(source) or source.is_relative_to(path):
             raise ValueError(f"Source and output/workdir must not overlap: {source} / {path}")
-    images = output / "images"
-    if list(images.glob("disc_*.iso")):
-        raise ValueError(f"{images} already contains disc images; choose another output directory")
+    check_output_available(output)
+    images = output / ("images" if args.iso else "discs")
 
     deps = ["mkisofs"]
     if recovery_enabled:
@@ -178,7 +178,7 @@ def _create_raw(args):
                 log.info(f"PAR2 redundancy: {redundancy} across all non-empty files")
             else:
                 log.info("PAR2 disabled; verification uses SHA-512 checksums.")
-            log.info(f"Estimated ISO:   {human_bytes(estimate)} (including overhead allowance)")
+            log.info(f"Estimated disc:  {human_bytes(estimate)} (including overhead allowance)")
             log.info(
                 f"Layout: source folder {source.name}/ at disc root; "
                 "README.txt, checksums.sha512 and recovery files beside it"
@@ -189,7 +189,7 @@ def _create_raw(args):
                     "Estimated size exceeds capacity; the exact size will be checked before build. "
                     + _DAR_MODE_HINT
                 )
-            if not args.yes and not prompt_yn("Create directly readable disc image?"):
+            if not args.yes and not prompt_yn("Prepare directly readable disc?"):
                 log.warn("Cancelled by user")
                 return
 
@@ -220,32 +220,52 @@ def _create_raw(args):
             iso_size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
             if iso_size > capacity:
                 raise ValueError(
-                    f"ISO ({human_bytes(iso_size)}) exceeds disc capacity "
+                    f"Disc data ({human_bytes(iso_size)}) exceeds disc capacity "
                     f"({human_bytes(capacity)}); use a larger disc or reduce -r. " + _DAR_MODE_HINT
                 )
             images.mkdir(parents=True, exist_ok=True)
-            # Only publish an image burn can discover after all checks passed.
-            with tempfile.TemporaryDirectory(prefix=".raw-build-", dir=images) as build_dir:
-                pending = Path(build_dir) / "disc.iso"
-                log.step("Building directly readable disc image")
-                mkisofs.build(pending, entries, label, publisher, rock_ridge=True)
-                if pending.stat().st_size > capacity:
-                    raise ValueError(
-                        "Built ISO exceeds disc capacity; no burnable image was saved. "
-                        + _DAR_MODE_HINT
+            if not args.iso:
+                log.step("Preparing directly readable disc folder")
+                try:
+                    folder = prepare_folder(
+                        images / "disc_0001",
+                        entries,
+                        label,
+                        publisher,
+                        capacity,
+                        rock_ridge=True,
+                        move_sources=set(metadata.iterdir()),
                     )
+                except ValueError as exc:
+                    raise ValueError(f"{exc}. {_DAR_MODE_HINT}") from exc
                 if scan_raw_source(source) != inventory:
-                    raise ValueError(
-                        "Source changed while building the ISO; retry with an unchanged source"
-                    )
-                iso_size = pending.stat().st_size
-                pending.rename(images / "disc_0001.iso")
+                    raise ValueError("Source changed while copying; retry with an unchanged source")
+                iso_size = folder.image_bytes
+                save_disc_set(images, [folder])
+            else:
+                # Only publish an image burn can discover after all checks passed.
+                with tempfile.TemporaryDirectory(prefix=".raw-build-", dir=images) as build_dir:
+                    pending = Path(build_dir) / "disc.iso"
+                    log.step("Building directly readable disc image")
+                    mkisofs.build(pending, entries, label, publisher, rock_ridge=True)
+                    if pending.stat().st_size > capacity:
+                        raise ValueError(
+                            "Built ISO exceeds disc capacity; no burnable image was saved. "
+                            + _DAR_MODE_HINT
+                        )
+                    if scan_raw_source(source) != inventory:
+                        raise ValueError(
+                            "Source changed while building the ISO; retry with an unchanged source"
+                        )
+                    iso_size = pending.stat().st_size
+                    pending.rename(images / "disc_0001.iso")
     finally:
         if args.workdir is None:
             with contextlib.suppress(OSError):
                 work.rmdir()
 
-    log.ok(f"Raw disc ready: {images / 'disc_0001.iso'} ({human_bytes(iso_size)})")
+    disc_path = images / ("disc_0001.iso" if args.iso else "disc_0001")
+    log.ok(f"Raw disc ready: {disc_path} ({human_bytes(iso_size)})")
     log.info(f"Next step: bd-archive burn -i {shlex.quote(str(output))}")
 
 

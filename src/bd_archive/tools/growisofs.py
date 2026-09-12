@@ -1,3 +1,5 @@
+import os
+import shutil
 import signal
 import subprocess
 import time
@@ -18,8 +20,18 @@ class DeviceBusyError(Exception):
         self.device = device
 
 
-def burn(device: str, iso_path: Path, speed: str | None = None):
-    """Burn a pre-built ISO file via growisofs.
+def burn(
+    device: str,
+    iso_path: Path | None,
+    speed: str | None = None,
+    *,
+    filesystem_args: list[str] | None = None,
+):
+    """Burn an ISO or stream a prepared filesystem through growisofs.
+
+    With filesystem_args, -Z dev invokes mkisofs directly. The caller
+    must first size the unchanged inputs with the same filesystem options.
+    No ISO is saved to local storage in this mode.
 
     growisofs's -Z dev=image syntax writes the ISO byte-for-byte to
     the disc — no on-the-fly mkisofs invocation, so what's in the
@@ -65,15 +77,29 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
     locked; CalledProcessError on any other non-zero exit;
     KeyboardInterrupt if the user confirmed a mid-burn abort.
     """
+    if (iso_path is None) == (filesystem_args is None):
+        raise ValueError("Provide either an ISO or filesystem arguments")
     cmd = [
         "growisofs",
         "-use-the-force-luke=spare=none",
         "-dvd-compat",
         "-Z",
-        f"{device}={iso_path}",
+        f"{device}={iso_path}" if iso_path is not None else device,
     ]
     if speed:
         cmd += [f"-speed={speed}"]
+    if filesystem_args is not None:
+        cmd += filesystem_args
+
+    # growisofs supports MKISOFS as a backend override. Pin it to the
+    # same executable used for our size calculation, ignoring inherited
+    # overrides that could otherwise change the filesystem or its size.
+    env = None
+    if filesystem_args is not None:
+        backend = shutil.which("mkisofs")
+        if backend is None:
+            raise FileNotFoundError("mkisofs")
+        env = {**os.environ, "MKISOFS": str(Path(backend).absolute())}
 
     # start_new_session=True isolates growisofs from the user's SIGINT
     # so the burn only dies when WE call terminate() — see handler below.
@@ -83,6 +109,7 @@ def burn(device: str, iso_path: Path, speed: str | None = None):
         stderr=subprocess.STDOUT,
         text=True,
         start_new_session=True,
+        env=env,
     )
 
     state = {"first_press_at": None, "aborted": False}

@@ -66,6 +66,7 @@ class NoRedundancyIntegrationTests(unittest.TestCase):
                 "-m",
                 "bd_archive",
                 "create",
+                "--iso",
                 "-s",
                 str(self.source),
                 "-n",

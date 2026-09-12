@@ -32,8 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ── create ──────────────────────────────────────────────────────────
     cr = sub.add_parser(
         "create",
-        help="Build disc images without burning",
-        description="Scan a source directory, preview its size and build ISO images for burn.",
+        help="Prepare disc folders or ISO images without burning",
+        description="Scan a source directory, preview its size and prepare size-checked discs.",
         add_help=False,
     )
     common = cr.add_argument_group("General Options")
@@ -48,7 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Archive name: up to 27 characters, using A-Z, a-z, 0-9, ._+-",
     )
     common.add_argument(
-        "-o", "--output", required=True, help="Output directory; ISOs are saved under images/"
+        "-o",
+        "--output",
+        required=True,
+        help="Output directory; disc folders are saved under discs/",
+    )
+    common.add_argument(
+        "--iso", action="store_true", help="Write ISO images under images/ instead of disc folders"
     )
     common.add_argument(
         "-m",
@@ -122,9 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
     dar_options.add_argument(
         "--pack-with",
         default=None,
-        metavar="ISO",
-        help="Pack a previous unburned ISO into disc 1. The combined image replaces it; "
-        "do not burn the old ISO afterwards.",
+        metavar="ISO_OR_DIR",
+        help="Pack a previous unburned ISO or disc folder into disc 1. "
+        "Do not burn the original separately afterwards.",
     )
     dar_options.add_argument(
         "--min-last-disc-fill",
@@ -153,14 +159,14 @@ def build_parser() -> argparse.ArgumentParser:
     # ── burn ────────────────────────────────────────────────────────────
     bu = sub.add_parser(
         "burn",
-        help="Burn and verify disc images (resumable)",
-        description="Burn images from create in disc order and verify each disc afterwards.",
+        help="Burn and verify prepared discs (resumable)",
+        description="Burn folders or images from create in order and verify each disc afterwards.",
     )
     bu.add_argument(
         "-i",
         "--input",
         required=True,
-        help="Output directory from create, containing images/disc_*.iso",
+        help="Output directory from create, containing discs/ or images/disc_*.iso",
     )
     bu.add_argument(
         "-D",
@@ -201,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── extract ─────────────────────────────────────────────────────────
     ex = sub.add_parser(
         "extract",
-        help="Restore DAR archives from discs or ISOs",
+        help="Restore DAR archives from discs, folders or ISOs",
         description="Restore all collected generations of a DAR archive, with PAR2 repair. "
         "Copy raw-disc files directly; no extraction is needed. "
         "Unrepaired corruption returns exit code 1.",
@@ -221,12 +227,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ex_source.add_argument(
         "-i",
+        "--input",
         "--iso",
+        dest="iso",
         nargs="+",
         default=None,
         metavar="PATH",
-        help="One or more ISO files or directories, including create output directories. "
-        "Reads sorted disc_*.iso within each directory; alternative to --device.",
+        help="Disc folders, ISO files or create output directories. "
+        "Reads discs in sorted order; alternative to --device (--iso is a legacy alias).",
     )
     ex.add_argument(
         "-w",
@@ -283,4 +291,7 @@ def main():
         sys.exit(1)
     except PermissionError as e:
         log.error(f"Permission denied: {e}")
+        sys.exit(1)
+    except ValueError as e:
+        log.error(str(e))
         sys.exit(1)

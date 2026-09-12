@@ -18,6 +18,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   report whether they have been published. If the checkout or remote is unavailable,
   report the blocker rather than silently leaving the documentation stale.
 
+## Current output workflow: disc folders by default
+
+`create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`
+selects the original `images/disc_NNNN.iso` workflow described in detail below.
+This output choice is independent of `-m raw|dar`.
+
+- `archive/disc_folder.py` materializes disc contents, checks exact filesystem
+  size with `mkisofs -print-size`, and publishes `discs/manifest.json` only after
+  the complete folder set succeeds. The manifest remains outside disc contents.
+- DAR slices/recovery move from scratch without rewriting on the same filesystem;
+  cross-filesystem workdirs require copies. Raw payload is copied once into the
+  prepared folder. User sources and packed archives are never moved or linked.
+- `burn` reads folders plus the manifest, or legacy ISOs. Folder burns require
+  `mkisofs`, remeasure after the insertion prompt, reject changed file metadata,
+  and stream the filesystem through growisofs with the same options/backend.
+  Unknown capacity stops folder burns unless `--skip-fit-check` was explicit.
+  ISO behavior, post-burn verification and two-press SIGINT handling remain.
+- `extract -i/--input` accepts individual DAR folders, create output directories
+  or ISO files (`--iso` remains an alias). Only ISO inputs need `udisksctl`.
+  `--pack-with` likewise accepts an individual DAR folder or ISO.
+- Incomplete folder sets cannot be burned; creation refuses output containing
+  either existing ISOs or any nonempty `discs/` tree. Keep folders and their
+  manifest together and preserve permissions/mtimes when copying the set.
+- Review current workflow details in the wiki; statements below about mandatory
+  ISO assembly, `images/`-only discovery and no connecting manifest describe
+  the optional ISO path. The on-disc raw/DAR layouts are unchanged.
+
 ## Project
 
 Python package (`bd_archive`, Python 3.11+ — uses `match`, `int | None`, etc.) that archives a directory tree onto one or more Blu-ray discs using `dar` (slicing/compression) and `par2` (forward error correction), or onto one directly readable data disc (the default, `create -m raw`). Use `create -m dar` for DAR archives across multiple discs. Built with `hatchling`; recommended user install via `uv tool install --editable .`, exposes the globally available `bd-archive` console script in an isolated tool environment. Tests: `.venv/bin/python -m unittest discover -s tests` (external-tool integration tests skip when tools are absent).

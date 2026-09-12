@@ -245,7 +245,7 @@ class RawValidationTests(unittest.TestCase):
                 contextlib.redirect_stderr(messages),
                 self.assertRaises(SystemExit) as exc,
             ):
-                cmd_create(self.args("-o", str(output), *options))
+                cmd_create(self.args("--iso", "-o", str(output), *options))
             self.assertEqual(exc.exception.code, 1)
             self.assertIn("-m dar", messages.getvalue())
             self.assertIn("multiple discs", messages.getvalue())
@@ -340,6 +340,7 @@ class RawIntegrationTests(unittest.TestCase):
     def create(self, *options, expected=0, auto=False):
         return self.cli(
             "create",
+            "--iso",
             "-s",
             self.source,
             "-n",

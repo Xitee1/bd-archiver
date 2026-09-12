@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from bd_archive.archive.disc import DiscIO, find_sg_device
+from bd_archive.archive.disc_folder import DiscFolder, load_disc_set
 from bd_archive.archive.verify import verify_disc
 from bd_archive.constants import DISC_OVERSIZE_TOLERANCE
 from bd_archive.shell.deps import check_deps
@@ -24,16 +25,26 @@ def cmd_burn(args):
     input_dir = Path(args.input)
     images_dir = input_dir / "images"
 
-    if not images_dir.is_dir():
-        log.error(f"No images directory at {images_dir}")
-        log.info("Run 'create' first to build the disc images.")
-        sys.exit(1)
-
     isos = sorted(images_dir.glob("disc_*.iso"))
-    disc_count = len(isos)
+    discs_dir = input_dir / "discs"
+    folders = []
+    if discs_dir.exists() and not discs_dir.is_dir():
+        raise ValueError(f"Disc output path is not a directory: {discs_dir}")
+    if discs_dir.exists() and any(discs_dir.iterdir()):
+        if isos:
+            log.error("Output contains both disc folders and ISOs; choose an unambiguous set")
+            sys.exit(1)
+        check_deps("mkisofs")
+        try:
+            folders = load_disc_set(discs_dir)
+        except ValueError as exc:
+            log.error(str(exc))
+            sys.exit(1)
+    discs = folders or isos
+    disc_count = len(discs)
     if disc_count == 0:
-        log.error(f"No disc_*.iso files in {images_dir}")
-        log.info("Run 'create' first to build the disc images.")
+        log.error(f"No prepared disc folders or ISO images in {input_dir}")
+        log.info("Run 'create' first to prepare the discs.")
         sys.exit(1)
 
     start = args.start
@@ -49,23 +60,34 @@ def cmd_burn(args):
     # half-full last disc doesn't get refused on the same media as the
     # (full) discs before it. A single image may be intentionally partial
     # (especially in raw mode), so its size cannot identify a media class.
-    max_iso_bytes = max(iso.stat().st_size for iso in isos)
+    try:
+        max_iso_bytes = max(
+            disc.measure() if isinstance(disc, DiscFolder) else disc.stat().st_size
+            for disc in discs
+        )
+    except ValueError as exc:
+        log.error(str(exc))
+        sys.exit(1)
 
-    log.step("Burn disc images")
+    log.step("Burn prepared discs")
     log.info(f"Discs:    {disc_count}")
     log.info(f"Device:   {device}")
     if start > 1:
         log.info(f"Resuming from disc {start}")
 
     for i in range(start, disc_count + 1):
-        iso = images_dir / f"disc_{i:04d}.iso"
-        if not iso.exists():
+        iso = discs[i - 1]
+        if not folders and iso != images_dir / f"disc_{i:04d}.iso":
             log.error(f"ISO not found: {iso}")
             log.info("Run 'create' first to build the disc images.")
             sys.exit(1)
 
         try:
             _burn_one_disc(args, input_dir, iso, i, disc_count, dio, max_iso_bytes)
+        except ValueError as exc:
+            log.error(str(exc))
+            log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
+            sys.exit(1)
         except KeyboardInterrupt:
             # Top-level handler will print the cancel banner + exit 130.
             # Print the resume hint here so the user sees exactly which
@@ -87,13 +109,26 @@ def cmd_burn(args):
 
 
 def _burn_one_disc(
-    args, input_dir: Path, iso: Path, i: int, disc_count: int, dio: DiscIO, max_iso_bytes: int
+    args,
+    input_dir: Path,
+    iso: Path | DiscFolder,
+    i: int,
+    disc_count: int,
+    dio: DiscIO,
+    max_iso_bytes: int,
 ):
     log.step(f"Disc {i}/{disc_count}")
-    iso_size = iso.stat().st_size
-    log.info(f"ISO: {iso.name} ({human_bytes(iso_size)})")
+    folder = iso if isinstance(iso, DiscFolder) else None
+    if folder is not None:
+        log.info(f"Folder: {folder.root}")
+        log.info("Keep the prepared disc folder unchanged until burning finishes.")
+    else:
+        log.info(f"ISO: {iso.name} ({human_bytes(iso.stat().st_size)})")
 
     prompt_disc(f"Insert blank disc {i}/{disc_count}", dio.device)
+    # Measure after the potentially long insertion prompt. Folder burns use
+    # the identical mkisofs options, without writing an intermediate ISO.
+    iso_size = folder.measure() if folder is not None else iso.stat().st_size
 
     # Pre-burn fit check — iso_size is the exact byte count growisofs
     # will write. detect_disc_capacity returns the format-aware
@@ -104,9 +139,13 @@ def _burn_one_disc(
     if not args.skip_fit_check:
         actual = detect_disc_capacity(dio.device)
         if actual is None:
+            if folder is not None:
+                raise ValueError(
+                    "Could not detect disc capacity; retry or explicitly use --skip-fit-check"
+                )
             log.warn("Could not detect disc capacity — skipping fit check")
         elif actual < iso_size:
-            log.error(f"Disc too small: {human_bytes(actual)} < ISO {human_bytes(iso_size)}")
+            log.error(f"Disc too small: {human_bytes(actual)} < required {human_bytes(iso_size)}")
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
             sys.exit(1)
         elif disc_count > 1 and actual > max_iso_bytes * DISC_OVERSIZE_TOLERANCE:
@@ -120,13 +159,24 @@ def _burn_one_disc(
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
             sys.exit(1)
         else:
-            log.ok(f"Disc capacity {human_bytes(actual)} fits ISO {human_bytes(iso_size)}")
+            log.ok(f"Disc capacity {human_bytes(actual)} fits disc data {human_bytes(iso_size)}")
 
     # Burn (with sg-busy retry)
     log.info("Burning...")
     while True:
         try:
-            dio.burn(iso, args.speed)
+            if folder is not None:
+                folder.check_unchanged()
+                dio.burn_folder(
+                    folder.entries,
+                    folder.volume_label,
+                    folder.publisher,
+                    args.speed,
+                    rock_ridge=folder.rock_ridge,
+                )
+                folder.check_unchanged()
+            else:
+                dio.burn(iso, args.speed)
             break
         except DeviceBusyError:
             log.error(

@@ -155,7 +155,7 @@ class _DeviceSource:
 
 
 class _IsoSource:
-    """A fixed, ordered list of ISO images, loop-mounted one at a time.
+    """A fixed list of disc folders or ISO images, opened one at a time.
 
     Same per-disc flow as a physical drive, minus the interaction: the
     set is known up front, so open_next() walks its own cursor and
@@ -164,7 +164,7 @@ class _IsoSource:
     typo or a truncated download.
     """
 
-    item_label = "Image"
+    item_label = "Input"
 
     def __init__(self, isos: list[Path]):
         self._isos = isos
@@ -173,15 +173,17 @@ class _IsoSource:
         self._stack: contextlib.ExitStack | None = None
 
     def log_source(self):
-        log.info(f"Images:   {len(self._isos)} ISO file(s)")
+        log.info(f"Inputs:   {len(self._isos)} disc folder(s) / ISO file(s)")
         for iso in self._isos:
             log.info(f"            {iso}")
 
     def log_hint(self):
-        log.info("Reading from ISO images instead of discs. Generations are")
+        log.info("Reading from disc folders / ISO images. Generations are")
         log.info("detected from filenames and extracted in order at the end.")
 
     def _mount(self, iso: Path) -> Path:
+        if iso.is_dir():
+            return iso
         stack = contextlib.ExitStack()
         try:
             mounted = stack.enter_context(loop_mounted(iso, prefix="bd-extract-"))
@@ -198,7 +200,7 @@ class _IsoSource:
         iso = self._isos[self._cursor]
         self._cursor += 1
         self._current = iso
-        log.info(f"Image {self._cursor}/{len(self._isos)}: {iso.name}")
+        log.info(f"Input {self._cursor}/{len(self._isos)}: {iso.name}")
         return self._mount(iso)
 
     def reopen_current(self, disc_num: int) -> Path | None:
@@ -213,7 +215,7 @@ class _IsoSource:
 
 
 def _resolve_iso_paths(raw_paths: list[str]) -> list[Path]:
-    """Expand the --iso arguments into an ordered list of image files.
+    """Expand local input arguments into an ordered list of folders/images.
 
     A directory expands to its `disc_*.iso` in lexical (= numerical,
     they are zero-padded) order, also looking in `<dir>/images/` so
@@ -227,9 +229,19 @@ def _resolve_iso_paths(raw_paths: list[str]) -> list[Path]:
     for raw in raw_paths:
         p = Path(raw)
         if p.is_dir():
-            found = sorted(p.glob("disc_*.iso")) or sorted((p / "images").glob("disc_*.iso"))
+            if find_disc_archives(p):
+                found = [p]
+            else:
+                folders = sorted(d for d in p.glob("disc_*") if d.is_dir()) or sorted(
+                    d for d in (p / "discs").glob("disc_*") if d.is_dir()
+                )
+                images = sorted(p.glob("disc_*.iso")) or sorted((p / "images").glob("disc_*.iso"))
+                if folders and images:
+                    log.error(f"Both disc folders and images found in {p}; select one set")
+                    sys.exit(1)
+                found = folders or images
             if not found:
-                log.error(f"No disc_*.iso found in {p} or {p / 'images'}")
+                log.error(f"No DAR disc folders or disc_*.iso found in {p}")
                 sys.exit(1)
         elif p.is_file():
             found = [p]
@@ -388,16 +400,25 @@ def cmd_extract(args):
     # detection abort here, before the output dir exists.
     source: _DeviceSource | _IsoSource
     if args.iso:
-        check_deps("udisksctl")
-        source = _IsoSource(_resolve_iso_paths(args.iso))
+        inputs = _resolve_iso_paths(args.iso)
+        if any(p.is_file() for p in inputs):
+            check_deps("udisksctl")
+        source = _IsoSource(inputs)
     else:
         source = _DeviceSource(resolve_device(args.device))
 
     output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     workdir_is_default = args.workdir is None
     work_dir = Path(args.workdir) if args.workdir else output_dir / ".bd-archive-work"
+    if args.iso:
+        for folder in (p.resolve() for p in inputs if p.is_dir()):
+            for destination in (output_dir.resolve(), work_dir.resolve()):
+                if destination.is_relative_to(folder) or folder.is_relative_to(destination):
+                    raise ValueError(
+                        f"Disc input and output/workdir must not overlap: {folder} / {destination}"
+                    )
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Guard before anything (incl. staging) is created in the output dir:
     # a refused run must not leave litter in a directory we don't own.

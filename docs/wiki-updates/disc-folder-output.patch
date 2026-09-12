@@ -1,0 +1,790 @@
+diff --git a/Burning.md b/Burning.md
+index d5fad68..d2e1c33 100644
+--- a/Burning.md
++++ b/Burning.md
+@@ -1,15 +1,17 @@
+ # Burning
+ 
+-`burn` writes the ISO files from a successful `create` run and verifies each
+-finished disc. It works for raw and DAR images.
++`burn` writes the prepared folders or ISO files from a successful `create`
++run and verifies each finished disc. It works for both raw and DAR archives.
+ 
+ ```bash
+ bd-archive burn -i /data/photos-gen1 -D /dev/sr0 -S 4
+ ```
+ 
+-`-i` is the **create output directory**, which contains `images/`. Do not pass
+-an individual ISO or the `images/` directory itself. Images must retain their
+-contiguous names `disc_0001.iso`, `disc_0002.iso`, and so on.
++`-i` is the **create output directory**, containing `discs/` or `images/`.
++Do not pass an individual folder/ISO or the container directory itself. Keep
++consecutive names `disc_0001`, `disc_0002`, etc. (or `.iso`) unchanged.
++Folder sets require `discs/manifest.json`; incomplete sets and output with both
++folders and ISOs are refused. Existing ISO sets need no manifest.
+ 
+ `-D` is optional with drive auto-detection. `-S 4` requests a 4× speed; omitting
+ it leaves speed selection to the drive/tool. Actual speed depends on hardware
+@@ -18,8 +20,12 @@ and media.
+ ## What happens for each disc
+ 
+ 1. Insert the requested blank disc and confirm the prompt.
+-2. The tool compares its detected capacity with the image size.
+-3. `growisofs` writes the existing ISO bytes to the disc.
++2. For folders, `mkisofs -print-size` recomputes the exact filesystem size and
++   file metadata is checked against the creation manifest. The detected media
++   capacity is compared with that size, or with the existing ISO file size.
++3. For folders, `growisofs` runs mkisofs with the same filesystem options and
++   writes the stream directly to the disc. For ISOs it copies existing bytes.
++   No intermediate ISO is written when burning folders.
+ 4. The tray ejects; the tool attempts to close it and waits for the disc to return.
+ 5. The disc is mounted and verified. Only an **OK** result completes this step.
+ 6. The verified disc is ejected and the next one is requested.
+@@ -36,8 +42,15 @@ to avoid wasting a larger media class. A partly filled last image still uses the
+ largest image as its comparison point.
+ 
+ Single-image sets allow unused capacity. `--skip-fit-check` disables **both**
+-checks. If capacity cannot be detected, the current code warns and proceeds
+-without a fit check, so do not treat the check as a guarantee in that case.
++checks. If capacity cannot be detected, folder burning stops unless you
++explicitly use `--skip-fit-check`. The legacy ISO path still warns and proceeds
++without a fit check in that case.
++
++Keep folders unchanged until burning finishes. The manifest guards file paths,
++sizes, permissions and mtimes; it is not a content hash and cannot detect every
++form of corruption or prevent concurrent writes. `verify` checks integrity.
++Size is recalculated with the currently installed mkisofs, so its current
++overhead is checked even if the tool changed since creation.
+ 
+ Use blank, unformatted BD-R media for the intended capacity model. The burner
+ passes `-use-the-force-luke=spare=none`; sizing assumes it will not reserve a new
+@@ -52,8 +65,8 @@ After three discs have finished successfully, continue with disc 4:
+ bd-archive burn -i /data/photos-gen1 --start 4
+ ```
+ 
+-`--start` counts images starting at 1. It is not an automatic burn-history lookup.
+-Keep the complete image set in place so numbering and capacity-class detection
++`--start` counts prepared discs starting at 1. It is not an automatic burn-history lookup.
++Keep the complete folder/image set in place so numbering and capacity-class detection
+ remain consistent. The tool prints resume hints when interrupted.
+ 
+ For a planned break, let the current disc finish burning and verifying, then
+@@ -74,7 +87,7 @@ are present, or uses Python SHA-512 when they are absent.
+ 
+ ## After burning
+ 
+-Keep images until burning and verification are complete and you have checked
++Keep prepared folders/images until burning and verification are complete and you have checked
+ your restore workflow. Keep DAR catalogs and checksum sidecars in your regular
+ backup for future incrementals.
+ 
+diff --git a/CLI-reference.md b/CLI-reference.md
+index e96e118..346f98a 100644
+--- a/CLI-reference.md
++++ b/CLI-reference.md
+@@ -9,13 +9,14 @@ commands; each command's `--help` describes its arguments.
+ bd-archive create -s SOURCE -n NAME -o OUTPUT [options]
+ ```
+ 
+-Builds images and shows a preview before confirmation. Raw mode is the default.
++Prepares disc folders and shows a preview before confirmation. Raw mode is the default.
+ 
+ | Option | Default | Meaning |
+ | --- | --- | --- |
+ | `-s`, `--source` | Required | Source directory, including subdirectories |
+ | `-n`, `--name` | Required | Archive name; see rules below |
+-| `-o`, `--output` | Required | Persistent output; ISOs go into `images/` |
++| `-o`, `--output` | Required | Persistent output; disc folders go into `discs/` |
++| `--iso` | Off | Write ISO images under `images/` instead of disc folders |
+ | `-m`, `--mode` | `raw` | `raw` or `dar` |
+ | `-w`, `--workdir` | `<output>/.bd-archive-work/` | Dedicated temporary storage |
+ | `-D`, `--device` | Auto-detect | Drive for capacity detection |
+@@ -36,7 +37,7 @@ name throughout an incremental chain.
+ | `-c`, `--compression` | `zstd` | `zstd`, `lzma`, `lz4`, `gzip`, `bzip2`, `none` |
+ | `-l`, `--level` | DAR's default (`9`) | Compression level forwarded to DAR; zstd 1–22, others 1–9; ignored with `-c none` |
+ | `--base` | None | Previous catalog slice file for an incremental |
+-| `--pack-with` | None | Unburned DAR ISO to include in the new disc 1 |
++| `--pack-with` | None | Unburned DAR ISO or individual disc folder to include in the new disc 1 |
+ | `--min-last-disc-fill` | `0` / off | Target fill percentage `0`–`100`; defer newest eligible files using the preview estimate |
+ | `--ratio` | `1.0` | Estimated compressed output/input ratio |
+ | `--sample` | None | Sample directory to compress for a measured ratio |
+@@ -57,10 +58,10 @@ bd-archive burn -i OUTPUT [options]
+ 
+ | Option | Default | Meaning |
+ | --- | --- | --- |
+-| `-i`, `--input` | Required | Create output directory containing `images/disc_*.iso` |
++| `-i`, `--input` | Required | Create output directory containing `discs/` or `images/disc_*.iso` |
+ | `-D`, `--device` | Auto-detect | Burner device |
+ | `-S`, `--speed` | Drive/tool maximum | Requested speed multiplier, such as `4` |
+-| `--start` | `1` | First disc number to burn; must be within the image set |
++| `--start` | `1` | First disc number to burn; must be within the disc set |
+ | `--no-verify` | Off | Skip post-burn verification |
+ | `--skip-fit-check` | Off | Disable both too-small and oversized-media checks |
+ 
+@@ -89,7 +90,7 @@ bd-archive extract -o OUTPUT [-D DEVICE | -i PATH ...] [-w WORKDIR]
+ | --- | --- | --- |
+ | `-o`, `--output` | Required | Empty directory or a previous restore of this chain |
+ | `-D`, `--device` | Auto-detect if no `-i` | Optical drive |
+-| `-i`, `--iso` | None | One or more ISO files or directories; alternative to `-D` |
++| `-i`, `--input`, `--iso` | None | Disc folders, ISO files or create output directories; alternative to `-D` |
+ | `-w`, `--workdir` | `<output>/.bd-archive-work/` | Temporary storage for all collected slices |
+ 
+ Restores DAR only. No `-n` is needed: chain identity comes from the archive
+diff --git a/DAR-archives.md b/DAR-archives.md
+index ca7a6b1..ee4b6de 100644
+--- a/DAR-archives.md
++++ b/DAR-archives.md
+@@ -1,7 +1,8 @@
+ # DAR archives
+ 
+ DAR mode stores a directory as numbered archive slices. Each slice is packaged
+-in a disc image with checksums and, by default, PAR2 recovery. Use it for data
++in a disc folder with checksums and, by default, PAR2 recovery. `--iso` selects
++ISO output instead. Use it for data
+ that needs multiple discs, compression or incremental generations.
+ 
+ ```bash
+@@ -65,24 +66,29 @@ DAR defaults to `-r 5`. Recovery is generated separately for each data slice,
+ so a damaged disc uses its own recovery files. Use a fixed percentage from
+ 1 through 100, or `-r 0` / `-r none` for SHA-512 only.
+ 
+-Slice sizing reserves space for the catalog, PAR2 and other metadata. Actual
+-ISO sizes are checked against the selected byte capacity after building. The
++Slice sizing reserves space for the catalog, PAR2 and other metadata. The final
++folder is sized with `mkisofs -print-size`, including UDF/ISO9660 overhead,
++and must fit the selected byte capacity. With `--iso`, the actual image size
++is checked after building. The
+ preview remains an estimate; a larger-than-estimated catalog can make a build
+ fail its final fit check. See [Storage and layout](Storage-and-layout).
+ 
+ ## What creation leaves behind
+ 
+-The output contains `images/disc_0001.iso`, `disc_0002.iso`, and so on, plus an
++The default output contains `discs/disc_0001/`, `discs/disc_0002/`, etc.,
++with an off-disc `discs/manifest.json` used by `burn`. Add `--iso` to write
++`images/disc_0001.iso`, `images/disc_0002.iso`, etc. instead. Both formats include an
+ isolated `Photos-gen1-catalog.*.dar` and SHA-512 sidecars. The isolated catalog
+ also goes on disc 1. DAR's last slice contains the embedded master catalog.
+ 
+ Keep all catalog slices and their sidecars in your regular backup. A catalog
+ is useful for [incrementals](Incrementals-and-packing), but cannot replace the
+-discs containing file data. Keep the numbered ISO names intact for `burn`.
++discs containing file data. Keep numbered disc folder/ISO names and the folder manifest intact for `burn`.
+ 
+-Creation has no resume option. If it fails after writing some ISOs, do not
++Creation has no resume option. If it fails after preparing some folders/ISOs, do not
+ assume the output is a complete set; inspect the failure and retry in a fresh
+-output/workdir. Only proceed to [Burning](Burning) after creation succeeds.
++output/workdir. An incomplete folder set has no valid manifest and `burn`
++refuses it. Only proceed to [Burning](Burning) after creation succeeds.
+ 
+ ## Archive names
+ 
+diff --git a/Development.md b/Development.md
+index ab5f40b..9e406b3 100644
+--- a/Development.md
++++ b/Development.md
+@@ -47,9 +47,17 @@ The dependency direction is `commands → archive → tools → shell`.
+ new slice data may still be in the operating system's page cache.
+ 
+ Raw creation inventories the source and checks stat signatures after hashing,
+-recovery generation and image creation. It publishes the ISO filename used by
+-`burn` only after validation. DAR creates all slices first, then packages and
+-removes their intermediates one disc at a time.
++recovery generation and folder/ISO creation. DAR creates all slices first, then
++moves generated files into disc folders on the same filesystem; cross-filesystem
++workdirs require copies. `--iso` retains the image assembly path.
++
++`archive/disc_folder.py` handles folder preparation, exact mkisofs sizing and
++the off-disc version-1 manifest. A complete manifest makes the set burnable;
++missing/invalid manifests and changed file metadata are rejected.
++`tools/mkisofs.py` shares filesystem arguments between sizing and growisofs,
++which pins its MKISOFS backend to the executable used for sizing. Integration
++tests compare computed sizes to actual ISO bytes and restore multi-disc and
++packed archives; burn-device operations are mocked.
+ 
+ `archive.verify.verify_disc` is shared by standalone verification and the
+ post-burn check. `extract` stages and verifies slices itself, fetching PAR2 only
+@@ -82,8 +90,8 @@ and links to this wiki. Put workflows here, and update the CLI reference when
+ `build_parser()` or command validation changes. Wiki pages use extensionless
+ relative links and `_Sidebar.md` for navigation.
+ 
+-This documentation was checked on **2026-09-12** against source commit
+-[`b60b958`](https://github.com/Xitee1/bd-archiver/tree/b60b95871aac9de3d1c14ea256ec847bc17b9a73).
++This documentation was updated on **2026-09-12** for the working-tree change
++that makes disc folders the default output and adds `create --iso`.
+ The most relevant implementation locations are:
+ 
+ | Documentation | Source to review |
+@@ -94,7 +102,7 @@ The most relevant implementation locations are:
+ | Burning | `commands/burn.py`, `tools/growisofs.py`, `archive/disc.py` |
+ | Integrity scope | `archive/verify.py`, `archive/checksums.py`, `commands/verify.py` |
+ | Restore and staging | `commands/extract.py`, `tools/dar.py` |
+-| Capacity and layout | `archive/sizing.py`, `tools/mediainfo.py`, `tools/mkisofs.py`, `constants.py` |
++| Capacity and layout | `archive/disc_folder.py`, `archive/sizing.py`, `tools/mediainfo.py`, `tools/mkisofs.py`, `constants.py` |
+ | Installation and containers | `pyproject.toml`, `Dockerfile`, `.github/workflows/` |
+ 
+ Paths without a prefix in this table are relative to `src/bd_archive/`, except
+diff --git a/Docker.md b/Docker.md
+index ee2bf08..dbc1eea 100644
+--- a/Docker.md
++++ b/Docker.md
+@@ -1,7 +1,7 @@
+ # Docker
+ 
+ The repository's Dockerfile includes the Python command and runtime tools.
+-Image creation with a fixed capacity is the simplest container workflow;
++Archive creation with a fixed capacity is the simplest container workflow;
+ physical drives and ISO mounting need additional host integration.
+ 
+ ## Use the prebuilt image
+@@ -39,7 +39,7 @@ The local build uses the version label `0.0.0+docker-local` unless
+ `BD_ARCHIVE_VERSION` is supplied as a build argument. This does not change the
+ code being built.
+ 
+-## Build images without a drive
++## Prepare archives without a drive
+ 
+ Create `/data/out` on the host first. Mount the source read-only and output
+ writable:
+@@ -54,7 +54,9 @@ docker run --rm -it \
+ 
+ The capacity is an example; use a byte count suitable for your media. For raw
+ mode, omit `-m dar`. The source mount ends in `photos` so the raw disc's folder
+-will have that name.
++will have that name. The result is a portable `discs/` tree; add `--iso` to
++create images instead. Folder output can be verified, restored and burned on
++the host after creation in the container.
+ 
+ The default container runs as root, so generated host files may be root-owned.
+ Choose container user settings appropriate for your host directories. Running
+@@ -86,8 +88,8 @@ and restore on the host avoids this container setup.
+ 
+ ## ISO verification and restoration
+ 
+-`verify image.iso`, `extract -i` and `create --pack-with` call `udisksctl` for
+-loop mounting. The image installs udisks2, but does not start a D-Bus/udisks2
++`verify image.iso`, `extract -i` with ISO files, and `create --pack-with` with
++an ISO call `udisksctl` for loop mounting. The image installs udisks2, but does not start a D-Bus/udisks2
+ service. Those workflows therefore do not work simply by launching this image,
+ even if no physical drive is needed. Run them on the host with working udisks2.
+ 
+@@ -100,9 +102,10 @@ docker run --rm -it \
+   bd-archiver:local verify /disc
+ ```
+ 
+-`extract -i` does not accept an already mounted DAR directory: directory inputs
+-are searched for ISO files. Use host extraction or configure the container's
+-mounting services explicitly.
++Prepared disc folders and mounted DAR directories can be passed directly to
++`extract -i` without udisks2. Folder-based verification, restoration and packing
++therefore work without container mount services. Mount the input read-only and
++a separate restore/output directory writable.
+ 
+ For RAM staging, see [Storage and layout](Storage-and-layout). A small container
+ tmpfs sized for one slice cannot hold a multi-disc restore's accumulated slices.
+diff --git a/Home.md b/Home.md
+index 6d39b1c..80abdd3 100644
+--- a/Home.md
++++ b/Home.md
+@@ -1,8 +1,9 @@
+ # bd-archiver documentation
+ 
+ bd-archiver turns a directory into Blu-ray data discs. The command is
+-`bd-archive`. Creation and burning are separate: first build the ISO images,
+-then write those images to discs and check the result.
++`bd-archive`. Creation and burning are separate: prepare size-checked disc
++folders, then burn them and verify the result. Add `create --iso` to save ISO
++images instead. The raw/DAR archive format choice is independent of this output choice.
+ 
+ ## Choose a format
+ 
+@@ -25,7 +26,7 @@ standalone players must support data discs and the files' formats.
+ ## Start here
+ 
+ 1. [Install the tools](Installation).
+-2. Follow the [quick start](Quick-start) to build, check and burn an image.
++2. Follow the [quick start](Quick-start) to prepare, check and burn an archive.
+ 3. Read [Raw data discs](Raw-data-discs) or [DAR archives](DAR-archives) for your chosen format.
+ 4. Plan enough disk space using [Storage and layout](Storage-and-layout).
+ 
+@@ -34,7 +35,7 @@ standalone players must support data discs and the files' formats.
+ | Task | Guide |
+ | --- | --- |
+ | Add changed files to an existing DAR archive | [Incrementals and packing](Incrementals-and-packing) |
+-| Burn images or resume a disc set | [Burning](Burning) |
++| Burn prepared folders/images or resume a disc set | [Burning](Burning) |
+ | Check a disc, ISO or copied disc directory | [Verification](Verification) |
+ | Restore DAR data, including damaged or incomplete sets | [Restoring](Restoring) |
+ | Look up flags and defaults | [CLI reference](CLI-reference) |
+@@ -44,6 +45,7 @@ standalone players must support data discs and the files' formats.
+ 
+ ## A few terms
+ 
++- **Disc folder:** the files for one disc, prepared under `discs/disc_NNNN/`.
+ - **ISO image:** the file that will be written to a disc.
+ - **Slice:** one numbered piece of a DAR archive, sized for a disc together with its metadata and recovery data.
+ - **Catalog:** DAR's index of an archive. An isolated catalog is saved separately for future incrementals and recovery; it does not contain the archived file contents.
+diff --git a/Incrementals-and-packing.md b/Incrementals-and-packing.md
+index 6a12a29..beb8187 100644
+--- a/Incrementals-and-packing.md
++++ b/Incrementals-and-packing.md
+@@ -19,7 +19,7 @@ state, not simply an upload of a separate folder of additions: files absent from
+ the new source can be recorded as deleted.
+ 
+ DAR stores new/changed file data and records changes to the archive state. The
+-new generation gets its own images and catalog. To make generation 3, reference
++new generation gets its own disc folders (or optional images) and catalog. To make generation 3, reference
+ the generation 2 catalog and use a new output directory. Burn each generation
+ with its usual `burn -i` command.
+ 
+@@ -62,36 +62,36 @@ continue below the target with a warning. If deferring them would leave zero
+ estimated data bytes, it stops. A value of 0 disables deferral; values above 100
+ are invalid. Compression estimates also affect this selection.
+ 
+-## Pack an unburned leftover ISO with the next archive
++## Pack an unburned leftover disc with the next archive
+ 
+-Suppose the previous set's last image, `disc_0003.iso`, uses only part of a disc
+-and has **not** been burned. A new archive can share that space:
++Suppose the previous set's last disc folder, `disc_0003`, uses only part of a
++disc and has **not** been burned. A new archive can share that space:
+ 
+ ```bash
+ bd-archive create -m dar -s /data/videos -n Videos \
+   -o /data/videos-gen1 \
+-  --pack-with /data/photos-gen1/images/disc_0003.iso
++  --pack-with /data/photos-gen1/discs/disc_0003
+ ```
+ 
+-The old ISO is mounted read-only for inspection and again while building the
+-combined image. Its archive files share the new `images/disc_0001.iso` with the
+-new archive's first slice. That first slice is smaller; later slices use the
+-normal budget. The combined image's label ends with `+`.
++An individual ISO such as `/data/photos-gen1/images/disc_0003.iso` also works.
++Pass the individual disc folder, not the entire create output directory.
++ISOs are loop-mounted read-only for inspection and assembly; folders need no
++mount. Keep a packed source folder unchanged throughout creation.
+ 
+-The old ISO must contain DAR slices and leave room for a new first slice plus
+-metadata. It cannot contain the exact name/generation being created. This is
+-packing existing image contents into a new ISO; it does not append to a burned
+-disc. The old ISO remains unchanged.
++The old archive files share the new `discs/disc_0001/` (or, with `--iso`,
++`images/disc_0001.iso`) with the new archive's first slice. That slice gets a
++smaller capacity budget; later slices use the normal budget. The combined disc's
++label ends with `+`.
+ 
+-The combined image **replaces the old image in the burn plan**. Once you use it,
+-do not also burn the superseded original. `burn` has no knowledge of this
+-relationship: rerunning the old set's burn command would still discover that
+-old image. Keep a record of which combined disc replaces it.
++The input must contain DAR slices, leave room for a new slice plus metadata,
++and not contain the exact name/generation being created. This prepares a new
++disc; it does not append to a burned disc. Original folders and ISOs remain
++unchanged. Old payload is copied into the new output, so budget space for both.
+ 
+-The combined ISO needs space for both archives' contents. Loop mounting avoids
+-an extra temporary copy of the old payload, but the final new image still
+-contains it. Keep the original available until the combined image/disc has been
+-verified.
++The combined disc **replaces the old disc in the burn plan**. Do not burn the
++superseded original separately. `burn` does not track this relationship and an
++old set still discovers its original disc; keep a record of the replacement.
++Retain the original until the combined disc has been burned and verified.
+ 
+ Packing also works between generations of the same chain: combine `--base`
+ with `--pack-with`, keeping the chain name. During restoration, both generations
+@@ -100,6 +100,6 @@ picker and ignores the others. `verify` checks the discovered recovery/checksum
+ sets across the disc.
+ 
+ Older flat DAR discs are repackaged into archive folders. You can repeat packing
+-with a later leftover image.
++with a later leftover folder or image.
+ 
+ Next: [Burning](Burning) · [Restoring a chain](Restoring)
+diff --git a/Installation.md b/Installation.md
+index fb42a2b..3d1cb8f 100644
+--- a/Installation.md
++++ b/Installation.md
+@@ -44,7 +44,7 @@ sudo apt install dar par2 growisofs dvd+rw-tools genisoimage udisks2
+ sudo pacman -Syu dar par2cmdline dvd+rw-tools cdrtools udisks2
+ ```
+ 
+-The executable names matter: ISO creation calls `mkisofs`, capacity detection
++The executable names matter: filesystem sizing/creation calls `mkisofs`, capacity detection
+ calls `dvd+rw-mediainfo`, and ISO mounting calls `udisksctl`. If your distribution
+ packages these differently, install packages providing those commands.
+ `mount`, `umount` and `eject` must also be available for physical-disc operations.
+@@ -56,11 +56,11 @@ packages these differently, install packages providing those commands.
+ | --- | --- |
+ | `create` / `create -m raw` | `mkisofs`; `par2` unless `-r 0`; `dvd+rw-mediainfo` unless `-b` is given |
+ | `create -m dar` | `dar`, `mkisofs`, `dvd+rw-mediainfo`; `par2` unless `-r 0` |
+-| DAR creation with `--pack-with` | The above plus `udisksctl` |
+-| `burn` | `growisofs`, `dvd+rw-mediainfo`; post-burn verification also needs `par2` if the disc has PAR2 |
++| DAR creation with `--pack-with` | The above plus `udisksctl` only for ISO input; folders need no mounting tool |
++| `burn` | `growisofs`, `dvd+rw-mediainfo`; `mkisofs` for folder input; post-burn verification also needs `par2` if the disc has PAR2 |
+ | `verify` directory | `par2` only when PAR2 indices are present; SHA-512 verification runs in Python |
+ | `verify` ISO | The above plus `udisksctl` |
+-| `extract` | `dar`, `par2`; also `udisksctl` with `-i` |
++| `extract` | `dar`, `par2`; also `udisksctl` when `-i` includes ISO files |
+ 
+ Two implementation details matter for minimal setups: DAR creation still checks
+ for `dvd+rw-mediainfo` even with `-b`, and `extract` always checks for `par2`,
+diff --git a/Quick-start.md b/Quick-start.md
+index 7292b32..18af467 100644
+--- a/Quick-start.md
++++ b/Quick-start.md
+@@ -6,7 +6,7 @@ creation, and use a separate output directory for each create run.
+ 
+ ## One directly readable disc
+ 
+-Insert a blank disc for capacity detection, then build an image:
++Insert a blank disc for capacity detection, then prepare the disc files:
+ 
+ ```bash
+ bd-archive create -s /data/photos -n Photos -o /data/photos-disc
+@@ -14,16 +14,17 @@ bd-archive create -s /data/photos -n Photos -o /data/photos-disc
+ 
+ The preview shows source size, capacity and planned recovery. Confirm to start,
+ or decline to adjust the options. Creation does not burn anything.
+-The result is `/data/photos-disc/images/disc_0001.iso`.
++The result is `/data/photos-disc/discs/disc_0001`.
+ 
+-Check that image before burning:
++Check that disc folder before burning:
+ 
+ ```bash
+-bd-archive verify /data/photos-disc/images/disc_0001.iso
++bd-archive verify /data/photos-disc/discs/disc_0001
+ ```
+ 
+-ISO verification uses udisks2 to mount the image. For a physical disc, verification
+-can also be run after burning. Burn the image with:
++Folder verification needs no loop mount. Add `--iso` to the create command if
++you prefer `/data/photos-disc/images/disc_0001.iso`; verifying that ISO uses
++udisks2. Burn either output format with:
+ 
+ ```bash
+ bd-archive burn -i /data/photos-disc
+@@ -54,7 +55,7 @@ After creation succeeds, test a restore without burning:
+ bd-archive extract -o /data/photos-test-restore -i /data/photos-gen1
+ ```
+ 
+-Use a new, empty restore directory. This reads the generated images, checks their
++Use a new, empty restore directory. This reads the generated disc folders (or optional ISOs), checks their
+ slices and restores the source directory's contents into the target. Inspect the
+ restored files; [Verification](Verification) explains how to check recovery files
+ as well. Budget space for all staged slices plus restored data.
+diff --git a/Raw-data-discs.md b/Raw-data-discs.md
+index 672c56f..4a53445 100644
+--- a/Raw-data-discs.md
++++ b/Raw-data-discs.md
+@@ -34,17 +34,20 @@ for how the tool chooses between these checks.
+ ## What fits and what is supported
+ 
+ The payload, checksums, recovery data and filesystem overhead must all fit on
+-**one disc**. Creation checks the filesystem size after generating recovery and
+-checks the completed ISO again. A source-change check must also pass before the
+-image appears as `images/disc_0001.iso`.
++**one disc**. Creation checks the exact filesystem size with `mkisofs -print-size`
++after recovery generation and after preparing the final folder. Source-change
++checks must pass before `discs/manifest.json` marks the set ready for burning.
++With `--iso`, the completed ISO is checked again before publication.
+ 
+ Regular files and directories, including hidden entries and empty directories,
+ are supported. Links, special files, and names containing line breaks are
+ rejected. With recovery enabled, at least one file must be non-empty.
+ 
+ Keep the source and output/workdir trees separate: neither may contain the
+-other. Keep the source unchanged until creation finishes. No extra payload copy
+-is staged, but the final ISO contains the payload and needs its own storage.
++other. Keep the source unchanged until creation finishes. Folder output copies
++the payload once into `discs/disc_0001/<source-name>/`; it is independent of the
++original source. Checksums and recovery sit beside it. With `--iso`, the payload
++is written directly into the final image without an extra staging copy.
+ 
+ The source folder's name must not collide, ignoring case, with root metadata
+ names such as `README.txt`, `checksums.sha512`, `recovery.par2`, recovery-volume
+@@ -59,10 +62,10 @@ Open the source folder from the mounted disc, or copy it with your file manager.
+ This is a UDF + ISO9660/Rock Ridge data disc. Playback on standalone hardware
+ depends on that player's data-disc and codec support.
+ 
+-Verify the image or the mounted disc root:
++Verify the prepared folder or the mounted disc root:
+ 
+ ```bash
+-bd-archive verify /data/media-disc/images/disc_0001.iso
++bd-archive verify /data/media-disc/discs/disc_0001
+ bd-archive verify /mnt/disc
+ ```
+ 
+diff --git a/Restoring.md b/Restoring.md
+index b2d7a61..93bf2c4 100644
+--- a/Restoring.md
++++ b/Restoring.md
+@@ -5,11 +5,13 @@
+ 
+ Choose an empty output directory and plan room for **all collected slices plus
+ the restored data**. Slices accumulate until disc collection is complete.
++Input disc folders must be separate from both output and workdir; overlapping
++paths are rejected before creating output or staging files.
+ 
+-## Restore from images
++## Restore from disc folders or images
+ 
+ ```bash
+-# All images from one create run.
++# All prepared discs from one create run.
+ bd-archive extract -o /data/photos-restored -i /data/photos-gen1
+ 
+ # A full archive and its next generation.
+@@ -18,11 +20,15 @@ bd-archive extract -o /data/photos-restored \
+ ```
+ 
+ These are alternative examples; use a fresh target for an independent restore.
+-`-i` accepts one or more image files or directories. A directory expands to
+-sorted `disc_*.iso` files, falling back to its `images/` subdirectory. Duplicate
+-image paths are removed. Supply `-i` once followed by all desired paths.
+-
+-Each image is mounted through udisks2. There are no disc-change prompts, though
++`-i` / `--input` accepts individual DAR disc folders, ISO files, or create
++output directories. Sets expand to sorted `disc_NNNN/` folders under `discs/`,
++or `disc_*.iso` under `images/`. Both container directories can also be passed
++directly. Mixed folder/ISO sets in one directory are refused. Duplicate paths
++are removed. Supply `-i` once followed by all desired paths; `--iso` remains
++a compatible alias.
++
++Folders are read directly; only ISO files are mounted through udisks2. There
++are no disc-change prompts, though
+ a chain picker or incomplete-chain confirmation can still appear. `-i` and
+ `-D` are mutually exclusive. The command requires `dar` and `par2` even for
+ checksum-only archives, plus `udisksctl` for images.
+@@ -59,10 +65,10 @@ the raw mode's extra source-folder wrapper.
+ ## Damage and partial sets
+ 
+ Staged slices are checked with SHA-512. On failure, the tool asks for the affected
+-physical disc again, or remounts the ISO. It fetches that slice's PAR2 files and
++physical disc again, reopens the folder, or remounts the ISO. It fetches that slice's PAR2 files and
+ attempts repair locally. An intact PAR2 result can be accepted even if the
+ SHA-512 sidecar disagrees; an actual repair is checked again with SHA-512.
+-The read-only disc/image is not modified.
++The source disc, folder or image is not modified; repair operates on staging.
+ 
+ An invalid isolated catalog is discarded from staging. It can be collected
+ again from a disc that carries a copy; current sets put it on disc 1 only. The
+diff --git a/Storage-and-layout.md b/Storage-and-layout.md
+index c5e14b2..dbcc11f 100644
+--- a/Storage-and-layout.md
++++ b/Storage-and-layout.md
+@@ -8,20 +8,27 @@ output; `-w` selects working storage. By default, work lives under
+ 
+ | Operation | Persistent output | Temporary storage |
+ | --- | --- | --- |
+-| Raw creation | One ISO containing payload, recovery and metadata | Recovery files, checksums and metadata; no extra source-payload copy |
+-| DAR creation | All ISOs, plus isolated catalog and sidecars | All DAR slices and recovery files are created before ISO assembly starts |
+-| DAR restoration | Restored source contents and chain marker, plus a corruption report when needed | All collected slices and catalogs; PAR2 is fetched temporarily for damaged slices |
+-
+-During DAR ISO assembly, each slice and its recovery files are removed from
+-scratch after its ISO is built. If output and scratch share a filesystem, budget
+-roughly the complete archive plus recovery, **plus one image under construction**,
+-catalogs and a margin. If they are separate filesystems, each must accommodate
+-its own peak: the complete temporary archive on the work filesystem and the
+-complete final image set on the output filesystem.
+-
+-Packing adds the old archive contents to the combined image while the original
+-ISO remains stored. Account for both. Compression ratios are estimates, so
+-leave room for the actual result.
++| Raw folder creation | One independent copy of payload, recovery and metadata | Recovery and metadata before transfer; no extra payload staging copy |
++| DAR folder creation | All disc folders, burn manifest, isolated catalog and sidecars | All DAR slices and recovery are created before folder assembly |
++| Raw `--iso` | One ISO containing payload, recovery and metadata | Recovery files and metadata |
++| DAR `--iso` | All ISOs, catalog and sidecars | All slices/recovery plus one ISO under construction during assembly |
++| DAR restoration | Restored files and chain marker; corruption report if needed | All collected slices/catalogs; PAR2 fetched for damaged slices |
++
++Default DAR creation moves generated slices and recovery files into disc folders
++on the same filesystem. This preserves their existing data blocks: no second
++archive-sized write and no extra ISO under construction. Small catalogs and
++READMEs are copied. With a workdir on another filesystem, transfer needs a copy;
++the work filesystem must hold all temporary slices/recovery, and the output
++filesystem must hold the complete result. A RAM workdir still results in only
++one persistent payload write, provided it does not swap.
++
++For DAR `--iso` on one filesystem, budget the full archive plus recovery, one
++image under construction, catalogs and a margin. Each slice and its recovery
++are removed from scratch after its ISO is complete. For separate filesystems,
++allow the full scratch archive on one and the complete images on the other.
++
++Packing keeps the original folder/ISO and copies its contents into the new
++output. Account for both. Compression ratios are estimates.
+ 
+ During extraction, all slices remain in staging while files are restored. Space
+ must cover staged data plus the restored tree (including any larger intermediate
+@@ -30,7 +37,7 @@ insufficient for a multi-disc restore.
+ 
+ A tmpfs workdir reduces disk writes only if it has enough available capacity.
+ There is no automatic spillover to another directory when `-w` fills. tmpfs may
+-use swap; `-o` still determines where the final ISO/restored files are written.
++use swap; `-o` still determines where final disc folders, ISOs or restored files are written.
+ 
+ ## Workdir lifecycle
+ 
+@@ -55,7 +62,16 @@ DAR sizing subtracts a 1 MiB end margin, estimated catalog size and a 4 MiB
+ PAR2/miscellaneous allowance, then accounts for recovery percentage and rounds
+ slices down to whole MiB. That allowance is retained even with recovery disabled.
+ Raw automatic sizing uses `mkisofs -print-size` with recovery placeholders and
+-a 1 MiB margin. Both modes check the actual ISO size against the chosen capacity.
++a 1 MiB margin. Both modes check the final folder using `mkisofs -print-size`,
++which calculates the exact sector count with the same filesystem options used
++for burning. It reads directory/file metadata without writing the ISO payload.
++Optional ISO output is checked by its actual file size as well.
++
++During folder burning, mkisofs generates the filesystem directly into growisofs.
++`burn` recomputes size after the insertion prompt and checks file metadata for
++changes. This removes the intermediate ISO write; it does not protect against
++I/O errors or concurrent changes during the burn. Keep folders unchanged and
++retain post-burn verification.
+ 
+ Burning uses `spare=none` to avoid a new spare-area reservation on blank,
+ unformatted BD-R media. Detection does not walk format-capacity descriptors;
+@@ -64,28 +80,45 @@ the inserted disc independently, subject to the exceptions on [Burning](Burning)
+ 
+ ## Output on disk
+ 
+-Raw output:
++Default raw output:
+ 
+ ```text
+ media-disc/
+-└── images/
+-    └── disc_0001.iso
++└── discs/
++    ├── manifest.json
++    └── disc_0001/
++        ├── media/
++        ├── README.txt
++        ├── checksums.sha512
++        ├── recovery.par2
++        ├── recovery.vol....par2
++        └── .bd-archive-raw-v2
+ ```
+ 
+-DAR output (example with two discs):
++Default DAR output (two discs):
+ 
+ ```text
+ photos-gen1/
+-├── images/
+-│   ├── disc_0001.iso
+-│   └── disc_0002.iso
++├── discs/
++│   ├── manifest.json
++│   ├── disc_0001/Photos-gen1/...
++│   └── disc_0002/Photos-gen1/...
+ ├── Photos-gen1-catalog.0001.dar
+ └── Photos-gen1-catalog.0001.dar.sha512
+ ```
+ 
+-Keep numbered image filenames unchanged. `burn` uses the output's `images/`
+-folder and does not read a separate manifest connecting it to `create`.
+-Keep all catalog slices if more than one is present.
++`discs/manifest.json` is published after the complete set is ready. It records
++consecutive folder names, volume labels, publisher, Rock Ridge setting, computed
++image sizes and a relative-path metadata inventory. It stays **outside** the
++contents burned to disc. Preserve it and the complete folder set for `burn`.
++Move/copy the whole output together, retaining file permissions and mtimes.
++
++With `create --iso`, `images/disc_0001.iso`, `images/disc_0002.iso`, etc. replace
++the `discs/` tree; the catalogs stay beside `images/`. Existing ISO sets remain
++burnable without a manifest. Keep numbered names unchanged and keep every
++catalog slice and its checksum sidecar.
++
++Folder output and ISO output have the same on-disc contents.
+ 
+ ## Files on a raw disc
+ 
+@@ -132,6 +165,6 @@ A packed disc contains a folder for each archive/generation. Labels look like
+ ISO9660 limit, so the name portion may be shortened. DAR filenames keep the full
+ name and determine chain/generation identity during restoration.
+ 
+-Both modes create UDF + ISO9660 images; raw mode also enables Rock Ridge.
++Both modes use UDF + ISO9660 on disc; raw mode also enables Rock Ridge.
+ Legacy flat DAR layouts and filenames without `-gen<N>` remain readable; the
+ latter are interpreted as generation 1.
+diff --git a/Troubleshooting.md b/Troubleshooting.md
+index b0eff06..604a7df 100644
+--- a/Troubleshooting.md
++++ b/Troubleshooting.md
+@@ -31,16 +31,25 @@ limit. A DAR archive reduces those files to slices for recovery purposes.
+ ## Raw creation rejects a path or reports source changes
+ 
+ Use separate, non-overlapping source, output and workdir trees. Keep the source
+-unchanged while hashing, generating recovery and building the ISO. Unsupported
++unchanged while hashing, generating recovery and preparing the folder/ISO. Unsupported
+ links, special files and line-break filenames are rejected. Metadata-like names
+ are allowed inside the source folder, but the source folder's own name cannot
+ collide with the disc-root metadata. See [Raw data discs](Raw-data-discs).
+ 
+-## Output already contains disc images
++## Output already contains discs or images
+ 
+-Creation refuses an output whose `images/` contains `disc_*.iso`. Use a new output
+-directory so old and new sets cannot be mixed. Creation has no resume option;
+-a partially completed run is not automatically a burnable complete set.
++Creation refuses an output with a non-empty `discs/` or existing
++`images/disc_*.iso`. Use a fresh output so old and new sets cannot be mixed.
++Creation has no resume option. A folder set without a valid `discs/manifest.json`
++is incomplete and cannot be burned automatically.
++
++## Prepared disc folder changed
++
++Keep the complete output together, preserving file names, permissions and mtimes
++when copying it. `burn` rejects added, removed, resized or retimestamped files,
++as well as links and special entries. Recreate changed sets in a fresh output.
++These metadata checks do not detect every form of corruption; use `verify`
++for integrity checks. Keep prepared files unchanged throughout burning.
+ 
+ ## Disc is reported too large
+ 
+diff --git a/Verification.md b/Verification.md
+index 27af961..6f22bc6 100644
+--- a/Verification.md
++++ b/Verification.md
+@@ -7,15 +7,16 @@ payload. It supports raw and DAR layouts, including packed and legacy discs.
+ # Disc in the auto-detected drive.
+ bd-archive verify
+ 
+-# A specific drive, mounted disc root, or ISO image.
++# A specific drive, mounted/prepared disc root, or optional ISO image.
+ bd-archive verify /dev/sr0
+ bd-archive verify /mnt/disc
++bd-archive verify /data/photos-gen1/discs/disc_0001
+ bd-archive verify /data/photos-gen1/images/disc_0001.iso
+ ```
+ 
+ For a copied disc, pass the copied **disc root**, including hidden format markers
+ and metadata. For an ISO, pass the image file; a create output directory is not
+-expanded into its images by `verify`. That expansion belongs to `extract -i`.
++expanded into its disc folders or images by `verify`. That expansion belongs to `extract -i`.
+ 
+ ## How checks are selected
+ 
+@@ -67,9 +68,17 @@ failure also exit with **1**. Read the diagnostic output before treating code 1
+ as proof that repair is possible. Ctrl+C/EOF cancellation through the top-level
+ handler exits with 130; invalid CLI syntax uses argparse's exit code 2.
+ 
+-## Check all images
++## Check all prepared discs
+ 
+-This shell loop stops at the first non-OK result:
++For default folder output, this loop stops at the first non-OK result:
++
++```bash
++for disc in /data/photos-gen1/discs/disc_*/; do
++  bd-archive verify "$disc" || break
++done
++```
++
++For optional ISO output:
+ 
+ ```bash
+ for iso in /data/photos-gen1/images/disc_*.iso; do
