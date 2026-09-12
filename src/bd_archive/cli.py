@@ -13,6 +13,13 @@ from bd_archive.commands.verify import cmd_verify
 from bd_archive.ui.logger import Logger, log
 
 
+def _redundancy(value: str) -> int:
+    """Normalize the explicit disable option without changing mode defaults."""
+    if value.lower() == "none":
+        return 0
+    return int(value)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="bd-archive",
@@ -60,9 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "-r",
         "--redundancy",
-        type=int,
+        type=_redundancy,
         default=None,
-        help="PAR2 recovery data, 1-100%% (default: raw fills free space; dar: 5%%)",
+        metavar="0-100|none",
+        help="PAR2 recovery data, 0-100%%; 0 or none skips PAR2 "
+        "(default: raw fills free space; dar: 5%%)",
     )
     common.add_argument(
         "-D",
@@ -177,8 +186,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── verify ──────────────────────────────────────────────────────────
     sub.add_parser(
         "verify",
-        help="Check a disc, directory or ISO with PAR2",
+        help="Check a disc, directory or ISO with PAR2 or SHA-512",
         description="Check raw or DAR data without modifying it. "
+        "Uses SHA-512 checksums when PAR2 is absent. "
         "Exit codes: 0 = OK, 1 = repairable, 2 = broken.",
     ).add_argument(
         "target",

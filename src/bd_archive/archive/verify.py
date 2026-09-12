@@ -1,13 +1,17 @@
 from pathlib import Path
 
+from bd_archive.archive.checksums import verify_manifest
+from bd_archive.archive.dar_archive import parse_dar_filename
+from bd_archive.archive.raw import RAW_CHECKSUMS
 from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_PAR2_INDEX
+from bd_archive.shell.deps import check_deps
 from bd_archive.tools import par2
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
 from bd_archive.ui.logger import log
 
 
 def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> VerifyResult:
-    """par2-verify every archive under disc_path.
+    """Verify with PAR2 where available, otherwise with SHA-512 checksums.
 
     `quiet` suppresses the success chatter (step header, per-index info,
     OK lines) for callers that report the outcome themselves (post-burn
@@ -34,13 +38,43 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
         par2_indices = [index] if index.is_file() else []
     else:
         par2_indices = [p for p in sorted(disc_path.rglob("*.par2")) if is_par2_index(p)]
-    if not par2_indices:
+    manifests: dict[Path, tuple[Path, set[Path] | None]] = {}
+    if raw and not par2_indices:
+        payload = {
+            p for p in disc_path.rglob("*") if p.is_file() and not p.is_relative_to(raw_metadata)
+        }
+        manifests[raw_metadata / RAW_CHECKSUMS] = (disc_path, payload)
+    elif not raw:
+        # Check each unprotected slice, including mixed packed discs. A
+        # protected sibling must not hide an archive created with -r 0.
+        protected = {p.with_suffix("") for p in par2_indices}
+        protected_archives = {
+            (p.parent, parsed[:2])
+            for p in protected
+            if (parsed := parse_dar_filename(p.name)) is not None
+        }
+        candidates = set(disc_path.rglob("*.sha512"))
+        candidates.update(Path(str(p) + ".sha512") for p in disc_path.rglob("*.dar"))
+        for manifest in sorted(candidates):
+            target = manifest.with_suffix("")
+            parsed = parse_dar_filename(target.name)
+            if target in protected or (
+                parsed is not None
+                and parsed[2]
+                and (target.parent, parsed[:2]) in protected_archives
+            ):
+                continue
+            manifests[manifest] = (manifest.parent, {target} if parsed else None)
+
+    if not par2_indices and not manifests:
         # Nothing verifiable is not "verified OK" — a wrong disc, an
         # empty mount, or a botched burn must not pass.
-        log.error("No PAR2 files found — nothing could be verified")
+        log.error("No PAR2 files or SHA-512 checksums found — nothing could be verified")
         return VerifyResult.BROKEN
 
     worst = VerifyResult.OK
+    if par2_indices:
+        check_deps("par2")
     for par2_index in par2_indices:
         if not quiet:
             log.info(f"PAR2 check: {par2_index.relative_to(disc_path)}")
@@ -55,6 +89,18 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
         else:
             log.error("PAR2: damage detected — repair NOT possible")
             worst = VerifyResult.BROKEN
+
+    for manifest, (base_dir, expected_files) in manifests.items():
+        if not quiet:
+            log.info(f"SHA-512 check: {manifest.relative_to(disc_path)} (no PAR2 recovery)")
+        try:
+            verify_manifest(manifest, base_dir, expected_files=expected_files)
+        except (OSError, ValueError) as exc:
+            log.error(f"SHA-512 verification failed: {exc}")
+            worst = VerifyResult.BROKEN
+        else:
+            if not quiet:
+                log.ok("SHA-512: data intact")
 
     if worst == VerifyResult.OK:
         if not quiet:

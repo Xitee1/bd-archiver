@@ -173,7 +173,9 @@ def cmd_create(args):
         args.redundancy = 5
     if args.compression is None:
         args.compression = "zstd"
-    deps = ["dar", "par2", "mkisofs", "dvd+rw-mediainfo"]
+    deps = ["dar", "mkisofs", "dvd+rw-mediainfo"]
+    if args.redundancy != 0:
+        deps.append("par2")
     if args.pack_with is not None:
         # --pack-with loop-mounts the leftover ISO via udisksctl.
         deps.append("udisksctl")
@@ -183,11 +185,11 @@ def cmd_create(args):
         log.error(f"--min-last-disc-fill must be 0-100, got {args.min_last_disc_fill}")
         sys.exit(1)
 
-    # par2 needs at least 1%; values above 100% make no sense for FEC.
+    # Zero skips PAR2; positive values request recovery data.
     # Out-of-range values previously failed only hours in — a negative
     # one even made compute_slice_bytes size slices LARGER than the disc.
-    if not 1 <= args.redundancy <= 100:
-        log.error(f"--redundancy must be 1-100, got {args.redundancy}")
+    if not 0 <= args.redundancy <= 100:
+        log.error(f"--redundancy must be 0-100 or none, got {args.redundancy}")
         sys.exit(1)
 
     _validate_name(args.name)
@@ -474,6 +476,8 @@ def cmd_create(args):
     log.info(f"Disc capacity:    {human_bytes(raw_capacity)} (writable)")
     log.info(f"Slice size:       {human_bytes(slice_bytes)}")
     log.info(f"PAR2 redundancy:  {cfg.redundancy}% (~{human_bytes(par2_est)})")
+    if cfg.redundancy == 0:
+        log.info("PAR2 disabled; verification uses SHA-512 checksums.")
     log.info(f"Compression:      {cfg.comp_str} (ratio {ratio:.3f}, {ratio_source})")
     archive_kind = "delta vs base" if ref_catalog is not None else "full source"
     log.info(f"Estimated archive: {human_bytes(archive_est)} ({archive_kind})")
@@ -543,9 +547,11 @@ def cmd_create(args):
     # workdir path containing quotes, '$' or backticks. %N is always
     # digits and safe to pass inline.
     log.step("Creating dar archive")
-    os.environ["BD_ARCHIVE_SLICE_DIR"] = str(tmp_dir)
-    os.environ["BD_ARCHIVE_SLICE_BASENAME"] = cfg.dar_name
-    par2_hook = f"{shlex.quote(sys.executable)} -m bd_archive._par2_helper %N {cfg.redundancy}"
+    par2_hook = None
+    if cfg.redundancy:
+        os.environ["BD_ARCHIVE_SLICE_DIR"] = str(tmp_dir)
+        os.environ["BD_ARCHIVE_SLICE_BASENAME"] = cfg.dar_name
+        par2_hook = f"{shlex.quote(sys.executable)} -m bd_archive._par2_helper %N {cfg.redundancy}"
     dar_archive.create(
         source,
         slice_bytes,
@@ -592,8 +598,8 @@ def cmd_create(args):
         # par2 was already produced via the -E hook during dar create
         # (above). Verify the files are present — a missing file means
         # the helper silently failed on this slice.
-        par2_files = sorted(tmp_dir.glob(f"{slice_name}.*par2"))
-        if not par2_files:
+        par2_files = sorted(tmp_dir.glob(f"{slice_name}.*par2")) if cfg.redundancy else []
+        if cfg.redundancy and not par2_files:
             log.error(
                 f"par2 files missing for {slice_name} "
                 f"(_par2_helper likely failed during dar create)"
@@ -718,5 +724,5 @@ def cmd_create(args):
     print(f"  Compression:  {cfg.comp_str}")
     print(f"  Images:       {images_dir}")
     print(f"  Catalog:      {output_dir}/{cfg.dar_name}-catalog.*.dar")
-    print(f"\n  Next step:    bd-archive burn -i {output_dir}")
+    log.info(f"Next step: bd-archive burn -i {shlex.quote(str(output_dir))}")
     print(f"  Cleanup:      rm -rf {output_dir}\n")

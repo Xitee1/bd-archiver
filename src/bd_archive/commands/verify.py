@@ -11,7 +11,6 @@ from bd_archive.ui.logger import log
 
 
 def cmd_verify(args):
-    check_deps("par2")
     target = Path(resolve_device(None)) if args.target is None else Path(args.target)
 
     if target.is_file() and target.suffix.lower() == ".iso":

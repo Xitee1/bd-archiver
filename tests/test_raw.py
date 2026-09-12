@@ -80,7 +80,7 @@ class RawValidationTests(unittest.TestCase):
             ["--sample", "."],
             ["--ratio", "1"],
             ["--min-last-disc-fill", "50"],
-            ["-r", "0"],
+            ["-r", "-1"],
             ["-r", "101"],
             ["-b", "0"],
         ):
