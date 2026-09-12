@@ -44,7 +44,9 @@ PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
 # overwrite — is refused.
 EXTRACT_MARKER_NAME = ".bd-archive-extract"
 
-# Raw-disc v1 metadata. Payload paths remain relative to the disc root.
+# Legacy raw-disc v1: payload at the root, metadata in a subdirectory.
 RAW_METADATA_DIR = ".bd-archive"
 RAW_MARKER = "raw-v1"
+# Raw-disc v2: the source folder and metadata are siblings at the root.
+RAW_ROOT_MARKER = ".bd-archive-raw-v2"
 RAW_PAR2_INDEX = "recovery.par2"

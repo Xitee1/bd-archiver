@@ -16,7 +16,7 @@ from bd_archive.archive.raw import raw_par2_sizing, scan_raw_source, write_raw_c
 from bd_archive.cli import build_parser
 from bd_archive.commands.burn import _burn_one_disc
 from bd_archive.commands.create import cmd_create
-from bd_archive.constants import DISC_END_MARGIN, MiB
+from bd_archive.constants import DISC_END_MARGIN, RAW_ROOT_MARKER, MiB
 
 
 class RawValidationTests(unittest.TestCase):
@@ -111,7 +111,6 @@ class RawValidationTests(unittest.TestCase):
             ("link", "link"),
             ("fifo", "fifo"),
             ("a\nb", "file"),
-            (".bd-archive", "dir"),
         ):
             entry = self.source / name
             if kind == "link":
@@ -135,6 +134,54 @@ class RawValidationTests(unittest.TestCase):
             cmd_create(args)
         self.assertEqual(args.redundancy, 5)
         self.assertEqual(args.compression, "zstd")
+
+    def test_source_folder_cannot_collide_with_root_metadata(self):
+        for name in (
+            "README.txt",
+            "CHECKSUMS.SHA512",
+            "recovery.par2",
+            "recovery.vol000+001.par2",
+            RAW_ROOT_MARKER,
+            "line\nbreak",
+            "line\rbreak",
+        ):
+            source = self.root / name
+            source.mkdir()
+            with (
+                self.subTest(name=name),
+                patch("bd_archive.commands.create_raw.check_deps") as deps,
+                contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                cmd_create(self.args("-s", str(source)))
+            deps.assert_not_called()
+
+    def test_metadata_names_inside_source_are_ordinary_payload(self):
+        (self.source / ".bd-archive").mkdir()
+        (self.source / ".bd-archive/raw-v1").touch()
+        for name in ("README.txt", "checksums.sha512", "recovery.par2", RAW_ROOT_MARKER):
+            (self.source / name).touch()
+        entries = {entry.path for entry in scan_raw_source(self.source)}
+        self.assertIn(".bd-archive/raw-v1", entries)
+        self.assertIn("recovery.par2", entries)
+
+    def test_manifest_prefix_preserves_source_folder_and_backslashes(self):
+        from bd_archive.archive.checksums import verify_manifest
+
+        source = self.root / "source = [Grüße] \\ media"
+        self.source.rename(source)
+        manifest = self.root / "checksums.sha512"
+        inventory = scan_raw_source(source)
+        write_raw_checksums(source, inventory, manifest, placeholder=True, path_prefix=source.name)
+        size = manifest.stat().st_size
+        write_raw_checksums(source, inventory, manifest, path_prefix=source.name)
+        self.assertEqual(size, manifest.stat().st_size)
+        verify_manifest(manifest, self.root, expected_files={source / "video.mkv"})
+        if shutil.which("sha512sum"):
+            result = subprocess.run(
+                ["sha512sum", "-c", str(manifest)], cwd=self.root, capture_output=True
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_manifest_covers_empty_hidden_unicode_and_escaped_names(self):
         for name in ("empty", ".hidden", "Grüße = [2024]", "back\\slash", "-dash"):
@@ -256,7 +303,7 @@ class RawIntegrationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="bd-raw-test-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.source = self.root / "source = [media]"
+        self.source = self.root / "BD_2026-09-12_153152_223667437 = [Grüße]"
         self.source.mkdir()
         (self.source / "Urlaub [2024]").mkdir()
         self.movie = Path("Urlaub [2024]/Grüße = Film.mkv")
@@ -265,6 +312,12 @@ class RawIntegrationTests(unittest.TestCase):
         (self.source / "user.par2").write_bytes(b"ordinary file, not a recovery index")
         (self.source / "empty").touch()
         (self.source / "empty directory").mkdir()
+        (self.source / ".bd-archive").mkdir()
+        (self.source / ".bd-archive/raw-v1").write_bytes(b"ordinary user data")
+        (self.source / "README.txt").write_text("User's original README")
+        (self.source / "checksums.sha512").write_text("User's own manifest")
+        (self.source / "recovery.par2").write_bytes(b"ordinary payload")
+        (self.root / "unrelated-sibling").write_bytes(b"must not be archived")
         self.output = self.root / "output = [disc]"
         # Prove that raw creation/verification require neither dar nor a
         # drive utility when capacity is supplied. Use real external tools.
@@ -317,8 +370,24 @@ class RawIntegrationTests(unittest.TestCase):
             ],
             check=True,
         )
+        self.assertEqual(
+            {p.name for p in restored.iterdir()},
+            {
+                self.source.name,
+                "README.txt",
+                "checksums.sha512",
+                RAW_ROOT_MARKER,
+                "recovery.par2",
+                *[p.name for p in restored.glob("recovery.vol*.par2")],
+            },
+        )
+        self.assertFalse((restored / ".bd-archive").exists())
+        readme = (restored / "README.txt").read_text()
+        self.assertIn(f"{self.source.name}/", readme)
+        self.assertIn("par2 repair -B. recovery.par2", readme)
+        self.assertIn("sha512sum -c checksums.sha512", readme)
         for original in self.source.rglob("*"):
-            target = restored / original.relative_to(self.source)
+            target = restored / self.source.name / original.relative_to(self.source)
             if original.is_dir():
                 self.assertTrue(target.is_dir())
             else:
@@ -328,12 +397,12 @@ class RawIntegrationTests(unittest.TestCase):
         for target in restored.rglob("*"):
             target.chmod(0o755 if target.is_dir() else 0o644)
         self.cli("verify", restored)
-        with (restored / self.movie).open("r+b") as damaged:
+        with (restored / self.source.name / self.movie).open("r+b") as damaged:
             damaged.write(b"!" * 64)
-        (restored / ".hidden").unlink()
+        (restored / self.source.name / ".hidden").unlink()
         self.cli("verify", restored, expected=1)
         repair = subprocess.run(
-            [shutil.which("par2"), "repair", "-B.", ".bd-archive/recovery.par2"],
+            [shutil.which("par2"), "repair", "-B.", "recovery.par2"],
             cwd=restored,
             env=self.env,
             capture_output=True,
@@ -341,18 +410,20 @@ class RawIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(repair.returncode, 0, repair.stdout + repair.stderr)
         self.assertEqual(
-            (restored / self.movie).read_bytes(), (self.source / self.movie).read_bytes()
+            (restored / self.source.name / self.movie).read_bytes(),
+            (self.source / self.movie).read_bytes(),
         )
         self.assertEqual(
-            (restored / ".hidden").read_bytes(), (self.source / ".hidden").read_bytes()
+            (restored / self.source.name / ".hidden").read_bytes(),
+            (self.source / ".hidden").read_bytes(),
         )
         self.cli("verify", restored)
         # Remove repair backups, otherwise par2 can recover from those.
         for backup in restored.rglob("*.1"):
             backup.unlink()
-        (restored / self.movie).unlink()
+        (restored / self.source.name / self.movie).unlink()
         self.cli("verify", restored, expected=2)
-        (restored / ".bd-archive/recovery.par2").unlink()
+        (restored / "recovery.par2").unlink()
         self.cli("verify", restored, expected=2)
 
     def test_auto_fills_nearly_full_disc_with_less_than_one_percent(self):
@@ -394,7 +465,7 @@ class RawIntegrationTests(unittest.TestCase):
         self.cli("verify", restored)
         if shutil.which("sha512sum"):
             hashes = subprocess.run(
-                ["sha512sum", "-c", ".bd-archive/checksums.sha512"],
+                ["sha512sum", "-c", "checksums.sha512"],
                 cwd=restored,
                 capture_output=True,
             )
@@ -415,14 +486,18 @@ class RawIntegrationTests(unittest.TestCase):
         from bd_archive.tools import par2
 
         inventory = scan_raw_source(self.source)
-        sizing = raw_par2_sizing(inventory, 10_000_000, 9_000_000)
+        sizing = raw_par2_sizing(inventory, 10_000_000, 9_000_000, path_prefix=self.source.name)
         for count in (1, 2, 3, 16, 255):
             directory = self.root / f"par2-{count}"
             directory.mkdir()
             index = directory / "recovery.par2"
             with patch.dict(os.environ, self.env), contextlib.redirect_stdout(io.StringIO()):
                 par2.create_tree(
-                    self.source, index, block_size=sizing.block_size, recovery_blocks=count
+                    self.source,
+                    index,
+                    block_size=sizing.block_size,
+                    recovery_blocks=count,
+                    base_dir=self.source.parent,
                 )
             volume = next(directory.glob("recovery.vol*.par2"))
             for actual, bound in zip(

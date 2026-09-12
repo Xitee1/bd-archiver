@@ -149,21 +149,21 @@ class NoRedundancyIntegrationTests(unittest.TestCase):
                 self.assertNotIn("--no-verify", messages)
                 restored = self.unpack(output)
                 self.verify(restored)
-                self.assert_payload(restored)
-                self.check_hashes(restored / ".bd-archive/checksums.sha512", restored)
-                readme = (restored / ".bd-archive/README.txt").read_text()
+                self.assert_payload(restored / self.source.name)
+                self.check_hashes(restored / "checksums.sha512", restored)
+                readme = (restored / "README.txt").read_text()
                 self.assertIn("PAR2 is disabled", readme)
                 self.assertNotIn("par2 repair", readme)
-                (restored / "payload").chmod(0o600)
-                (restored / "payload").write_bytes(b"damaged")
+                (restored / self.source.name / "payload").chmod(0o600)
+                (restored / self.source.name / "payload").write_bytes(b"damaged")
                 self.verify(restored, expected=2)
 
     def test_raw_empty_files_need_no_recovery_blocks(self):
         (self.source / "payload").write_bytes(b"")
         output, _ = self.create("raw", "0")
         restored = self.unpack(output)
-        self.assert_payload(restored)
-        self.check_hashes(restored / ".bd-archive/checksums.sha512", restored)
+        self.assert_payload(restored / self.source.name)
+        self.check_hashes(restored / "checksums.sha512", restored)
 
     def test_raw_capacity_limit_still_applies(self):
         output, _ = self.create("raw", "none", capacity=1000, expected=1)

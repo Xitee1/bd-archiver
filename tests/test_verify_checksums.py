@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from bd_archive.archive.raw import scan_raw_source, write_raw_checksums
 from bd_archive.archive.verify import verify_disc
 from bd_archive.commands.burn import _burn_one_disc
-from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR
+from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_ROOT_MARKER
 from bd_archive.tools.par2 import VerifyResult
 
 
@@ -66,6 +66,57 @@ class ChecksumVerificationTests(unittest.TestCase):
         self.verify(VerifyResult.BROKEN)
         manifest.unlink()
         self.verify(VerifyResult.BROKEN)
+
+    def raw_v2(self):
+        # A source named .bd-archive containing raw-v1 must not be mistaken
+        # for the legacy metadata directory when a v2 marker is present.
+        source = self.disc / RAW_METADATA_DIR
+        source.mkdir()
+        for name in (RAW_MARKER, "README.txt", "checksums.sha512", "recovery.par2", "empty"):
+            (source / name).write_bytes(b"" if name == "empty" else name.encode())
+        inventory = scan_raw_source(source)
+        (self.disc / RAW_ROOT_MARKER).write_text("bd-archive raw disc format 2\n")
+        (self.disc / "README.txt").write_text("Instructions")
+        manifest = self.disc / "checksums.sha512"
+        write_raw_checksums(source, inventory, manifest, path_prefix=source.name)
+        return source, manifest
+
+    def test_v2_checksums_cover_payload_but_not_root_metadata(self):
+        source, manifest = self.raw_v2()
+        with patch("bd_archive.archive.verify.check_deps") as deps:
+            self.verify(VerifyResult.OK)
+        deps.assert_not_called()
+        # Missing recovery index may leave volumes; they are metadata.
+        (self.disc / "recovery.vol000+001.par2").touch()
+        self.verify(VerifyResult.OK)
+        original = manifest.read_text()
+        manifest.write_text("".join(original.splitlines(keepends=True)[:-1]))
+        self.verify(VerifyResult.BROKEN)
+        manifest.write_text(original)
+        (source / "empty").unlink()
+        self.verify(VerifyResult.BROKEN)
+        manifest.unlink()
+        self.verify(VerifyResult.BROKEN)
+
+    def test_both_raw_layouts_verify_only_the_disc_recovery_index(self):
+        for v2 in (False, True):
+            with self.subTest(v2=v2), tempfile.TemporaryDirectory(dir=self.root) as tmp:
+                self.disc = Path(tmp)
+                if v2:
+                    self.raw_v2()
+                    index = self.disc / "recovery.par2"
+                else:
+                    self.raw()
+                    index = self.disc / RAW_METADATA_DIR / "recovery.par2"
+                index.touch()
+                with (
+                    patch("bd_archive.archive.verify.check_deps"),
+                    patch(
+                        "bd_archive.archive.verify.par2.verify", return_value=VerifyResult.OK
+                    ) as verify,
+                ):
+                    self.verify(VerifyResult.OK)
+                verify.assert_called_once_with(index, base_dir=self.disc)
 
     def test_missing_checksums_or_payload_fail(self):
         self.verify(VerifyResult.BROKEN)

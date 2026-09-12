@@ -30,8 +30,9 @@ def create_tree(
     *,
     block_size: int | None = None,
     recovery_blocks: int | None = None,
+    base_dir: Path | None = None,
 ):
-    """Protect a tree, recording filenames relative to source.
+    """Protect only source, recording filenames relative to base_dir (default: source).
 
     Pass the wildcard literally: par2's own recursive expansion includes
     dotfiles and avoids the OS argument-size limit for large file trees.
@@ -49,7 +50,7 @@ def create_tree(
         [
             "par2",
             "create",
-            f"-B{source}",
+            f"-B{base_dir if base_dir is not None else source}",
             *sizing,
             "-n1",
             "-R",
