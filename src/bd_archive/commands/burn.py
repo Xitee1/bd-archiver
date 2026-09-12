@@ -48,7 +48,7 @@ def cmd_burn(args):
     # sized for — the oversize fit check compares against it, so a
     # half-full last disc doesn't get refused on the same media as the
     # (full) discs before it. A single image may be intentionally partial
-    # (especially with --raw), so its size cannot identify a media class.
+    # (especially in raw mode), so its size cannot identify a media class.
     max_iso_bytes = max(iso.stat().st_size for iso in isos)
 
     log.step("Burn disc images")

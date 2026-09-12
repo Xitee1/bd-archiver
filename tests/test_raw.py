@@ -32,7 +32,6 @@ class RawValidationTests(unittest.TestCase):
         return build_parser().parse_args(
             [
                 "create",
-                "--raw",
                 "-s",
                 str(self.source),
                 "-n",
@@ -45,6 +44,32 @@ class RawValidationTests(unittest.TestCase):
                 *options,
             ]
         )
+
+    def test_default_and_explicit_raw_modes_dispatch_without_dar(self):
+        for options in ([], ["-m", "raw"], ["--mode", "raw"]):
+            args = self.args(*options)
+            with (
+                self.subTest(options=options),
+                patch("bd_archive.commands.create.cmd_create_raw") as raw,
+                patch("bd_archive.commands.create.check_deps") as deps,
+            ):
+                cmd_create(args)
+            self.assertEqual(args.mode, "raw")
+            self.assertIsNone(args.redundancy)
+            self.assertIsNone(args.compression)
+            raw.assert_called_once_with(args)
+            deps.assert_not_called()
+
+    def test_mode_choices(self):
+        self.assertEqual(self.args("--mode", "dar").mode, "dar")
+        for options in (["-m", "invalid"], ["--raw"]):
+            with (
+                self.subTest(options=options),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as exc,
+            ):
+                self.args(*options)
+            self.assertEqual(exc.exception.code, 2)
 
     def test_rejects_incompatible_options_before_tools(self):
         for options in (
@@ -102,14 +127,14 @@ class RawValidationTests(unittest.TestCase):
             entry.rmdir() if kind == "dir" else entry.unlink()
 
     def test_dar_keeps_five_percent_default(self):
-        args = self.args()
-        args.raw = False
+        args = self.args("-m", "dar")
         with (
             patch("bd_archive.commands.create.check_deps", side_effect=RuntimeError("stop")),
             self.assertRaises(RuntimeError),
         ):
             cmd_create(args)
         self.assertEqual(args.redundancy, 5)
+        self.assertEqual(args.compression, "zstd")
 
     def test_manifest_covers_empty_hidden_unicode_and_escaped_names(self):
         for name in ("empty", ".hidden", "Grüße = [2024]", "back\\slash", "-dash"):
@@ -145,6 +170,61 @@ class RawValidationTests(unittest.TestCase):
         recovery.assert_not_called()
         self.assertFalse(list((self.root / "output").rglob("disc_*.iso")))
         self.assertFalse((self.root / "output/.bd-archive-work").exists())
+
+    def test_capacity_failures_suggest_dar_and_do_not_publish(self):
+        def recovery(source, index, *args, **kwargs):
+            index.write_bytes(b"index")
+            index.with_name("recovery.vol000+001.par2").write_bytes(b"recovery")
+
+        def build(pending, *args, **kwargs):
+            with pending.open("wb") as iso:
+                iso.truncate(10_000_001)
+
+        for stage, sizes, options in (
+            ("payload", [10_000_001], []),
+            ("auto recovery", [100] + [10_000_001] * 16, []),
+            ("exact size", [100, 100, 10_000_001], ["-r", "10"]),
+            ("built image", [100, 100, 100], ["-r", "10"]),
+        ):
+            output = self.root / stage
+            messages = io.StringIO()
+            with (
+                self.subTest(stage=stage),
+                patch("bd_archive.commands.create_raw.check_deps"),
+                patch("bd_archive.commands.create_raw.mkisofs.estimate_size", side_effect=sizes),
+                patch("bd_archive.commands.create_raw.par2.create_tree", side_effect=recovery),
+                patch("bd_archive.commands.create_raw.mkisofs.build", side_effect=build),
+                contextlib.redirect_stdout(messages),
+                contextlib.redirect_stderr(messages),
+                self.assertRaises(SystemExit) as exc,
+            ):
+                cmd_create(self.args("-o", str(output), *options))
+            self.assertEqual(exc.exception.code, 1)
+            self.assertIn("-m dar", messages.getvalue())
+            self.assertIn("multiple discs", messages.getvalue())
+            self.assertFalse(list(output.rglob("disc_*.iso")))
+
+    def test_oversized_preview_suggests_dar_before_confirmation(self):
+        args = self.args("-r", "10")
+        args.yes = False
+        messages = io.StringIO()
+
+        def decline(prompt):
+            self.assertIn("-m dar", messages.getvalue())
+            return False
+
+        with (
+            patch("bd_archive.commands.create_raw.check_deps"),
+            patch(
+                "bd_archive.commands.create_raw.mkisofs.estimate_size", side_effect=[100, 9_000_000]
+            ),
+            patch("bd_archive.commands.create_raw.prompt_yn", side_effect=decline) as prompt,
+            patch("bd_archive.commands.create_raw.par2.create_tree") as recovery,
+            contextlib.redirect_stdout(messages),
+        ):
+            cmd_create(args)
+        prompt.assert_called_once()
+        recovery.assert_not_called()
 
     def test_single_disc_allows_unused_space_but_never_overflow(self):
         iso = self.root / "disc_0001.iso"
@@ -207,7 +287,6 @@ class RawIntegrationTests(unittest.TestCase):
     def create(self, *options, expected=0, auto=False):
         return self.cli(
             "create",
-            "--raw",
             "-s",
             self.source,
             "-n",
@@ -321,7 +400,8 @@ class RawIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(hashes.returncode, 0, hashes.stdout + hashes.stderr)
         self.output = self.root / "too-full-for-recovery"
-        self.create("-b", str(capacity - MiB // 2), auto=True, expected=1)
+        result = self.create("-b", str(capacity - MiB // 2), auto=True, expected=1)
+        self.assertIn("-m dar", result.stdout + result.stderr)
         self.assertFalse(list(self.output.rglob("disc_*.iso")))
 
     def test_auto_uses_space_above_five_percent(self):
@@ -357,11 +437,13 @@ class RawIntegrationTests(unittest.TestCase):
         self.output = self.root / "too-small-with-par2"
         result = self.create("-b", str(size - 2048), expected=1)
         self.assertIn("exceeds disc capacity", result.stdout + result.stderr)
+        self.assertIn("-m dar", result.stdout + result.stderr)
         self.assertFalse(list(self.output.rglob("disc_*.iso")))
         self.assertFalse((self.output / ".bd-archive-work").exists())
         self.output = self.root / "too-small-for-source"
         result = self.create("-b", "2048", expected=1)
         self.assertIn("even without PAR2", result.stdout + result.stderr)
+        self.assertIn("-m dar", result.stdout + result.stderr)
         self.assertFalse(self.output.exists())
 
     def test_source_changes_prevent_publication(self):
@@ -376,7 +458,6 @@ class RawIntegrationTests(unittest.TestCase):
         args = build_parser().parse_args(
             [
                 "create",
-                "--raw",
                 "-s",
                 str(self.source),
                 "-n",
