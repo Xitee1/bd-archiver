@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Required: keep the wiki current with code changes
+
+- Every code change must include a review of the affected documentation in the
+  GitHub Wiki checkout at `../bd-archiver.wiki`. Update it in the same task whenever
+  behavior, CLI options/defaults, dependencies, installation, Docker, workflows,
+  archive formats or documented limitations change. Documentation is part of
+  completing the implementation, not a follow-up task.
+- Check explanations and command examples against the final code, and keep wiki
+  links and navigation valid. If a change has no documentation impact, no cosmetic
+  wiki edit is required; state that the documentation was reviewed.
+- Keep `README.md` concise and update its essentials and wiki links when affected.
+  Detailed usage documentation belongs in the wiki.
+- The wiki is a separate Git repository. Include its changes in the delivery and
+  report whether they have been published. If the checkout or remote is unavailable,
+  report the blocker rather than silently leaving the documentation stale.
+
 ## Project
 
 Python package (`bd_archive`, Python 3.11+ — uses `match`, `int | None`, etc.) that archives a directory tree onto one or more Blu-ray discs using `dar` (slicing/compression) and `par2` (forward error correction), or onto one directly readable data disc (the default, `create -m raw`). Use `create -m dar` for DAR archives across multiple discs. Built with `hatchling`; recommended user install via `uv tool install --editable .`, exposes the globally available `bd-archive` console script in an isolated tool environment. Tests: `.venv/bin/python -m unittest discover -s tests` (external-tool integration tests skip when tools are absent).
