@@ -23,10 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── create ──────────────────────────────────────────────────────────
     cr = sub.add_parser("create", help="Prepare archive + staging (no burning)")
-    cr.add_argument("-s", "--source", required=True, help="Source directory")
-    cr.add_argument("-n", "--name", required=True, help="Archive name")
-    cr.add_argument("-o", "--output", required=True, help="Output directory for ISO images")
-    cr.add_argument(
+    common = cr.add_argument_group("Common options (raw and dar)")
+    common.add_argument("-s", "--source", required=True, help="Source directory")
+    common.add_argument("-n", "--name", required=True, help="Archive name")
+    common.add_argument("-o", "--output", required=True, help="Output directory for ISO images")
+    common.add_argument(
         "-m",
         "--mode",
         choices=["raw", "dar"],
@@ -34,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Creation mode (default: raw). raw: directly readable files + PAR2 on one disc; "
         "dar: archive with compression, incrementals and splitting across multiple discs.",
     )
-    cr.add_argument(
+    common.add_argument(
         "-w",
         "--workdir",
         default=None,
@@ -42,35 +43,45 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: <output>/.bd-archive-work/; specify a "
         "tmpfs path here to keep scratch off disk)",
     )
-    cr.add_argument(
+    common.add_argument(
         "-r",
         "--redundancy",
         type=int,
         default=None,
         help="PAR2 redundancy in %% (default: raw fills remaining disc capacity; dar uses 5%%)",
     )
-    cr.add_argument(
+    common.add_argument(
         "-D",
         "--device",
         default=None,
         help="Optical drive for capacity detection (auto-detected if omitted)",
     )
-    cr.add_argument(
+    common.add_argument(
         "-b",
         "--bytes",
         type=int,
         default=None,
         help="Manual disc capacity in raw bytes (overrides detection)",
     )
-    cr.add_argument(
+    common.add_argument(
+        "-y", "--yes", action="store_true", help="Skip the pre-archive confirmation prompt"
+    )
+
+    dar_options = cr.add_argument_group(
+        "DAR archive options (-m dar)",
+        "Compression, incrementals, packing and disc-count planning require -m dar. "
+        "Raw mode creates one directly readable disc without these features.",
+    )
+    dar_options.add_argument(
         "-c",
         "--compression",
         default=None,
         choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
-        help="Compression algorithm (default: none in raw mode; zstd in dar mode)",
+        help="Compression algorithm (default: zstd). "
+        "Raw mode always uses no compression; -c none is accepted there",
     )
-    cr.add_argument("-l", "--level", help="Compression level")
-    cr.add_argument(
+    dar_options.add_argument("-l", "--level", help="Compression level")
+    dar_options.add_argument(
         "--base",
         default=None,
         help="Path to the isolated catalog of a previous generation "
@@ -79,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         "only files new or changed since that catalog. Archive name "
         "(-n) must match the predecessor — chain identity is the name.",
     )
-    cr.add_argument(
+    dar_options.add_argument(
         "--pack-with",
         default=None,
         metavar="ISO",
@@ -90,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
         "superseded by the combined images/disc_0001.iso and must not "
         "be burned separately afterwards.",
     )
-    cr.add_argument(
+    dar_options.add_argument(
         "--min-last-disc-fill",
         type=int,
         default=0,
@@ -101,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         "defers any files — and they will NOT be archived until a future "
         "incremental run picks them up. Default 0 = no deferral.",
     )
-    ratio_group = cr.add_mutually_exclusive_group()
+    ratio_group = dar_options.add_mutually_exclusive_group()
     ratio_group.add_argument(
         "--ratio",
         type=float,
@@ -117,9 +128,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run dar on this directory with -c/-l "
         "and use the measured output/input ratio "
         "for the disc-count preview",
-    )
-    cr.add_argument(
-        "-y", "--yes", action="store_true", help="Skip the pre-archive confirmation prompt"
     )
 
     # ── burn ────────────────────────────────────────────────────────────

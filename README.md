@@ -13,6 +13,16 @@ Four subcommands form a build-then-burn pipeline:
 Existing DAR creation commands now need `-m dar`, including commands using
 compression, incrementals or packing.
 
+`bd-archive create --help` separates the options by mode:
+
+- **Common options (raw and dar):** source, name, output, mode, workdir,
+  redundancy, device, capacity and confirmation. PAR2 defaults to filling the
+  remaining space in raw mode and to 5% in DAR mode.
+- **DAR archive options (`-m dar`):** `--compression`, `--level`, `--base`,
+  `--pack-with`, `--min-last-disc-fill`, `--ratio` and `--sample`. Raw mode
+  rejects these features; `-c none` and `--min-last-disc-fill 0` are accepted
+  as explicit no-ops.
+
 Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
 
 ### Chain identity = archive name
