@@ -16,82 +16,114 @@ from bd_archive.ui.logger import Logger, log
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="bd-archive",
-        description="Archive files to Blu-ray with PAR2 recovery",
+        description="Build, burn and verify Blu-ray archives with PAR2 recovery. "
+        "Use raw for directly readable files or dar for multi-disc archives.",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True, help="Available commands")
 
     # ── create ──────────────────────────────────────────────────────────
-    cr = sub.add_parser("create", help="Build disc images", add_help=False)
+    cr = sub.add_parser(
+        "create",
+        help="Build disc images without burning",
+        description="Scan a source directory, preview its size and build ISO images for burn.",
+        add_help=False,
+    )
     common = cr.add_argument_group("General Options")
     common.add_argument("-h", "--help", action="help", help="Show help")
-    common.add_argument("-s", "--source", required=True, help="Source directory")
-    common.add_argument("-n", "--name", required=True, help="Archive name")
-    common.add_argument("-o", "--output", required=True, help="ISO output directory")
+    common.add_argument(
+        "-s", "--source", required=True, help="Source directory, including subfolders"
+    )
+    common.add_argument(
+        "-n",
+        "--name",
+        required=True,
+        help="Archive name: up to 27 characters, using A-Z, a-z, 0-9, ._+-",
+    )
+    common.add_argument(
+        "-o", "--output", required=True, help="Output directory; ISOs are saved under images/"
+    )
     common.add_argument(
         "-m",
         "--mode",
         choices=["raw", "dar"],
         default="raw",
-        help="Mode (default: raw)",
+        help="Archive format (default: raw; see mode sections below)",
     )
     common.add_argument(
         "-w",
         "--workdir",
         default=None,
-        help="Scratch directory (default: <output>/.bd-archive-work/)",
+        help="Temporary build files (default: <output>/.bd-archive-work/). "
+        "Use a tmpfs path for RAM storage.",
     )
     common.add_argument(
         "-r",
         "--redundancy",
         type=int,
         default=None,
-        help="PAR2 %% (default: raw fills free space; dar: 5%%)",
+        help="PAR2 recovery data, 1-100%% (default: raw fills free space; dar: 5%%)",
     )
     common.add_argument(
         "-D",
         "--device",
         default=None,
-        help="Optical drive (default: auto-detect)",
+        help="Drive for capacity detection, e.g. /dev/sr0 (default: auto-detect)",
     )
     common.add_argument(
         "-b",
         "--bytes",
         type=int,
         default=None,
-        help="Disc capacity in bytes (default: auto-detect)",
+        help="Override disc capacity in bytes; allows building without a drive",
     )
-    common.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    common.add_argument(
+        "-y", "--yes", action="store_true", help="Start after the preview without asking"
+    )
 
-    cr.add_argument_group("Mode: raw", "Readable files on one disc. No extra options.")
+    cr.add_argument_group(
+        "Mode: raw",
+        "Original files and PAR2 on one disc, without compression. No extra options; "
+        "use -m dar if the data does not fit.",
+    )
     dar_options = cr.add_argument_group(
-        "Mode: dar", "Archives across multiple discs. Requires -m dar."
+        "Mode: dar",
+        "Compressed archives across one or more discs, restored with extract. "
+        "The following options require -m dar.",
     )
     dar_options.add_argument(
         "-c",
         "--compression",
         default=None,
         choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
-        help="Compression (default: zstd; none disables it)",
+        help="Compression algorithm (default: zstd). Use none for uncompressed archives.",
     )
-    dar_options.add_argument("-l", "--level", help="Compression level")
+    dar_options.add_argument(
+        "-l",
+        "--level",
+        help="Integer level: zstd 1-22, other algorithms 1-9 (DAR default: 9). "
+        "Higher levels favor size over speed; e.g. -c zstd -l 3. Ignored with -c none.",
+    )
     dar_options.add_argument(
         "--base",
         default=None,
-        help="Previous catalog for an incremental archive; keep the same -n",
+        help="Previous *-catalog.0001.dar for an incremental backup of new/changed files. "
+        "Keep the same archive name (-n).",
     )
     dar_options.add_argument(
         "--pack-with",
         default=None,
         metavar="ISO",
-        help="Merge an unburned ISO into disc 1; do not burn the old ISO afterwards",
+        help="Pack a previous unburned ISO into disc 1. The combined image replaces it; "
+        "do not burn the old ISO afterwards.",
     )
     dar_options.add_argument(
         "--min-last-disc-fill",
         type=int,
         default=0,
         metavar="PERCENT",
-        help="Defer newest files to reach this fill (0-100; default: 0/off). "
+        help="Minimum last-disc fill, 0-100%% (default: 0/off). "
+        "Defer newest files; with --base, only files absent from that catalog. "
         "Deferred files need a later archive.",
     )
     ratio_group = dar_options.add_mutually_exclusive_group()
@@ -99,56 +131,83 @@ def build_parser() -> argparse.ArgumentParser:
         "--ratio",
         type=float,
         default=None,
-        help="Preview output/input ratio (default: 1.0; 0.5 = half size)",
+        help="Estimated output/input ratio for the disc-count preview only "
+        "(default: 1.0; 0.5 = half size). Alternative to --sample.",
     )
     ratio_group.add_argument(
         "--sample",
         default=None,
-        help="Measure preview ratio from this directory using -c/-l",
+        help="Compress this sample directory using -c/-l to estimate disc count. "
+        "Alternative to --ratio.",
     )
 
     # ── burn ────────────────────────────────────────────────────────────
-    bu = sub.add_parser("burn", help="Burn disc images (resumable)")
+    bu = sub.add_parser(
+        "burn",
+        help="Burn and verify disc images (resumable)",
+        description="Burn images from create in disc order and verify each disc afterwards.",
+    )
     bu.add_argument(
         "-i",
         "--input",
         required=True,
-        help="Output directory from create",
+        help="Output directory from create, containing images/disc_*.iso",
     )
     bu.add_argument(
         "-D",
         "--device",
         default=None,
-        help="Optical drive (default: auto-detect)",
+        help="Burner device, e.g. /dev/sr0 (default: auto-detect)",
     )
     bu.add_argument(
         "-S",
         "--speed",
-        help="BD speed multiplier, e.g. 4 (default: maximum)",
+        help="BD speed multiplier, e.g. 4 for 4x (default: drive/media maximum)",
     )
-    bu.add_argument("--start", type=int, default=1, help="Start from disc N (default: 1)")
+    bu.add_argument(
+        "--start", type=int, default=1, help="Resume at disc N, counting from 1 (default: 1)"
+    )
     bu.add_argument("--no-verify", action="store_true", help="Skip post-burn verification")
     bu.add_argument(
-        "--skip-fit-check", action="store_true", help="Skip pre-burn disc capacity check"
+        "--skip-fit-check",
+        action="store_true",
+        help="Skip capacity checks, including too-small and oversized-media checks",
     )
 
     # ── verify ──────────────────────────────────────────────────────────
-    sub.add_parser("verify", help="Check disc integrity").add_argument(
+    sub.add_parser(
+        "verify",
+        help="Check a disc, directory or ISO with PAR2",
+        description="Check raw or DAR data without modifying it. "
+        "Exit codes: 0 = OK, 1 = repairable, 2 = broken.",
+    ).add_argument(
         "target",
         nargs="?",
         default=None,
-        help="Directory, device or ISO (default: auto-detect drive)",
+        help="Mounted disc/directory, device (e.g. /dev/sr0) or .iso file. "
+        "Omit to use the auto-detected drive.",
     )
 
     # ── extract ─────────────────────────────────────────────────────────
-    ex = sub.add_parser("extract", help="Restore archive from discs or ISO images")
-    ex.add_argument("-o", "--output", required=True, help="Output directory")
+    ex = sub.add_parser(
+        "extract",
+        help="Restore DAR archives from discs or ISOs",
+        description="Restore all collected generations of a DAR archive, with PAR2 repair. "
+        "Copy raw-disc files directly; no extraction is needed. "
+        "Unrepaired corruption returns exit code 1.",
+    )
+    ex.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        help="Restore directory: empty or a previous restore of this chain",
+    )
     ex_source = ex.add_mutually_exclusive_group()
     ex_source.add_argument(
         "-D",
         "--device",
         default=None,
-        help="Optical drive (default: auto-detect)",
+        help="Source drive, e.g. /dev/sr0 (default: auto-detect); alternative to --iso",
     )
     ex_source.add_argument(
         "-i",
@@ -156,13 +215,15 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         metavar="PATH",
-        help="ISO files or create output directories (instead of a drive)",
+        help="One or more ISO files or directories, including create output directories. "
+        "Reads sorted disc_*.iso within each directory; alternative to --device.",
     )
     ex.add_argument(
         "-w",
         "--workdir",
         default=None,
-        help="Scratch directory (default: <output>/.bd-archive-work/)",
+        help="Temporary slice storage (default: <output>/.bd-archive-work/). "
+        "Use a tmpfs path to keep slices in RAM.",
     )
 
     return p

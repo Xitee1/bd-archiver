@@ -19,6 +19,15 @@ compression, incrementals or packing.
 - **Mode: raw:** readable files on one disc; no extra options.
 - **Mode: dar:** compression, incrementals, packing and size previews.
 
+In DAR mode, `-l/--level` takes an integer: 1-22 for `zstd`, 1-9 for the
+other compression algorithms. DAR defaults to 9; higher levels favor smaller
+archives over speed. For example, use `-m dar -c zstd -l 3`. With `-c none`,
+the level is ignored. See the [DAR compression options](https://dar.sourceforge.io/doc/man/dar.html).
+
+Each command's `--help` explains its inputs, defaults and relevant limits.
+`burn` documents resuming with `--start`, `verify` lists integrity exit codes,
+and `extract` explains drive/ISO inputs and restore-directory requirements.
+
 Optical drives are auto-detected from `/sys/block/sr*`: a single drive is used automatically, multiple drives trigger a picker. Pass `-D /dev/srN` to override.
 
 ### Chain identity = archive name
