@@ -16,139 +16,115 @@ from bd_archive.ui.logger import Logger, log
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="bd-archive",
-        description="Archive data to Blu-ray discs with dar or directly readable files + par2",
+        description="Archive files to Blu-ray with PAR2 recovery",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True, help="Available commands")
 
     # ── create ──────────────────────────────────────────────────────────
-    cr = sub.add_parser("create", help="Prepare archive + staging (no burning)")
-    common = cr.add_argument_group("Options for both modes (raw and dar)")
+    cr = sub.add_parser("create", help="Build disc images", add_help=False)
+    common = cr.add_argument_group("General Options")
+    common.add_argument("-h", "--help", action="help", help="Show help")
     common.add_argument("-s", "--source", required=True, help="Source directory")
     common.add_argument("-n", "--name", required=True, help="Archive name")
-    common.add_argument("-o", "--output", required=True, help="Output directory for ISO images")
+    common.add_argument("-o", "--output", required=True, help="ISO output directory")
     common.add_argument(
         "-m",
         "--mode",
         choices=["raw", "dar"],
         default="raw",
-        help="Creation mode (default: raw). raw: directly readable files + PAR2 on one disc; "
-        "dar: archive with compression, incrementals and splitting across multiple discs.",
+        help="Mode (default: raw)",
     )
     common.add_argument(
         "-w",
         "--workdir",
         default=None,
-        help="Workdir for transient build files "
-        "(default: <output>/.bd-archive-work/; specify a "
-        "tmpfs path here to keep scratch off disk)",
+        help="Scratch directory (default: <output>/.bd-archive-work/)",
     )
     common.add_argument(
         "-r",
         "--redundancy",
         type=int,
         default=None,
-        help="PAR2 redundancy in %% (default: raw fills remaining disc capacity; dar uses 5%%)",
+        help="PAR2 %% (default: raw fills free space; dar: 5%%)",
     )
     common.add_argument(
         "-D",
         "--device",
         default=None,
-        help="Optical drive for capacity detection (auto-detected if omitted)",
+        help="Optical drive (default: auto-detect)",
     )
     common.add_argument(
         "-b",
         "--bytes",
         type=int,
         default=None,
-        help="Manual disc capacity in raw bytes (overrides detection)",
+        help="Disc capacity in bytes (default: auto-detect)",
     )
-    common.add_argument(
-        "-y", "--yes", action="store_true", help="Skip the pre-archive confirmation prompt"
-    )
+    common.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
 
+    cr.add_argument_group("Mode: raw", "Readable files on one disc. No extra options.")
     dar_options = cr.add_argument_group(
-        "DAR archive options (-m dar)",
-        "Compression, incrementals, packing and disc-count planning require -m dar. "
-        "Raw mode creates one directly readable disc without these features.",
+        "Mode: dar", "Archives across multiple discs. Requires -m dar."
     )
     dar_options.add_argument(
         "-c",
         "--compression",
         default=None,
         choices=["zstd", "lzma", "lz4", "gzip", "bzip2", "none"],
-        help="Compression algorithm (default: zstd). "
-        "Raw mode always uses no compression; -c none is accepted there",
+        help="Compression (default: zstd; none disables it)",
     )
     dar_options.add_argument("-l", "--level", help="Compression level")
     dar_options.add_argument(
         "--base",
         default=None,
-        help="Path to the isolated catalog of a previous generation "
-        "(e.g. <prev-output>/<name>-gen<N>-catalog.0001.dar). When set, "
-        "this run produces an incremental archive (Gen N+1) containing "
-        "only files new or changed since that catalog. Archive name "
-        "(-n) must match the predecessor — chain identity is the name.",
+        help="Previous catalog for an incremental archive; keep the same -n",
     )
     dar_options.add_argument(
         "--pack-with",
         default=None,
         metavar="ISO",
-        help="Pack the contents of an existing (UNBURNED) disc ISO onto "
-        "this archive's first disc, filling its unused space — e.g. the "
-        "partial last disc of a previous archive. The new archive's "
-        "first slice is sized to the remaining space. The given ISO is "
-        "superseded by the combined images/disc_0001.iso and must not "
-        "be burned separately afterwards.",
+        help="Merge an unburned ISO into disc 1; do not burn the old ISO afterwards",
     )
     dar_options.add_argument(
         "--min-last-disc-fill",
         type=int,
         default=0,
         metavar="PERCENT",
-        help="Auto-defer newest files until the last disc of the set is "
-        "at least PERCENT full (0-100). With --base, defers only files "
-        "not already in the base catalog. Without --base (full archive), "
-        "defers any files — and they will NOT be archived until a future "
-        "incremental run picks them up. Default 0 = no deferral.",
+        help="Defer newest files to reach this fill (0-100; default: 0/off). "
+        "Deferred files need a later archive.",
     )
     ratio_group = dar_options.add_mutually_exclusive_group()
     ratio_group.add_argument(
         "--ratio",
         type=float,
         default=None,
-        help="Manual compression ratio "
-        "(1.0 = none, 0.5 = 50%% reduction). "
-        "Used for the disc-count preview only. "
-        "Default: 1.0 if --sample also omitted",
+        help="Preview output/input ratio (default: 1.0; 0.5 = half size)",
     )
     ratio_group.add_argument(
         "--sample",
         default=None,
-        help="Run dar on this directory with -c/-l "
-        "and use the measured output/input ratio "
-        "for the disc-count preview",
+        help="Measure preview ratio from this directory using -c/-l",
     )
 
     # ── burn ────────────────────────────────────────────────────────────
-    bu = sub.add_parser("burn", help="Burn staged discs (resumable)")
+    bu = sub.add_parser("burn", help="Burn disc images (resumable)")
     bu.add_argument(
         "-i",
         "--input",
         required=True,
-        help="Input directory from create step (contains images/disc_*.iso)",
+        help="Output directory from create",
     )
     bu.add_argument(
         "-D",
         "--device",
         default=None,
-        help="Optical drive device (auto-detected if omitted)",
+        help="Optical drive (default: auto-detect)",
     )
     bu.add_argument(
         "-S",
         "--speed",
-        help="Burn speed as BD multiplier (e.g. 2, 4, 6); 1x = 4.5 MB/s "
-        "(default: drive/media maximum)",
+        help="BD speed multiplier, e.g. 4 (default: maximum)",
     )
     bu.add_argument("--start", type=int, default=1, help="Start from disc N (default: 1)")
     bu.add_argument("--no-verify", action="store_true", help="Skip post-burn verification")
@@ -161,8 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
         "target",
         nargs="?",
         default=None,
-        help="Mount point, directory, block device, or ISO file "
-        "(auto-detects an optical drive if omitted)",
+        help="Directory, device or ISO (default: auto-detect drive)",
     )
 
     # ── extract ─────────────────────────────────────────────────────────
@@ -173,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-D",
         "--device",
         default=None,
-        help="Optical drive device (auto-detected if omitted)",
+        help="Optical drive (default: auto-detect)",
     )
     ex_source.add_argument(
         "-i",
@@ -181,19 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         metavar="PATH",
-        help="Restore from ISO images instead of physical discs. Takes ISO "
-        "files and/or directories; a directory expands to its sorted "
-        "disc_*.iso (also looking in <dir>/images/, i.e. a create run's "
-        "output dir works as-is). Images are read in the given order, "
-        "no prompting between them.",
+        help="ISO files or create output directories (instead of a drive)",
     )
     ex.add_argument(
         "-w",
         "--workdir",
         default=None,
-        help="Workdir for staged slices (default: "
-        "<output>/.bd-archive-work/; specify a tmpfs "
-        "path here to keep scratch off disk)",
+        help="Scratch directory (default: <output>/.bd-archive-work/)",
     )
 
     return p
