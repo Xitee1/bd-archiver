@@ -28,8 +28,12 @@ This output choice is independent of `-m raw|dar`.
   size with `mkisofs -print-size`, and publishes `discs/manifest.json` only after
   the complete folder set succeeds. The manifest remains outside disc contents.
 - DAR slices/recovery move from scratch without rewriting on the same filesystem;
-  cross-filesystem workdirs require copies. Raw payload is copied once into the
-  prepared folder. User sources and packed archives are never moved or linked.
+  cross-filesystem workdirs require copies. Non-moved files, including raw
+  payload and packed archive files, try a reflink before a normal progress copy.
+  `tools/reflink.py` preserves metadata and propagates I/O/storage/permission errors;
+  only unsupported cloning falls back. Per-disc totals report logical bytes
+  reflinked, copied and moved. User sources/packed archives are never moved or
+  hard-linked. Restore staging and optional ISO output retain their existing paths.
 - `burn` reads folders plus the manifest, or legacy ISOs. Folder burns require
   `mkisofs`, remeasure after the insertion prompt, reject changed file metadata,
   and stream the filesystem through growisofs with the same options/backend.

@@ -7,7 +7,9 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from bd_archive.tools import mkisofs
+from bd_archive.shell.format import human_bytes
+from bd_archive.tools import mkisofs, reflink
+from bd_archive.ui.logger import log
 from bd_archive.ui.progress import copy_with_progress
 
 MANIFEST = "manifest.json"
@@ -87,12 +89,14 @@ def prepare_folder(
 ) -> DiscFolder:
     """Materialize a self-contained disc, moving our scratch files when possible.
 
-    Source payloads and packed archives are copied, never hard-linked or moved.
+    Source payloads and packed archives use reflinks when supported, otherwise
+    normal copies. They are never hard-linked or moved.
     A cross-filesystem workdir requires a copy of generated files as well.
     Failed preparations remain available for inspection, without a ready manifest.
     """
     destination.mkdir(parents=True, exist_ok=False)
     move_sources = move_sources or set()
+    transferred = {"reflinked": 0, "copied": 0, "moved": 0}
 
     def transfer(source: Path, target: Path) -> None:
         info = source.lstat()
@@ -110,11 +114,16 @@ def prepare_folder(
             if source in move_sources:
                 try:
                     source.rename(target)
+                    transferred["moved"] += info.st_size
                     return
                 except OSError as exc:
                     if exc.errno != errno.EXDEV:
                         raise
-            copy_with_progress(source, target)
+            if reflink.try_clone(source, target):
+                transferred["reflinked"] += info.st_size
+            else:
+                copy_with_progress(source, target)
+                transferred["copied"] += info.st_size
         else:
             raise ValueError(f"Unsupported disc source: {source}")
 
@@ -130,6 +139,10 @@ def prepare_folder(
         raise ValueError(
             f"Disc requires {folder.image_bytes} bytes, exceeding writable capacity {capacity}"
         )
+    log.info(
+        "File transfer: "
+        + "; ".join(f"{kind} {human_bytes(size)}" for kind, size in transferred.items())
+    )
     return folder
 
 
