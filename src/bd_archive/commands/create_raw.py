@@ -30,6 +30,8 @@ from bd_archive.tools.optical import resolve_device
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
 
+_DAR_MODE_HINT = "Use -m dar (or --mode dar) to split the archive across multiple discs."
+
 
 def cmd_create_raw(args):
     try:
@@ -54,7 +56,10 @@ def _create_raw(args):
         if active
     ]
     if incompatible:
-        raise ValueError(f"--raw cannot be combined with {', '.join(incompatible)}")
+        raise ValueError(
+            f"Raw mode cannot be combined with {', '.join(incompatible)}; "
+            "use -m dar for these options"
+        )
     if args.redundancy is not None and not 1 <= args.redundancy <= 100:
         raise ValueError(f"--redundancy must be 1-100, got {args.redundancy}")
     if args.bytes is not None and args.bytes <= 0:
@@ -88,7 +93,7 @@ def _create_raw(args):
     files = [entry for entry in inventory if stat.S_ISREG(entry.mode)]
     total = sum(entry.size for entry in files)
     if total == 0:
-        raise ValueError("--raw needs at least one non-empty file for PAR2 protection")
+        raise ValueError("Raw mode needs at least one non-empty file for PAR2 protection")
 
     publisher = f"bd-archive v{__version__}"
     label = f"{args.name}_RAW"
@@ -96,8 +101,8 @@ def _create_raw(args):
     payload_iso_size = mkisofs.estimate_size([("", source)], label, publisher, rock_ridge=True)
     if payload_iso_size > capacity:
         raise ValueError(
-            "Source does not fit on one disc even without PAR2; use a larger disc "
-            "or omit --raw for a sliced dar archive"
+            "Source does not fit on one disc even without PAR2; use a larger disc. "
+            + _DAR_MODE_HINT
         )
     redundancy = (
         "automatic (remaining disc capacity)" if args.redundancy is None else f"{args.redundancy}%"
@@ -160,7 +165,8 @@ def _create_raw(args):
             log.info("Keep the source unchanged until creation finishes.")
             if estimate > capacity:
                 log.warn(
-                    "Estimated size exceeds capacity; the exact size will be checked after PAR2."
+                    "Estimated size exceeds capacity; the exact size will be checked after PAR2. "
+                    + _DAR_MODE_HINT
                 )
             if not args.yes and not prompt_yn("Create directly readable disc image?"):
                 log.warn("Cancelled by user")
@@ -189,7 +195,7 @@ def _create_raw(args):
             if iso_size > capacity:
                 raise ValueError(
                     f"Data + PAR2 ISO ({human_bytes(iso_size)}) exceeds disc capacity "
-                    f"({human_bytes(capacity)}); use a larger disc, reduce -r, or omit --raw"
+                    f"({human_bytes(capacity)}); use a larger disc or reduce -r. " + _DAR_MODE_HINT
                 )
             images.mkdir(parents=True, exist_ok=True)
             # Only publish an image burn can discover after all checks passed.
@@ -198,7 +204,10 @@ def _create_raw(args):
                 log.step("Building directly readable disc image")
                 mkisofs.build(pending, entries, label, publisher, rock_ridge=True)
                 if pending.stat().st_size > capacity:
-                    raise ValueError("Built ISO exceeds disc capacity; no burnable image was saved")
+                    raise ValueError(
+                        "Built ISO exceeds disc capacity; no burnable image was saved. "
+                        + _DAR_MODE_HINT
+                    )
                 if scan_raw_source(source) != inventory:
                     raise ValueError(
                         "Source changed while building the ISO; retry with an unchanged source"
@@ -245,6 +254,6 @@ def _plan_auto_recovery(metadata, entries, label, publisher, sizing, capacity):
     if not best:
         raise ValueError(
             "Not enough free disc capacity for checksums, PAR2 recovery and the safety margin; "
-            "reduce the source size or use a larger disc"
+            "reduce the source size or use a larger disc. " + _DAR_MODE_HINT
         )
     return best, estimate

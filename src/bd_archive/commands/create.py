@@ -162,7 +162,7 @@ def _pack_graft_entries(pack_mount: Path) -> list[tuple[str, Path]]:
 
 
 def cmd_create(args):
-    if args.raw:
+    if args.mode == "raw":
         _validate_name(args.name)
         if len(args.name) > ISO9660_VOLUME_LABEL_MAX - 5:
             log.error(f"--name must be at most {ISO9660_VOLUME_LABEL_MAX - 5} characters")
