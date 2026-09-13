@@ -71,6 +71,8 @@ class NoRedundancyIntegrationTests(unittest.TestCase):
                 str(self.source),
                 "-n",
                 "Test",
+                "--description",
+                "Family photos and videos from München, summer 2026\nOriginal files",
                 "-o",
                 str(output),
                 "-m",
@@ -154,6 +156,11 @@ class NoRedundancyIntegrationTests(unittest.TestCase):
                 self.check_hashes(restored / "checksums.sha512", restored)
                 readme = (restored / "README.txt").read_text()
                 self.assertIn("RECOVERY:     None", readme)
+                self.assertIn(
+                    "DESCRIPTION:  Family photos and videos from München, summer 2026\n"
+                    "              Original files\n",
+                    readme,
+                )
                 self.assertNotIn("par2 repair", readme)
                 (restored / self.source.name / "payload").chmod(0o600)
                 (restored / self.source.name / "payload").write_bytes(b"damaged")
@@ -187,6 +194,11 @@ class NoRedundancyIntegrationTests(unittest.TestCase):
                     self.check_hashes(manifest, archive)
                 readme = (archive / "README.txt").read_text()
                 self.assertIn("RECOVERY:     None", readme)
+                self.assertIn(
+                    "DESCRIPTION:  Family photos and videos from München, summer 2026\n"
+                    "              Original files\n",
+                    readme,
+                )
                 self.assertNotIn("par2 repair", readme)
                 restored = output / "restored"
                 restored.mkdir()

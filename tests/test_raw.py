@@ -5,6 +5,7 @@ import io
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -209,11 +210,13 @@ class RawValidationTests(unittest.TestCase):
             patch("bd_archive.commands.create_raw.check_deps"),
             patch("bd_archive.commands.create_raw.mkisofs.estimate_size", return_value=100),
             patch("bd_archive.commands.create_raw.prompt_yn", return_value=False),
+            patch("bd_archive.commands.create_raw.write_readme") as readme,
             patch("bd_archive.archive.raw._hash_file_sha512") as hash_file,
             patch("bd_archive.commands.create_raw.par2.create_tree") as recovery,
             contextlib.redirect_stdout(io.StringIO()),
         ):
             cmd_create(args)
+        readme.assert_not_called()
         hash_file.assert_not_called()
         recovery.assert_not_called()
         self.assertFalse(list((self.root / "output").rglob("disc_*.iso")))
@@ -466,6 +469,10 @@ class RawIntegrationTests(unittest.TestCase):
         restored = self.root / "auto-restored"
         restored.mkdir()
         subprocess.run([shutil.which("bsdtar"), "-xf", str(iso), "-C", str(restored)], check=True)
+        readme = (restored / "README.txt").read_text()
+        self.assertNotIn("automatic", readme)
+        payload_bytes = sum(entry.size for entry in before if stat.S_ISREG(entry.mode))
+        self.assertIn(f"Redundancy: {100 * recovery_bytes / payload_bytes:.2f}%", readme)
         self.cli("verify", restored)
         if shutil.which("sha512sum"):
             hashes = subprocess.run(

@@ -7,7 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from bd_archive import __version__
 
-# dvd+rw-mediainfo has no version-only invocation; do not pass a fake device.
+# Tools without a version-only invocation are listed without a version.
 _PROGRAMS = {
     "dar": ("-V", r"dar version ([^,\s]+)", "https://dar.sourceforge.io/"),
     "mkisofs": (
@@ -22,8 +22,8 @@ _PROGRAMS = {
     ),
     "dvd+rw-mediainfo": (None, "", "https://fy.chalmers.se/~appro/linux/DVD+RW/"),
     "udisksctl": (
-        "--version",
-        r"udisksctl ([^\s]+)",
+        None,
+        "",
         "https://www.freedesktop.org/wiki/Software/udisks/",
     ),
 }
@@ -37,14 +37,15 @@ def software_info(commands: list[str]) -> str:
     ]
     try:
         argcomplete_version = version("argcomplete")
-    except PackageNotFoundError:
-        argcomplete_version = "version unavailable"
+    except PackageNotFoundError as exc:
+        raise ValueError("Cannot determine argcomplete version") from exc
     entries.append(("argcomplete", argcomplete_version, "https://github.com/kislyuk/argcomplete"))
     for command in dict.fromkeys(commands):
         flag, pattern, url = _PROGRAMS[command]
         name = command
-        tool_version = "version unavailable"
-        if flag is not None:
+        if flag is None:
+            tool_version = ""
+        else:
             try:
                 result = subprocess.run(
                     [command, flag],
@@ -58,8 +59,13 @@ def software_info(commands: list[str]) -> str:
                 )
                 output = result.stdout
                 match = re.search(pattern, output, re.IGNORECASE)
-                if match:
-                    tool_version = match[1]
+                if result.returncode != 0:
+                    raise ValueError(
+                        f"Version query for {command} failed (exit {result.returncode})"
+                    )
+                if not match:
+                    raise ValueError(f"Cannot parse version reported by {command}")
+                tool_version = match[1]
                 if command == "dar":
                     libdar = re.search(r"Using libdar ([^\s]+)", output)
                     if libdar:
@@ -72,9 +78,10 @@ def software_info(commands: list[str]) -> str:
                     url = "https://github.com/animetosho/par2cmdline-turbo"
                 elif command == "par2":
                     name = "par2cmdline"
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ValueError(f"Version query for {command} failed: {exc}") from exc
         entries.append((name, tool_version, url))
     return "SOFTWARE:\n" + "\n".join(
-        f"  {name} {tool_version}\n  {url}\n" for name, tool_version, url in entries
+        f"  {name}{' ' + tool_version if tool_version else ''}\n  {url}\n"
+        for name, tool_version, url in entries
     )

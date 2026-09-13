@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from bd_archive import __version__
-from bd_archive.archive.config import ArchiveConfig, write_readme
+from bd_archive.archive.config import ArchiveConfig
 from bd_archive.archive.dar_archive import (
     DarArchive,
     dar_basename,
@@ -22,6 +22,7 @@ from bd_archive.archive.disc_folder import (
     save_disc_set,
     tree_signature,
 )
+from bd_archive.archive.readme import write_readme
 from bd_archive.archive.sizing import (
     compute_slice_bytes,
     disc_write_bytes,
@@ -192,6 +193,9 @@ def cmd_create(args):
         # --pack-with loop-mounts the leftover ISO via udisksctl.
         deps.append("udisksctl")
     check_deps(*deps)
+    software = software_info(
+        [tool for tool in deps if tool != "dvd+rw-mediainfo" or args.bytes is None]
+    )
 
     if not 0 <= args.min_last_disc_fill <= 100:
         log.error(f"--min-last-disc-fill must be 0-100, got {args.min_last_disc_fill}")
@@ -477,14 +481,12 @@ def cmd_create(args):
     par2_est = slice_bytes * args.redundancy // 100
     cfg = ArchiveConfig(
         name=args.name,
+        description=args.description,
         disc_bytes=raw_capacity,
         redundancy=args.redundancy,
         compression=args.compression,
         comp_level=args.level,
         generation=generation,
-        software=software_info(
-            [tool for tool in deps if tool != "dvd+rw-mediainfo" or args.bytes is None]
-        ),
     )
 
     log.step("Source")
@@ -627,9 +629,34 @@ def cmd_create(args):
             )
             sys.exit(1)
 
-        # README, regenerated per disc with current disc_num/total
+        # One final README per disc, using completed slice and recovery information.
         readme_path = tmp_dir / "README.txt"
-        write_readme(readme_path, cfg, i, slice_count, slice_name)
+        checksum_files = [f"{slice_name}.sha512"]
+        if i == 1:
+            checksum_files.extend(f"{cat.name}.sha512" for cat in dar_archive.catalog_files)
+        write_readme(
+            readme_path,
+            name=cfg.name,
+            description=cfg.description,
+            archive_format="DAR",
+            details={
+                "GENERATION": f"{cfg.generation}"
+                f" ({'full' if cfg.generation == 1 else 'incremental'})",
+                "DISC": f"{i}/{slice_count}",
+                "COMPRESSION": cfg.comp_str,
+            },
+            checksum_files=checksum_files,
+            recovery={
+                "Format": "PAR2",
+                "Coverage": "DAR slice",
+                "Redundancy": f"{cfg.redundancy}%",
+                "Index": f"{slice_name}.par2",
+                "Volumes": f"{slice_name}.vol*.par2",
+            }
+            if cfg.redundancy
+            else None,
+            software=software,
+        )
 
         # Files to include on this disc
         slice_hash = Path(str(slice_file) + ".sha512")
