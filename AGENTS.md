@@ -14,8 +14,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   wiki edit is required; state that the documentation was reviewed.
 - Keep `README.md` concise and update its essentials and wiki links when affected.
   Detailed usage documentation belongs in the wiki.
-- The wiki is a separate Git repository. Include its changes in the delivery and
-  report whether they have been published. If the checkout or remote is unavailable,
+- The wiki is a separate Git repository. Commit and push affected wiki updates
+  directly in the same task, without waiting for the code PR to merge. A patch
+  included in the code PR does not replace publishing the live wiki. This is
+  standing authorization to publish the documentation covered by the task.
+  Report whether publication succeeded. If the checkout or remote is unavailable,
   report the blocker rather than silently leaving the documentation stale.
 
 ## Current output workflow: disc folders by default
