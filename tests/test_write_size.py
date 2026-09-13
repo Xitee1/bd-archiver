@@ -41,7 +41,9 @@ class WriteSizeTests(unittest.TestCase):
                 self.assertEqual(disc_write_bytes(size), expected)
 
     def test_burn_checks_padding_for_both_inputs_and_block_boundaries(self):
-        args = argparse.Namespace(skip_fit_check=False, no_verify=True, speed=None)
+        args = argparse.Namespace(
+            skip_fit_check=False, no_verify=True, speed=None, write_timeout=600
+        )
         for size in (30720, 32768, 34816):
             required = disc_write_bytes(size)
             iso = self.root / "disc.iso"

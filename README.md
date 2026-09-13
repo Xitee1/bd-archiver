@@ -17,6 +17,8 @@ to create ISO images instead. Exact filesystem sizing checks capacity without
 writing an ISO. You can verify the folders and try a restore before burning.
 [Burning](https://github.com/Xitee1/bd-archiver/wiki/Burning) includes automatic
 post-burn verification and can be resumed from a chosen disc in the set.
+Drive write commands have a minimum timeout of 600 seconds by default, adjustable
+with `burn --write-timeout SECONDS`.
 
 SHA-512 checksums help detect damaged data, while optional PAR2 recovery can
 reconstruct missing or corrupted bytes within its recovery limits. The
@@ -36,7 +38,8 @@ explains the disk space needed for creation and restoration.
 
 bd-archiver runs on Linux. You can
 [install it natively](https://github.com/Xitee1/bd-archiver/wiki/Installation)
-with Python 3.11+ and the required system tools, or use the
+with Python 3.11+, the required system tools and a C compiler for installation
+from source, or use the
 [prebuilt Docker image](https://github.com/Xitee1/bd-archiver/wiki/Docker) for
 AMD64 or ARM64. The [quick start](https://github.com/Xitee1/bd-archiver/wiki/Quick-start)
 walks through creating, checking and burning your first archive.

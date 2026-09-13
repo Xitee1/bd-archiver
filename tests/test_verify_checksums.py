@@ -222,7 +222,9 @@ class ChecksumVerificationTests(unittest.TestCase):
         iso.write_bytes(b"fake ISO")
         drive = Mock(device="/dev/mock")
         drive.mount_with_retry.return_value = (self.disc, None)
-        args = argparse.Namespace(skip_fit_check=True, no_verify=False, speed=None)
+        args = argparse.Namespace(
+            skip_fit_check=True, no_verify=False, speed=None, write_timeout=600
+        )
         with (
             patch("bd_archive.commands.burn.prompt_disc"),
             patch("bd_archive.commands.burn.time.sleep"),
@@ -230,6 +232,6 @@ class ChecksumVerificationTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
         ):
             _burn_one_disc(args, self.root, iso, 1, 1, drive, iso.stat().st_size)
-        drive.burn.assert_called_once_with(iso, None)
+        drive.burn.assert_called_once_with(iso, None, write_timeout=600)
         drive.umount.assert_called_once_with(self.disc)
         drive.eject.assert_called_once()

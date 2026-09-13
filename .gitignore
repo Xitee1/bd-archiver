@@ -21,3 +21,5 @@ docs/plans/
 
 # hatch-vcs generated
 src/bd_archive/_version.py
+src/bd_archive/_native/*.so
+src/bd_archive/_native/*.pending

@@ -7,3 +7,5 @@ build/
 .ruff_cache/
 .pytest_cache/
 docs/
+src/bd_archive/_native/*.so
+src/bd_archive/_native/*.pending

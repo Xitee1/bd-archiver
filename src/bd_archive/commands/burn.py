@@ -183,10 +183,11 @@ def _burn_one_disc(
                     folder.publisher,
                     args.speed,
                     rock_ridge=folder.rock_ridge,
+                    write_timeout=args.write_timeout,
                 )
                 folder.check_unchanged()
             else:
-                dio.burn(iso, args.speed)
+                dio.burn(iso, args.speed, write_timeout=args.write_timeout)
             break
         except DeviceBusyError:
             log.error(
