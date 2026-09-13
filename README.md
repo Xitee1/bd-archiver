@@ -3,7 +3,7 @@
 bd-archiver helps you archive folders to Blu-ray data discs, from a collection
 of photos or videos to a larger backup spanning multiple discs. It combines
 integrity checks and optional recovery data with a workflow that separates
-image creation from burning.
+archive preparation from burning.
 
 For files you want to open directly, the default
 [raw mode](https://github.com/Xitee1/bd-archiver/wiki/Raw-data-discs) keeps the
@@ -12,8 +12,9 @@ original folder and its contents on a single data disc. For larger archives,
 compression and splits data across multiple discs, with a dedicated restore
 command to put the files back together.
 
-Each archive is built as ISO images before any disc is written. You can review
-the capacity estimate, check the images and try a restore before burning.
+Archives are prepared as self-contained disc folders by default; add `--iso`
+to create ISO images instead. Exact filesystem sizing checks capacity without
+writing an ISO. You can verify the folders and try a restore before burning.
 [Burning](https://github.com/Xitee1/bd-archiver/wiki/Burning) includes automatic
 post-burn verification and can be resumed from a chosen disc in the set.
 
@@ -21,13 +22,13 @@ SHA-512 checksums help detect damaged data, while optional PAR2 recovery can
 reconstruct missing or corrupted bytes within its recovery limits. The
 [verification](https://github.com/Xitee1/bd-archiver/wiki/Verification) and
 [restoration](https://github.com/Xitee1/bd-archiver/wiki/Restoring) guides explain
-what is checked and how recovery works with discs or saved ISO images.
+what is checked and how recovery works with discs, prepared folders or saved ISO images.
 
 DAR archives can grow through
 [incremental generations](https://github.com/Xitee1/bd-archiver/wiki/Incrementals-and-packing),
 saving new and changed files while retaining earlier generations for restoration.
 The same guide covers deferring files to a later archive and combining an
-unburned, partly filled image with the next archive to make better use of disc
+unburned, partly filled disc with the next archive to make better use of disc
 capacity. [Storage planning](https://github.com/Xitee1/bd-archiver/wiki/Storage-and-layout)
 explains the disk space needed for creation and restoration.
 

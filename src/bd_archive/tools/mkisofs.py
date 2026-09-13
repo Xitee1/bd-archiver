@@ -48,6 +48,18 @@ def estimate_size(
     return int(result.stdout.strip().splitlines()[-1]) * 2048
 
 
+def filesystem_args(
+    graft_entries: list[tuple[str, Path]],
+    volume_label: str,
+    publisher: str,
+    *,
+    rock_ridge: bool = False,
+) -> list[str]:
+    """The same filesystem options for growisofs's on-the-fly mkisofs backend."""
+    cmd, graft_args = _command(graft_entries, volume_label, publisher, rock_ridge=rock_ridge)
+    return [*cmd[1:], *graft_args]
+
+
 def build(
     iso_path: Path,
     graft_entries: list[tuple[str, Path]],

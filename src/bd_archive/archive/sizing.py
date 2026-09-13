@@ -2,10 +2,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-from bd_archive.constants import PAR2_AND_MISC_OVERHEAD, MiB
+from bd_archive.constants import DISC_WRITE_BLOCK, PAR2_AND_MISC_OVERHEAD, MiB
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import dar
 from bd_archive.ui.logger import log
+
+
+def disc_write_bytes(image_bytes: int) -> int:
+    """Bytes growisofs writes, including zero padding to a full 32-KiB block."""
+    return ((image_bytes + DISC_WRITE_BLOCK - 1) // DISC_WRITE_BLOCK) * DISC_WRITE_BLOCK
 
 
 def compute_slice_bytes(disc_bytes: int, catalog_est: int, redundancy: int) -> int:

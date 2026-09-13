@@ -3,7 +3,7 @@ from pathlib import Path
 from bd_archive.archive.checksums import verify_manifest
 from bd_archive.archive.dar_archive import parse_dar_filename
 from bd_archive.archive.raw import RAW_CHECKSUMS, is_raw_metadata_name
-from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_PAR2_INDEX, RAW_ROOT_MARKER
+from bd_archive.constants import RAW_METADATA_DIR, RAW_PAR2_INDEX
 from bd_archive.shell.deps import check_deps
 from bd_archive.tools import par2
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
@@ -28,9 +28,11 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
     # rglob, not glob: foldered discs keep each archive's files in a
     # top-level <name>-gen<N>/ directory (and a packed disc carries
     # several); legacy flat discs still match at the root.
-    raw_v2 = (disc_path / RAW_ROOT_MARKER).is_file()
+    # Recognize raw layouts from their verification files, without a marker.
+    # Root metadata takes precedence over metadata-like names in the payload.
+    raw_v2 = any((disc_path / name).is_file() for name in (RAW_PAR2_INDEX, RAW_CHECKSUMS))
     raw_metadata = disc_path if raw_v2 else disc_path / RAW_METADATA_DIR
-    raw = raw_v2 or (raw_metadata / RAW_MARKER).is_file()
+    raw = raw_v2 or any((raw_metadata / name).is_file() for name in (RAW_PAR2_INDEX, RAW_CHECKSUMS))
     if raw:
         # Both layouts record paths relative to the disc root. Payload
         # .par2 files are ordinary data, not additional archive indices.

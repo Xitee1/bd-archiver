@@ -1,4 +1,4 @@
-"""Build a single directly readable ISO with whole-tree PAR2 protection."""
+"""Prepare a directly readable disc folder or ISO with whole-tree PAR2 protection."""
 
 import contextlib
 import shlex
@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from bd_archive import __version__
+from bd_archive.archive.disc_folder import check_output_available, prepare_folder, save_disc_set
 from bd_archive.archive.raw import (
     MAX_PAR2_BLOCKS,
     RAW_CHECKSUMS,
@@ -16,11 +17,11 @@ from bd_archive.archive.raw import (
     validate_raw_source_name,
     write_raw_checksums,
 )
+from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import (
     DISC_END_MARGIN,
     PAR2_AND_MISC_OVERHEAD,
     RAW_PAR2_INDEX,
-    RAW_ROOT_MARKER,
 )
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
@@ -75,9 +76,8 @@ def _create_raw(args):
     for path in (output, work):
         if path.is_relative_to(source) or source.is_relative_to(path):
             raise ValueError(f"Source and output/workdir must not overlap: {source} / {path}")
-    images = output / "images"
-    if list(images.glob("disc_*.iso")):
-        raise ValueError(f"{images} already contains disc images; choose another output directory")
+    check_output_available(output)
+    images = output / ("images" if args.iso else "discs")
 
     deps = ["mkisofs"]
     if recovery_enabled:
@@ -104,7 +104,7 @@ def _create_raw(args):
     # Count the real directory/filesystem overhead before expensive PAR2 work.
     payload_entries = [(source.name, source)]
     payload_iso_size = mkisofs.estimate_size(payload_entries, label, publisher, rock_ridge=True)
-    if payload_iso_size > capacity:
+    if disc_write_bytes(payload_iso_size) > capacity:
         raise ValueError(
             "Source does not fit on one disc even without PAR2; use a larger disc. "
             + _DAR_MODE_HINT
@@ -129,9 +129,6 @@ def _create_raw(args):
         with tempfile.TemporaryDirectory(prefix="raw-", dir=work) as scratch:
             metadata = Path(scratch) / "metadata"
             metadata.mkdir()
-            (metadata / RAW_ROOT_MARKER).write_text(
-                "bd-archive raw disc format 2\n", encoding="utf-8"
-            )
             (metadata / "README.txt").write_text(
                 f"{args.name} — directly readable data disc\n"
                 f"Created by {publisher}; PAR2 redundancy: {redundancy}\n\n"
@@ -166,9 +163,11 @@ def _create_raw(args):
                 )
             else:
                 estimate = (
-                    mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
-                    + (total * args.redundancy + 99) // 100
-                    + (PAR2_AND_MISC_OVERHEAD if recovery_enabled else 0)
+                    disc_write_bytes(
+                        mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
+                        + (total * args.redundancy + 99) // 100
+                        + (PAR2_AND_MISC_OVERHEAD if recovery_enabled else 0)
+                    )
                     + DISC_END_MARGIN
                 )
             log.info(f"Source:          {source}")
@@ -178,7 +177,7 @@ def _create_raw(args):
                 log.info(f"PAR2 redundancy: {redundancy} across all non-empty files")
             else:
                 log.info("PAR2 disabled; verification uses SHA-512 checksums.")
-            log.info(f"Estimated ISO:   {human_bytes(estimate)} (including overhead allowance)")
+            log.info(f"Estimated disc:  {human_bytes(estimate)} (including overhead allowance)")
             log.info(
                 f"Layout: source folder {source.name}/ at disc root; "
                 "README.txt, checksums.sha512 and recovery files beside it"
@@ -189,7 +188,7 @@ def _create_raw(args):
                     "Estimated size exceeds capacity; the exact size will be checked before build. "
                     + _DAR_MODE_HINT
                 )
-            if not args.yes and not prompt_yn("Create directly readable disc image?"):
+            if not args.yes and not prompt_yn("Prepare directly readable disc?"):
                 log.warn("Cancelled by user")
                 return
 
@@ -218,34 +217,55 @@ def _create_raw(args):
                     )
 
             iso_size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
-            if iso_size > capacity:
+            if disc_write_bytes(iso_size) > capacity:
                 raise ValueError(
-                    f"ISO ({human_bytes(iso_size)}) exceeds disc capacity "
-                    f"({human_bytes(capacity)}); use a larger disc or reduce -r. " + _DAR_MODE_HINT
+                    f"Required write size ({disc_write_bytes(iso_size)} bytes including "
+                    f"32-KiB write padding) exceeds disc capacity ({capacity} bytes); "
+                    "use a larger disc or reduce -r. " + _DAR_MODE_HINT
                 )
             images.mkdir(parents=True, exist_ok=True)
-            # Only publish an image burn can discover after all checks passed.
-            with tempfile.TemporaryDirectory(prefix=".raw-build-", dir=images) as build_dir:
-                pending = Path(build_dir) / "disc.iso"
-                log.step("Building directly readable disc image")
-                mkisofs.build(pending, entries, label, publisher, rock_ridge=True)
-                if pending.stat().st_size > capacity:
-                    raise ValueError(
-                        "Built ISO exceeds disc capacity; no burnable image was saved. "
-                        + _DAR_MODE_HINT
+            if not args.iso:
+                log.step("Preparing directly readable disc folder")
+                try:
+                    folder = prepare_folder(
+                        images / "disc_0001",
+                        entries,
+                        label,
+                        publisher,
+                        capacity,
+                        rock_ridge=True,
+                        move_sources=set(metadata.iterdir()),
                     )
+                except ValueError as exc:
+                    raise ValueError(f"{exc}. {_DAR_MODE_HINT}") from exc
                 if scan_raw_source(source) != inventory:
-                    raise ValueError(
-                        "Source changed while building the ISO; retry with an unchanged source"
-                    )
-                iso_size = pending.stat().st_size
-                pending.rename(images / "disc_0001.iso")
+                    raise ValueError("Source changed while copying; retry with an unchanged source")
+                iso_size = folder.image_bytes
+                save_disc_set(images, [folder])
+            else:
+                # Only publish an image burn can discover after all checks passed.
+                with tempfile.TemporaryDirectory(prefix=".raw-build-", dir=images) as build_dir:
+                    pending = Path(build_dir) / "disc.iso"
+                    log.step("Building directly readable disc image")
+                    mkisofs.build(pending, entries, label, publisher, rock_ridge=True)
+                    if disc_write_bytes(pending.stat().st_size) > capacity:
+                        raise ValueError(
+                            "Built ISO exceeds disc capacity including 32-KiB write padding; "
+                            "no burnable image was saved. " + _DAR_MODE_HINT
+                        )
+                    if scan_raw_source(source) != inventory:
+                        raise ValueError(
+                            "Source changed while building the ISO; retry with an unchanged source"
+                        )
+                    iso_size = pending.stat().st_size
+                    pending.rename(images / "disc_0001.iso")
     finally:
         if args.workdir is None:
             with contextlib.suppress(OSError):
                 work.rmdir()
 
-    log.ok(f"Raw disc ready: {images / 'disc_0001.iso'} ({human_bytes(iso_size)})")
+    disc_path = images / ("disc_0001.iso" if args.iso else "disc_0001")
+    log.ok(f"Raw disc ready: {disc_path} ({human_bytes(iso_size)})")
     log.info(f"Next step: bd-archive burn -i {shlex.quote(str(output))}")
 
 
@@ -268,7 +288,9 @@ def _plan_auto_recovery(metadata, entries, label, publisher, sizing, capacity):
             for path, size in zip((index, volume), sizing.file_sizes(count), strict=True):
                 with path.open("wb") as placeholder:
                     placeholder.truncate(size)
-            size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
+            size = disc_write_bytes(
+                mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
+            )
             if size <= target:
                 best, estimate = count, size
                 low = count + 1

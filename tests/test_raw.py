@@ -13,10 +13,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from bd_archive.archive.raw import raw_par2_sizing, scan_raw_source, write_raw_checksums
+from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.cli import build_parser
 from bd_archive.commands.burn import _burn_one_disc
 from bd_archive.commands.create import cmd_create
-from bd_archive.constants import DISC_END_MARGIN, RAW_ROOT_MARKER, MiB
+from bd_archive.constants import DISC_END_MARGIN, DISC_WRITE_BLOCK, RAW_ROOT_MARKER, MiB
 
 
 class RawValidationTests(unittest.TestCase):
@@ -245,7 +246,7 @@ class RawValidationTests(unittest.TestCase):
                 contextlib.redirect_stderr(messages),
                 self.assertRaises(SystemExit) as exc,
             ):
-                cmd_create(self.args("-o", str(output), *options))
+                cmd_create(self.args("--iso", "-o", str(output), *options))
             self.assertEqual(exc.exception.code, 1)
             self.assertIn("-m dar", messages.getvalue())
             self.assertIn("multiple discs", messages.getvalue())
@@ -277,7 +278,7 @@ class RawValidationTests(unittest.TestCase):
         iso = self.root / "disc_0001.iso"
         iso.write_bytes(b"x" * 100)
         args = argparse.Namespace(skip_fit_check=False, no_verify=True, speed=None)
-        for count, capacity, succeeds in ((1, 1000, True), (1, 99, False), (2, 1000, False)):
+        for count, capacity, succeeds in ((1, 65536, True), (1, 32767, False), (2, 65536, False)):
             drive = Mock(device="/dev/fake")
             with (
                 self.subTest(count=count, capacity=capacity),
@@ -286,11 +287,11 @@ class RawValidationTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 if succeeds:
-                    _burn_one_disc(args, self.root, iso, 1, count, drive, 100)
+                    _burn_one_disc(args, self.root, iso, 1, count, drive, 32768)
                     drive.burn.assert_called_once_with(iso, None)
                 else:
                     with self.assertRaises(SystemExit):
-                        _burn_one_disc(args, self.root, iso, 1, count, drive, 100)
+                        _burn_one_disc(args, self.root, iso, 1, count, drive, 32768)
                     drive.burn.assert_not_called()
 
 
@@ -340,6 +341,7 @@ class RawIntegrationTests(unittest.TestCase):
     def create(self, *options, expected=0, auto=False):
         return self.cli(
             "create",
+            "--iso",
             "-s",
             self.source,
             "-n",
@@ -376,7 +378,6 @@ class RawIntegrationTests(unittest.TestCase):
                 self.source.name,
                 "README.txt",
                 "checksums.sha512",
-                RAW_ROOT_MARKER,
                 "recovery.par2",
                 *[p.name for p in restored.glob("recovery.vol*.par2")],
             },
@@ -454,10 +455,13 @@ class RawIntegrationTests(unittest.TestCase):
         self.assertLess(recovery_bytes, 64 * MiB / 100)
         self.assertIn("PAR2 redundancy: automatic", result.stdout)
         iso = self.output / "images/disc_0001.iso"
-        free = capacity - iso.stat().st_size
+        free = capacity - disc_write_bytes(iso.stat().st_size)
         block_size = int(re.search(r"Block size: (\d+)", result.stdout)[1])
         self.assertGreaterEqual(free, DISC_END_MARGIN)
-        self.assertLess(free, DISC_END_MARGIN + block_size + 16384)
+        # Allow one recovery block plus packet/filesystem overhead and write
+        # alignment. The former byte-level 16-KiB allowance is too tight once
+        # the planner allocates complete 32-KiB write blocks.
+        self.assertLess(free, DISC_END_MARGIN + block_size + 2 * DISC_WRITE_BLOCK)
         self.assertEqual(scan_raw_source(self.source), before)
         restored = self.root / "auto-restored"
         restored.mkdir()

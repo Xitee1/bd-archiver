@@ -5,7 +5,7 @@ from pathlib import Path
 
 from bd_archive.constants import POST_BURN_MOUNT_TIMEOUT
 from bd_archive.tools import eject as eject_tool
-from bd_archive.tools import growisofs, udisks
+from bd_archive.tools import growisofs, mkisofs, udisks
 from bd_archive.tools import mount as mount_tool
 from bd_archive.ui.logger import log
 
@@ -198,3 +198,15 @@ class DiscIO:
 
     def burn(self, iso_path: Path, speed: str | None = None):
         growisofs.burn(self.device, iso_path, speed)
+
+    def burn_folder(
+        self, entries, volume_label: str, publisher: str, speed=None, *, rock_ridge=False
+    ):
+        growisofs.burn(
+            self.device,
+            None,
+            speed,
+            filesystem_args=mkisofs.filesystem_args(
+                entries, volume_label, publisher, rock_ridge=rock_ridge
+            ),
+        )

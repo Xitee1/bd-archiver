@@ -16,7 +16,17 @@ from bd_archive.archive.dar_archive import (
     parse_dar_filename,
 )
 from bd_archive.archive.disc import LoopMountError, loop_mounted
-from bd_archive.archive.sizing import compute_slice_bytes, measure_compression_ratio
+from bd_archive.archive.disc_folder import (
+    check_output_available,
+    prepare_folder,
+    save_disc_set,
+    tree_signature,
+)
+from bd_archive.archive.sizing import (
+    compute_slice_bytes,
+    disc_write_bytes,
+    measure_compression_ratio,
+)
 from bd_archive.archive.source_scan import (
     SourceFile,
     list_source_files,
@@ -101,9 +111,10 @@ def _resolve_base(base_arg: str, archive_name: str) -> tuple[Path, int]:
 
 @contextlib.contextmanager
 def _loop_mounted(iso_path: Path):
-    """Loop-mount a --pack-with ISO, exiting with a readable error on
-    failure. Used twice: briefly for inspection, then while disc 1's
-    combined image is built."""
+    """Open a --pack-with folder or loop-mount an ISO with readable errors."""
+    if iso_path.is_dir():
+        yield iso_path
+        return
     try:
         with loop_mounted(iso_path, prefix="bd-pack-") as mounted:
             yield mounted
@@ -113,25 +124,25 @@ def _loop_mounted(iso_path: Path):
 
 
 def _inspect_pack_iso(pack_path: Path, new_dar_name: str) -> set[str]:
-    """Briefly loop-mount a --pack-with ISO and catalogue its archives.
+    """Inspect a --pack-with disc folder or ISO and catalogue its archives.
 
     Returns the set of dar basenames found inside. Exits with a
     user-readable error when the path is missing, contains no dar
     slices, or already holds an archive with this run's basename (same
     name + generation would collide on the combined disc).
     """
-    if not pack_path.is_file():
+    if not pack_path.is_file() and not pack_path.is_dir():
         log.error(f"--pack-with path does not exist: {pack_path}")
         sys.exit(1)
     with _loop_mounted(pack_path) as mounted:
         archives = find_disc_archives(mounted)
     if not archives:
-        log.error(f"--pack-with ISO contains no dar slices: {pack_path}")
+        log.error(f"--pack-with input contains no dar slices: {pack_path}")
         sys.exit(1)
     basenames = {a.basename for a in archives}
     if new_dar_name in basenames:
         log.error(
-            f"--pack-with ISO already contains '{new_dar_name}' — the new archive's "
+            f"--pack-with input already contains '{new_dar_name}' — the new archive's "
             f"files would collide on the combined disc. Use a different -n, or "
             f"--base to bump the generation."
         )
@@ -176,7 +187,7 @@ def cmd_create(args):
     deps = ["dar", "mkisofs", "dvd+rw-mediainfo"]
     if args.redundancy != 0:
         deps.append("par2")
-    if args.pack_with is not None:
+    if args.pack_with is not None and not Path(args.pack_with).is_dir():
         # --pack-with loop-mounts the leftover ISO via udisksctl.
         deps.append("udisksctl")
     check_deps(*deps)
@@ -194,18 +205,10 @@ def cmd_create(args):
 
     _validate_name(args.name)
 
-    # Refuse to build into an images dir that already holds disc images:
-    # burn globs images/disc_*.iso, so a stale ISO from a previous or
-    # cancelled run would get burned alongside (or instead of) the new
-    # set without anyone noticing.
-    stale_isos = sorted(Path(args.output, "images").glob("disc_*.iso"))
-    if stale_isos:
-        log.error(
-            f"{Path(args.output, 'images')} already contains {len(stale_isos)} "
-            f"disc image(s) from a previous run (e.g. {stale_isos[0].name})."
-        )
-        log.info("burn would pick them up together with the new set. Burn or")
-        log.info("delete them first, or choose a different -o output directory.")
+    try:
+        check_output_available(Path(args.output))
+    except ValueError as exc:
+        log.error(str(exc))
         sys.exit(1)
 
     # Hard cap matches the pre-Phase-2 label format (32 - 5) so existing
@@ -238,14 +241,21 @@ def cmd_create(args):
     pack_iso: Path | None = None
     pack_basenames: set[str] = set()
     pack_bytes = 0
+    pack_signature = None
     if args.pack_with is not None:
         pack_iso = Path(args.pack_with).resolve()
+        if pack_iso.is_dir():
+            pack_signature = tree_signature(pack_iso)
         pack_basenames = _inspect_pack_iso(pack_iso, f"{args.name}-gen{generation}")
         # The ISO's own file size is the sizing input: it over-counts
         # the contents by the ISO metadata, making the first-slice
         # budget strictly conservative. The post-build hard fit check
         # against raw_capacity stays the real gate.
-        pack_bytes = pack_iso.stat().st_size
+        pack_bytes = (
+            mkisofs.estimate_size(_pack_graft_entries(pack_iso), "PACK", "bd-archive")
+            if pack_iso.is_dir()
+            else pack_iso.stat().st_size
+        )
         log.info(
             f"Packing with: {pack_iso.name} ({human_bytes(pack_bytes)}; "
             f"contains {', '.join(sorted(pack_basenames))})"
@@ -266,17 +276,17 @@ def cmd_create(args):
             log.error(f"No disc detected at {device}.")
             log.info("Insert a blank disc, or specify capacity manually with -b/--bytes <int>.")
             sys.exit(1)
-        log.info(f"Detected {human_bytes(raw_capacity)} writable, sizing ISOs accordingly")
+        log.info(f"Detected {human_bytes(raw_capacity)} writable, sizing discs accordingly")
 
-    # raw_capacity is the format-aware writable extent (post-OSA
-    # reservation). DISC_END_MARGIN reserves a tiny bit more to absorb
-    # ISO9660+UDF metadata growth that exceeds compute_slice_bytes's
-    # estimate; the ISO file size is then re-checked against the full
-    # raw_capacity below as the hard limit.
+    # Reserve room for filesystem growth beyond the slice estimate.
+    # The final mkisofs sector count (or actual ISO size) is checked
+    # against the full writable capacity as the hard limit.
     sizing_target = raw_capacity - DISC_END_MARGIN
 
     log.info("Scanning source...")
     scan = scan_source(source)
+    if args.min_last_disc_fill == 0:
+        scan.hardlinks.check()
 
     slice_bytes = compute_slice_bytes(sizing_target, scan.catalog_est, args.redundancy)
     if slice_bytes == 0:
@@ -297,20 +307,20 @@ def cmd_create(args):
         )
         if first_slice_bytes == 0:
             log.error(
-                f"--pack-with ISO ({human_bytes(pack_bytes)}) leaves no room for a "
+                f"--pack-with input ({human_bytes(pack_bytes)}) leaves no room for a "
                 f"first slice + catalog + par2 on a {human_bytes(raw_capacity)} disc."
             )
-            log.info("Burn the leftover ISO on its own instead, or use larger media.")
+            log.info("Burn the leftover disc on its own instead, or use larger media.")
             sys.exit(1)
 
     # Workdir must exist before --sample so the sample tempdir lives
     # in the user-chosen location (e.g. tmpfs). Default-pathed workdir
-    # also implies output_dir/images_dir creation here, since the
+    # also implies output_dir/disc_output_dir creation here, since the
     # default workdir lives inside output_dir.
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
-    images_dir = output_dir / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
+    disc_output_dir = output_dir / ("images" if args.iso else "discs")
+    disc_output_dir.mkdir(parents=True, exist_ok=True)
 
     workdir_is_default = args.workdir is None
     work_dir = Path(args.workdir) if args.workdir else output_dir / ".bd-archive-work"
@@ -454,6 +464,12 @@ def cmd_create(args):
                     )
                     sys.exit(1)
 
+    # Deferral changes which source names are included in this archive.
+    # Unchanged paths in incremental sources still belong to the archive tree;
+    # the mtime-based delta preview is not an exclusion list.
+    if args.min_last_disc_fill > 0:
+        scan.hardlinks.check({file.rel_path for file in deferred_files})
+
     last_disc_free = max(0, sizing_target - last_disc_content)
     last_disc_free_raw = int(last_disc_free / max(ratio, 0.001))
 
@@ -484,7 +500,7 @@ def cmd_create(args):
 
     if pack_iso is not None:
         log.step("Pack-with")
-        log.info(f"Leftover ISO:     {pack_iso}")
+        log.info(f"Leftover disc:    {pack_iso}")
         log.info(f"Leftover size:    {human_bytes(pack_bytes)}")
         log.info(f"Contains:         {', '.join(sorted(pack_basenames))}")
         log.info(f"First slice:      {human_bytes(first_slice_bytes)} (disc 1 shared)")
@@ -528,7 +544,7 @@ def cmd_create(args):
             with contextlib.suppress(OSError):
                 work_dir.rmdir()
         with contextlib.suppress(OSError):
-            images_dir.rmdir()
+            disc_output_dir.rmdir()
         with contextlib.suppress(OSError):
             output_dir.rmdir()
         sys.exit(0)
@@ -585,8 +601,9 @@ def cmd_create(args):
             f"per-disc fit check may fail"
         )
 
-    # ── Build per-disc ISOs (sequential, deletes raw files as we go) ────
-    log.step("Building disc images")
+    # Prepare discs sequentially; move generated payloads or build optional ISOs.
+    log.step("Building ISO images" if args.iso else "Preparing disc folders")
+    folders = []
 
     publisher = f"bd-archive v{__version__}"
 
@@ -610,7 +627,7 @@ def cmd_create(args):
         readme_path = tmp_dir / "README.txt"
         write_readme(readme_path, cfg, i, slice_count, slice_name)
 
-        # Files to include in this disc's ISO
+        # Files to include on this disc
         slice_hash = Path(str(slice_file) + ".sha512")
         sources = [slice_file]
         if slice_hash.exists():
@@ -633,7 +650,6 @@ def cmd_create(args):
         # The per-archive README sits in there too — no top-level files.
         entries = [(f"{cfg.dar_name}/{p.name}", p) for p in sources]
 
-        # Build ISO directly from in-place files (no staging copies).
         # Label is "<truncated_name>_G<NN>_<NNNN>" — name budget derived
         # from the actual suffix so variants (e.g. the packed-disc "+"
         # marker) always fit the 32-byte ISO9660 limit.
@@ -642,42 +658,55 @@ def cmd_create(args):
             label_suffix += "+"  # marks a packed (shared, multi-archive) disc
         name_budget = ISO9660_VOLUME_LABEL_MAX - len(label_suffix)
         volume_label = f"{cfg.name[:name_budget]}{label_suffix}"
-        iso_path = images_dir / f"disc_{i:04d}.iso"
-        log.info(f"  building {iso_path.name}...")
-        if pack_iso is not None and i == 1:
-            # Combined disc: the leftover ISO's contents ride along,
-            # re-foldered if the source was legacy-flat. The mount only
-            # needs to live for the duration of the mkisofs run.
-            with _loop_mounted(pack_iso) as pack_mount:
-                mkisofs.build(
-                    iso_path, _pack_graft_entries(pack_mount) + entries, volume_label, publisher
-                )
-        else:
-            mkisofs.build(iso_path, entries, volume_label, publisher)
+        disc_path = disc_output_dir / (f"disc_{i:04d}.iso" if args.iso else f"disc_{i:04d}")
+        log.info(f"  preparing {disc_path.name}...")
+        with contextlib.ExitStack() as stack:
+            if pack_iso is not None and i == 1:
+                if pack_signature is not None and tree_signature(pack_iso) != pack_signature:
+                    raise ValueError("The --pack-with folder changed during creation")
+                pack_mount = stack.enter_context(_loop_mounted(pack_iso))
+                entries = _pack_graft_entries(pack_mount) + entries
+            if args.iso:
+                mkisofs.build(disc_path, entries, volume_label, publisher)
+                iso_size = disc_path.stat().st_size
+                if disc_write_bytes(iso_size) > raw_capacity:
+                    log.error(
+                        f"Disc {i} ISO requires {disc_write_bytes(iso_size)} bytes including "
+                        f"32-KiB write padding, exceeding writable capacity ({raw_capacity} bytes)"
+                    )
+                    disc_path.unlink()
+                    sys.exit(1)
+            else:
+                try:
+                    folder = prepare_folder(
+                        disc_path,
+                        entries,
+                        volume_label,
+                        publisher,
+                        raw_capacity,
+                        move_sources={slice_file, slice_hash, *par2_files},
+                    )
+                except ValueError as exc:
+                    log.error(str(exc))
+                    sys.exit(1)
+                folders.append(folder)
+                iso_size = folder.image_bytes
+            if i == 1 and pack_signature is not None and tree_signature(pack_iso) != pack_signature:
+                raise ValueError("The --pack-with folder changed during copying")
 
-        # Hard fit check — the ISO file IS what gets written to disc.
-        # raw_capacity is the format-aware writable extent.
-        iso_size = iso_path.stat().st_size
         pct = iso_size * 100 // raw_capacity
         log.ok(
-            f"  Disc {i}/{slice_count}: ISO {human_bytes(iso_size)} "
+            f"  Disc {i}/{slice_count}: {human_bytes(iso_size)} "
             f"({pct}% of {human_bytes(raw_capacity)})"
         )
-        if iso_size > raw_capacity:
-            log.error(
-                f"Disc {i} ISO ({human_bytes(iso_size)}) exceeds "
-                f"writable capacity ({human_bytes(raw_capacity)})"
-            )
-            iso_path.unlink()
-            sys.exit(1)
 
         # Cleanup this disc's intermediate files. Catalog + dar's
         # remaining files are dropped by the rmtree below.
-        slice_file.unlink()
+        slice_file.unlink(missing_ok=True)
         if slice_hash.exists():
             slice_hash.unlink()
         for pf in par2_files:
-            pf.unlink()
+            pf.unlink(missing_ok=True)
         readme_path.unlink(missing_ok=True)
 
     # Persist the isolated catalog alongside images/ for two reasons:
@@ -706,14 +735,18 @@ def cmd_create(args):
         with contextlib.suppress(OSError):
             work_dir.rmdir()
 
+    if not args.iso:
+        save_disc_set(disc_output_dir, folders)
+
     # ── Summary ─────────────────────────────────────────────────────────
     ratio = total_archive * 100 // max(scan.total_bytes, 1)
 
     if pack_iso is not None:
         log.warn(f"Packed: {pack_iso}")
         log.warn(
-            "  is superseded by images/disc_0001.iso — do NOT burn the original "
-            "ISO anymore; delete it once the combined disc is burned and verified."
+            f"  is superseded by {disc_output_dir.name}/disc_0001{'.iso' if args.iso else ''} "
+            "— do NOT burn the original "
+            "disc separately; retain it until the combined disc is burned and verified."
         )
 
     log.step("Summary")
@@ -722,7 +755,7 @@ def cmd_create(args):
     print(f"  Discs:        {slice_count} x {human_bytes(raw_capacity)}")
     print(f"  PAR2:         {cfg.redundancy}% per disc")
     print(f"  Compression:  {cfg.comp_str}")
-    print(f"  Images:       {images_dir}")
+    log.info(f"Disc output:   {disc_output_dir}")
     print(f"  Catalog:      {output_dir}/{cfg.dar_name}-catalog.*.dar")
     log.info(f"Next step: bd-archive burn -i {shlex.quote(str(output_dir))}")
     print(f"  Cleanup:      rm -rf {output_dir}\n")

@@ -14,9 +14,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   wiki edit is required; state that the documentation was reviewed.
 - Keep `README.md` concise and update its essentials and wiki links when affected.
   Detailed usage documentation belongs in the wiki.
-- The wiki is a separate Git repository. Include its changes in the delivery and
-  report whether they have been published. If the checkout or remote is unavailable,
+- The wiki is a separate Git repository. Commit and push affected wiki updates
+  directly in the same task, without waiting for the code PR to merge. A patch
+  included in the code PR does not replace publishing the live wiki. This is
+  standing authorization to publish the documentation covered by the task.
+  Report whether publication succeeded. If the checkout or remote is unavailable,
   report the blocker rather than silently leaving the documentation stale.
+
+## Current output workflow: disc folders by default
+
+`create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`
+selects the original `images/disc_NNNN.iso` workflow described in detail below.
+This output choice is independent of `-m raw|dar`.
+
+Both modes reject multiple regular-file names with the same `(st_dev, st_ino)`
+within the selected source, for folder and ISO output. External hardlinks and
+independent copies/reflinks are allowed. DAR validation excludes auto-deferred
+paths; incremental preview heuristics do not exclude unchanged source names.
+The error names the conflicting relative paths before archive/recovery creation.
+
+- `archive/disc_folder.py` materializes disc contents, checks exact filesystem
+  size with `mkisofs -print-size`, and publishes `discs/manifest.json` only after
+  the complete folder set succeeds. The manifest remains outside disc contents.
+- `archive/sizing.py:disc_write_bytes` rounds image lengths up to growisofs's
+  32-KiB write blocks. Creation and burn capacity gates use this padded length
+  for folders and ISOs, as does raw recovery planning. Manifest `image_bytes`
+  remains the unpadded filesystem size; older manifests need no migration.
+- DAR slices/recovery move from scratch without rewriting on the same filesystem;
+  cross-filesystem workdirs require copies. Non-moved files, including raw
+  payload and packed archive files, try a reflink before a normal progress copy.
+  `tools/reflink.py` preserves metadata and propagates I/O/storage/permission errors;
+  only unsupported cloning falls back. Per-disc totals report logical bytes
+  reflinked, copied and moved. User sources/packed archives are never moved or
+  hard-linked. Restore staging and optional ISO output retain their existing paths.
+- `burn` reads folders plus the manifest, or legacy ISOs. Folder burns require
+  `mkisofs`, remeasure after the insertion prompt, reject changed file metadata,
+  and stream the filesystem through growisofs with the same options/backend.
+  Unknown capacity stops folder burns unless `--skip-fit-check` was explicit.
+  ISO behavior, post-burn verification and two-press SIGINT handling remain.
+- `extract -i/--input` accepts individual DAR folders, create output directories
+  or ISO files (`--iso` remains an alias). Only ISO inputs need `udisksctl`.
+  `--pack-with` likewise accepts an individual DAR folder or ISO.
+- Incomplete folder sets cannot be burned; creation refuses output containing
+  either existing ISOs or any nonempty `discs/` tree. Keep folders and their
+  manifest together and preserve permissions/mtimes when copying the set.
+- Review current workflow details in the wiki; statements below about mandatory
+  ISO assembly, `images/`-only discovery and no connecting manifest describe
+  the optional ISO path. The on-disc raw/DAR layouts are unchanged.
 
 ## Project
 

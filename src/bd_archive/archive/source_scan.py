@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from bd_archive.archive.hardlinks import HardlinkTracker
 
 
 @dataclass
@@ -7,6 +9,7 @@ class SourceScan:
     total_bytes: int  # sum of regular file sizes
     entry_count: int  # files + dirs + symlinks + ...
     catalog_est: int  # estimated isolated dar catalog size
+    hardlinks: HardlinkTracker = field(default_factory=HardlinkTracker)
 
 
 @dataclass(frozen=True)
@@ -50,16 +53,21 @@ def scan_source(source: Path) -> SourceScan:
     catalog = HEADER
     total = 0
     count = 0
+    hardlinks = HardlinkTracker()
     for p in source.rglob("*"):
         count += 1
         try:
             rel = p.relative_to(source).as_posix()
             catalog += PER_ENTRY + len(rel.encode("utf-8"))
             if p.is_file() and not p.is_symlink():
-                total += p.stat().st_size
+                st = p.stat()
+                total += st.st_size
+                hardlinks.add(rel, st.st_dev, st.st_ino)
         except (OSError, ValueError):
             catalog += PER_ENTRY + 256
-    return SourceScan(total_bytes=total, entry_count=count, catalog_est=catalog)
+    return SourceScan(
+        total_bytes=total, entry_count=count, catalog_est=catalog, hardlinks=hardlinks
+    )
 
 
 def scan_delta_bytes(source: Path, known_paths: set[str], base_mtime: float) -> int:
