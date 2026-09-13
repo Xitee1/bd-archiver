@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_WRITE_TIMEOUT = 600
+DEFAULT_WRITE_TIMEOUT = 180
 MAX_WRITE_TIMEOUT = 86400
 LIBRARY = Path(__file__).resolve().parents[1] / "_native/burn_timeout.so"
 
