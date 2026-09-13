@@ -46,6 +46,7 @@ from bd_archive.tools import mkisofs
 from bd_archive.tools.dar import list_catalog_paths
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
+from bd_archive.tools.software import software_info
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
 
@@ -481,6 +482,9 @@ def cmd_create(args):
         compression=args.compression,
         comp_level=args.level,
         generation=generation,
+        software=software_info(
+            [tool for tool in deps if tool != "dvd+rw-mediainfo" or args.bytes is None]
+        ),
     )
 
     log.step("Source")

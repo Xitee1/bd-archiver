@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from bd_archive import __version__
+from bd_archive.archive.config import raw_readme
 from bd_archive.archive.disc_folder import check_output_available, prepare_folder, save_disc_set
 from bd_archive.archive.raw import (
     MAX_PAR2_BLOCKS,
@@ -28,6 +29,7 @@ from bd_archive.shell.format import human_bytes
 from bd_archive.tools import mkisofs, par2
 from bd_archive.tools.mediainfo import detect_disc_capacity
 from bd_archive.tools.optical import resolve_device
+from bd_archive.tools.software import software_info
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
 
@@ -112,32 +114,14 @@ def _create_raw(args):
     redundancy = (
         "automatic (remaining disc capacity)" if args.redundancy is None else f"{args.redundancy}%"
     )
-    recovery_help = (
-        "Verify with: bd-archive verify <disc-mountpoint-or-iso>\n"
-        "PAR2 protects non-empty file contents, not filesystem metadata or empty files.\n"
-        "To repair, copy the entire disc (source folder and recovery files) to a writable\n"
-        "directory, change into that directory and run:\n"
-        "  chmod -R u+rwX .  # if copied files are still read-only\n"
-        "  par2 repair -B. recovery.par2\n"
-        "The read-only disc itself cannot be repaired in place.\n"
-        if recovery_enabled
-        else "PAR2 is disabled; recovery data is unavailable.\n"
-        "Verify with: bd-archive verify <disc-mountpoint-or-iso> (SHA-512).\n"
-    )
+    software = software_info(deps)
     work.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="raw-", dir=work) as scratch:
             metadata = Path(scratch) / "metadata"
             metadata.mkdir()
             (metadata / "README.txt").write_text(
-                f"{args.name} — directly readable data disc\n"
-                f"Created by {publisher}; PAR2 redundancy: {redundancy}\n\n"
-                "Open/play files directly from the disc. No dar or extraction is needed.\n"
-                f"Your files are in the {source.name}/ folder beside this README.\n"
-                "checksums.sha512 covers every source file, including empty files.\n"
-                "To check hashes, change into the disc root and run:\n"
-                "  sha512sum -c checksums.sha512\n"
-                f"{recovery_help}",
+                raw_readme(args.name, redundancy, recovery_enabled, software),
                 encoding="utf-8",
             )
             manifest = metadata / RAW_CHECKSUMS
@@ -216,6 +200,9 @@ def _create_raw(args):
                         "Source changed while creating PAR2; retry with an unchanged source"
                     )
 
+            (metadata / "README.txt").write_text(
+                raw_readme(args.name, redundancy, recovery_enabled, software), encoding="utf-8"
+            )
             iso_size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
             if disc_write_bytes(iso_size) > capacity:
                 raise ValueError(

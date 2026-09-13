@@ -1,8 +1,7 @@
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
-from bd_archive.shell.format import human_bytes
+from bd_archive.tools.software import software_info
 
 
 @dataclass
@@ -13,6 +12,7 @@ class ArchiveConfig:
     compression: str
     comp_level: str | None
     generation: int = 1
+    software: str = ""
 
     @property
     def comp_str(self) -> str:
@@ -34,23 +34,56 @@ class ArchiveConfig:
 def write_readme(
     readme_path: Path, cfg: ArchiveConfig, disc_num: int, total_discs: int, slice_name: str
 ):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    recovery_help = (
-        f"          par2 verify {slice_name}.par2\n"
-        f"REPAIR:   par2 repair {slice_name}.par2\n"
-        "DEPENDS:  pacman -S dar par2cmdline  |  apt install dar par2\n"
+    recovery = (
+        "RECOVERY:\n"
+        "  Format:     PAR2\n"
+        "  Coverage:   DAR slice\n"
+        f"  Redundancy: {cfg.redundancy}%\n"
+        f"  Index:      {slice_name}.par2\n"
+        f"  Volumes:    {slice_name}.vol*.par2\n"
         if cfg.redundancy
-        else "REPAIR:   Unavailable (PAR2 disabled).\n"
-        "          bd-archive verify uses SHA-512 checksums.\n"
-        "DEPENDS:  pacman -S dar  |  apt install dar\n"
+        else "RECOVERY:     None\n"
     )
+    software = cfg.software or software_info(
+        ["dar", "mkisofs", *(["par2"] if cfg.redundancy else [])]
+    )
+    checksum_files = f"  File:      {slice_name}.sha512\n"
+    if disc_num == 1:
+        checksum_files += f"  File:      {cfg.dar_name}-catalog.*.dar.sha512\n"
     readme_path.write_text(
-        f"BD-ARCHIVE | {cfg.name} | Gen {cfg.generation} | Disc {disc_num}/{total_discs}"
-        f" | {ts} | Capacity {human_bytes(cfg.disc_bytes)}"
-        f" | PAR2 {cfg.redundancy}% | {cfg.comp_str}\n\n"
-        f"RESTORE:  dar -x {cfg.dar_name} -R /target\n"
-        f"VERIFY:   sha512sum -c {slice_name}.sha512\n"
-        f"{recovery_help}"
-        f"\nCHAIN:    Name '{cfg.name}' identifies this archive chain.\n"
-        f"          Future incremental generations must use the same name.\n"
+        f"ARCHIVE NAME: {cfg.name}\n"
+        "FORMAT:       DAR\n"
+        f"GENERATION:   {cfg.generation}"
+        f" ({'full' if cfg.generation == 1 else 'incremental'})\n"
+        f"DISC:         {disc_num}/{total_discs}\n"
+        f"COMPRESSION:  {cfg.comp_str}\n\n"
+        "CHECKSUM:\n"
+        "  Algorithm: SHA-512\n"
+        f"{checksum_files}\n"
+        f"{recovery}\n"
+        f"{software}",
+        encoding="utf-8",
+    )
+
+
+def raw_readme(name: str, redundancy: str, recovery_enabled: bool, software: str) -> str:
+    """Describe a raw disc; file paths are relative to this README."""
+    recovery = (
+        "RECOVERY:\n"
+        "  Format:     PAR2\n"
+        "  Coverage:   Non-empty file contents\n"
+        f"  Redundancy: {redundancy}\n"
+        "  Index:      recovery.par2\n"
+        "  Volumes:    recovery.vol*.par2\n"
+        if recovery_enabled
+        else "RECOVERY:     None\n"
+    )
+    return (
+        f"ARCHIVE NAME: {name}\n"
+        "FORMAT:       UDF / ISO 9660 (Rock Ridge)\n\n"
+        "CHECKSUM:\n"
+        "  Algorithm: SHA-512\n"
+        "  File:      checksums.sha512\n\n"
+        f"{recovery}\n"
+        f"{software}"
     )

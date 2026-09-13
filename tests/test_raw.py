@@ -384,9 +384,9 @@ class RawIntegrationTests(unittest.TestCase):
         )
         self.assertFalse((restored / ".bd-archive").exists())
         readme = (restored / "README.txt").read_text()
-        self.assertIn(f"{self.source.name}/", readme)
-        self.assertIn("par2 repair -B. recovery.par2", readme)
-        self.assertIn("sha512sum -c checksums.sha512", readme)
+        self.assertIn("ARCHIVE NAME:", readme)
+        self.assertIn("Index:      recovery.par2", readme)
+        self.assertIn("File:      checksums.sha512", readme)
         for original in self.source.rglob("*"):
             target = restored / self.source.name / original.relative_to(self.source)
             if original.is_dir():
@@ -394,7 +394,7 @@ class RawIntegrationTests(unittest.TestCase):
             else:
                 self.assertEqual(target.read_bytes(), original.read_bytes())
         # bsdtar's UDF reader restores optical-media read-only modes.
-        # Repair needs a writable copy, as described in the disc README.
+        # Repair needs a writable copy.
         for target in restored.rglob("*"):
             target.chmod(0o755 if target.is_dir() else 0o644)
         self.cli("verify", restored)
