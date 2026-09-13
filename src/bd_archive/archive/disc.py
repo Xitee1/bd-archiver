@@ -7,6 +7,7 @@ from bd_archive.constants import POST_BURN_MOUNT_TIMEOUT
 from bd_archive.tools import eject as eject_tool
 from bd_archive.tools import growisofs, mkisofs, udisks
 from bd_archive.tools import mount as mount_tool
+from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 from bd_archive.ui.logger import log
 
 # Close-tray attempt schedule (cumulative seconds from start of wait):
@@ -196,16 +197,30 @@ class DiscIO:
 
             time.sleep(1)
 
-    def burn(self, iso_path: Path, speed: str | None = None):
-        growisofs.burn(self.device, iso_path, speed)
+    def burn(
+        self,
+        iso_path: Path,
+        speed: str | None = None,
+        *,
+        write_timeout: int = DEFAULT_WRITE_TIMEOUT,
+    ):
+        growisofs.burn(self.device, iso_path, speed, write_timeout=write_timeout)
 
     def burn_folder(
-        self, entries, volume_label: str, publisher: str, speed=None, *, rock_ridge=False
+        self,
+        entries,
+        volume_label: str,
+        publisher: str,
+        speed=None,
+        *,
+        rock_ridge=False,
+        write_timeout: int = DEFAULT_WRITE_TIMEOUT,
     ):
         growisofs.burn(
             self.device,
             None,
             speed,
+            write_timeout=write_timeout,
             filesystem_args=mkisofs.filesystem_args(
                 entries, volume_label, publisher, rock_ridge=rock_ridge
             ),

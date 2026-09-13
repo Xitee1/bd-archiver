@@ -19,6 +19,7 @@ from bd_archive.cli import build_parser
 from bd_archive.commands.burn import _burn_one_disc
 from bd_archive.commands.create import cmd_create
 from bd_archive.constants import DISC_END_MARGIN, DISC_WRITE_BLOCK, RAW_ROOT_MARKER, MiB
+from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 
 
 class RawValidationTests(unittest.TestCase):
@@ -280,7 +281,9 @@ class RawValidationTests(unittest.TestCase):
     def test_single_disc_allows_unused_space_but_never_overflow(self):
         iso = self.root / "disc_0001.iso"
         iso.write_bytes(b"x" * 100)
-        args = argparse.Namespace(skip_fit_check=False, no_verify=True, speed=None)
+        args = argparse.Namespace(
+            skip_fit_check=False, no_verify=True, speed=None, write_timeout=DEFAULT_WRITE_TIMEOUT
+        )
         for count, capacity, succeeds in ((1, 65536, True), (1, 32767, False), (2, 65536, False)):
             drive = Mock(device="/dev/fake")
             with (
@@ -291,7 +294,9 @@ class RawValidationTests(unittest.TestCase):
             ):
                 if succeeds:
                     _burn_one_disc(args, self.root, iso, 1, count, drive, 32768)
-                    drive.burn.assert_called_once_with(iso, None)
+                    drive.burn.assert_called_once_with(
+                        iso, None, write_timeout=DEFAULT_WRITE_TIMEOUT
+                    )
                 else:
                     with self.assertRaises(SystemExit):
                         _burn_one_disc(args, self.root, iso, 1, count, drive, 32768)

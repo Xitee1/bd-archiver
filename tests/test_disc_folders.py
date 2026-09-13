@@ -24,6 +24,7 @@ from bd_archive.archive.disc_folder import (
 from bd_archive.cli import build_parser
 from bd_archive.commands.burn import _burn_one_disc, cmd_burn
 from bd_archive.tools import growisofs, mkisofs
+from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 
 
 class DiscFolderTests(unittest.TestCase):
@@ -139,7 +140,9 @@ class DiscFolderTests(unittest.TestCase):
 
     def test_burn_uses_folder_after_remeasurement_and_preserves_fit_gate(self):
         folder = self.prepare()
-        args = argparse.Namespace(skip_fit_check=False, no_verify=True, speed="4")
+        args = argparse.Namespace(
+            skip_fit_check=False, no_verify=True, speed="4", write_timeout=DEFAULT_WRITE_TIMEOUT
+        )
         for capacity, burns in ((32768, True), (32767, False), (None, False)):
             drive = Mock(device="/dev/test")
             with (
@@ -160,7 +163,9 @@ class DiscFolderTests(unittest.TestCase):
 
     def test_change_during_insertion_prompt_prevents_burn_even_with_skip_fit(self):
         folder = self.prepare()
-        args = argparse.Namespace(skip_fit_check=True, no_verify=True, speed=None)
+        args = argparse.Namespace(
+            skip_fit_check=True, no_verify=True, speed=None, write_timeout=DEFAULT_WRITE_TIMEOUT
+        )
         drive = Mock(device="/dev/test")
         with (
             patch(
@@ -194,6 +199,10 @@ class DiscFolderTests(unittest.TestCase):
             patch("bd_archive.tools.growisofs.subprocess.Popen", return_value=proc) as popen,
             patch("bd_archive.tools.growisofs.shutil.which", return_value="/usr/bin/mkisofs"),
             patch.dict(os.environ, {"MKISOFS": "/wrong/backend"}),
+            patch(
+                "bd_archive.tools.growisofs.prepared_burn",
+                side_effect=lambda device, seconds, env: contextlib.nullcontext({"env": env}),
+            ),
         ):
             growisofs.burn("/dev/test", None, "4", filesystem_args=args)
         command = popen.call_args.args[0]

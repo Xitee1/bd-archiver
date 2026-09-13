@@ -5,6 +5,9 @@ import subprocess
 import time
 from pathlib import Path
 
+from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, prepared_burn
+from bd_archive.ui.logger import log
+
 # Window during which a second Ctrl+C is treated as a confirmed force-abort.
 # 5s is long enough for a deliberate double-press but short enough that an
 # accidental Ctrl+C plus a later real one don't compound.
@@ -26,6 +29,7 @@ def burn(
     speed: str | None = None,
     *,
     filesystem_args: list[str] | None = None,
+    write_timeout: int = DEFAULT_WRITE_TIMEOUT,
 ):
     """Burn an ISO or stream a prepared filesystem through growisofs.
 
@@ -97,7 +101,7 @@ def burn(
     # growisofs supports MKISOFS as a backend override. Pin it to the
     # same executable used for our size calculation, ignoring inherited
     # overrides that could otherwise change the filesystem or its size.
-    env = None
+    env = dict(os.environ)
     if filesystem_args is not None:
         backend = shutil.which("mkisofs")
         if backend is None:
@@ -106,14 +110,16 @@ def burn(
 
     # start_new_session=True isolates growisofs from the user's SIGINT
     # so the burn only dies when WE call terminate() — see handler below.
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-        env=env,
-    )
+    with prepared_burn(device, write_timeout, env) as launch:
+        log.info(f"Write command timeout: at least {write_timeout} seconds")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+            **launch,
+        )
 
     state = {"first_press_at": None, "aborted": False}
 

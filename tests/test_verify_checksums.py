@@ -13,6 +13,7 @@ from bd_archive.archive.raw import scan_raw_source, write_raw_checksums
 from bd_archive.archive.verify import verify_disc
 from bd_archive.commands.burn import _burn_one_disc
 from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_ROOT_MARKER
+from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 from bd_archive.tools.par2 import VerifyResult
 
 
@@ -222,7 +223,9 @@ class ChecksumVerificationTests(unittest.TestCase):
         iso.write_bytes(b"fake ISO")
         drive = Mock(device="/dev/mock")
         drive.mount_with_retry.return_value = (self.disc, None)
-        args = argparse.Namespace(skip_fit_check=True, no_verify=False, speed=None)
+        args = argparse.Namespace(
+            skip_fit_check=True, no_verify=False, speed=None, write_timeout=DEFAULT_WRITE_TIMEOUT
+        )
         with (
             patch("bd_archive.commands.burn.prompt_disc"),
             patch("bd_archive.commands.burn.time.sleep"),
@@ -230,6 +233,6 @@ class ChecksumVerificationTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
         ):
             _burn_one_disc(args, self.root, iso, 1, 1, drive, iso.stat().st_size)
-        drive.burn.assert_called_once_with(iso, None)
+        drive.burn.assert_called_once_with(iso, None, write_timeout=DEFAULT_WRITE_TIMEOUT)
         drive.umount.assert_called_once_with(self.disc)
         drive.eject.assert_called_once()
