@@ -1,13 +1,15 @@
 """Collect concise provenance for the programs used to create an archive."""
 
+import os
 import platform
 import re
+import shutil
 import subprocess
 from importlib.metadata import PackageNotFoundError, version
 
 from bd_archive import __version__
 
-# dvd+rw-mediainfo has no version-only invocation; do not pass a fake device.
+# Tools without a version-only invocation use their owning package metadata.
 _PROGRAMS = {
     "dar": ("-V", r"dar version ([^,\s]+)", "https://dar.sourceforge.io/"),
     "mkisofs": (
@@ -22,8 +24,8 @@ _PROGRAMS = {
     ),
     "dvd+rw-mediainfo": (None, "", "https://fy.chalmers.se/~appro/linux/DVD+RW/"),
     "udisksctl": (
-        "--version",
-        r"udisksctl ([^\s]+)",
+        None,
+        "",
         "https://www.freedesktop.org/wiki/Software/udisks/",
     ),
 }
@@ -37,14 +39,16 @@ def software_info(commands: list[str]) -> str:
     ]
     try:
         argcomplete_version = version("argcomplete")
-    except PackageNotFoundError:
-        argcomplete_version = "version unavailable"
+    except PackageNotFoundError as exc:
+        raise ValueError("Cannot determine argcomplete version") from exc
     entries.append(("argcomplete", argcomplete_version, "https://github.com/kislyuk/argcomplete"))
     for command in dict.fromkeys(commands):
         flag, pattern, url = _PROGRAMS[command]
         name = command
-        tool_version = "version unavailable"
-        if flag is not None:
+        if flag is None:
+            package, tool_version = _package_version(command)
+            name = f"{command} ({package} package)"
+        else:
             try:
                 result = subprocess.run(
                     [command, flag],
@@ -58,8 +62,13 @@ def software_info(commands: list[str]) -> str:
                 )
                 output = result.stdout
                 match = re.search(pattern, output, re.IGNORECASE)
-                if match:
-                    tool_version = match[1]
+                if result.returncode != 0:
+                    raise ValueError(
+                        f"Version query for {command} failed (exit {result.returncode})"
+                    )
+                if not match:
+                    raise ValueError(f"Cannot parse version reported by {command}")
+                tool_version = match[1]
                 if command == "dar":
                     libdar = re.search(r"Using libdar ([^\s]+)", output)
                     if libdar:
@@ -72,9 +81,49 @@ def software_info(commands: list[str]) -> str:
                     url = "https://github.com/animetosho/par2cmdline-turbo"
                 elif command == "par2":
                     name = "par2cmdline"
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ValueError(f"Version query for {command} failed: {exc}") from exc
         entries.append((name, tool_version, url))
     return "SOFTWARE:\n" + "\n".join(
         f"  {name} {tool_version}\n  {url}\n" for name, tool_version, url in entries
     )
+
+
+def _package_version(command: str) -> tuple[str, str]:
+    """Read the owning package of the selected executable, never a guessed package."""
+    executable = shutil.which(command)
+    if executable is None:
+        raise ValueError(f"Cannot determine version: {command} is missing")
+
+    def query(args: list[str]) -> str:
+        try:
+            result = subprocess.run(
+                args,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+                env={**os.environ, "LC_ALL": "C"},
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(f"Package version query for {command} failed: {exc}") from exc
+        return result.stdout.strip()
+
+    if shutil.which("pacman"):
+        output = query(["pacman", "-Qo", executable])
+        match = re.fullmatch(r".+ is owned by (\S+) (\S+)", output)
+        if match:
+            return match[1], match[2]
+    elif shutil.which("dpkg-query"):
+        owner = query(["dpkg-query", "-S", executable]).split(": ", 1)[0]
+        output = query(["dpkg-query", "-W", "-f=${Package} ${Version}", owner])
+        parts = output.split()
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    elif shutil.which("rpm"):
+        output = query(["rpm", "-qf", "--qf", "%{NAME} %{VERSION}-%{RELEASE}", executable])
+        parts = output.split()
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    raise ValueError(f"Cannot determine owning package version for {command}")

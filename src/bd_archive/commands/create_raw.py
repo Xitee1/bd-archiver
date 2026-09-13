@@ -8,7 +8,6 @@ import tempfile
 from pathlib import Path
 
 from bd_archive import __version__
-from bd_archive.archive.config import raw_readme
 from bd_archive.archive.disc_folder import check_output_available, prepare_folder, save_disc_set
 from bd_archive.archive.raw import (
     MAX_PAR2_BLOCKS,
@@ -18,6 +17,7 @@ from bd_archive.archive.raw import (
     validate_raw_source_name,
     write_raw_checksums,
 )
+from bd_archive.archive.readme import write_readme
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import (
     DISC_END_MARGIN,
@@ -88,6 +88,7 @@ def _create_raw(args):
     if args.bytes is None:
         deps.append("dvd+rw-mediainfo")
     check_deps(*deps)
+    software = software_info(deps)
     capacity = args.bytes
     if capacity is None:
         device = resolve_device(args.device)
@@ -115,7 +116,6 @@ def _create_raw(args):
     redundancy = (
         "automatic (remaining disc capacity)" if args.redundancy is None else f"{args.redundancy}%"
     )
-    software = software_info(deps)
     work.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="raw-", dir=work) as scratch:
@@ -211,11 +211,23 @@ def _create_raw(args):
                 if sizing is not None
                 else redundancy
             )
-            (metadata / "README.txt").write_text(
-                raw_readme(
-                    args.name, readme_redundancy, recovery_enabled, software, args.description
-                ),
-                encoding="utf-8",
+            write_readme(
+                metadata / "README.txt",
+                name=args.name,
+                description=args.description,
+                archive_format="UDF / ISO 9660 (Rock Ridge)",
+                details={},
+                checksum_files=[RAW_CHECKSUMS],
+                recovery={
+                    "Format": "PAR2",
+                    "Coverage": "Non-empty file contents",
+                    "Redundancy": readme_redundancy,
+                    "Index": RAW_PAR2_INDEX,
+                    "Volumes": "recovery.vol*.par2",
+                }
+                if recovery_enabled
+                else None,
+                software=software,
             )
             iso_size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
             if disc_write_bytes(iso_size) > capacity:

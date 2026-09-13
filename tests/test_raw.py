@@ -210,7 +210,7 @@ class RawValidationTests(unittest.TestCase):
             patch("bd_archive.commands.create_raw.check_deps"),
             patch("bd_archive.commands.create_raw.mkisofs.estimate_size", return_value=100),
             patch("bd_archive.commands.create_raw.prompt_yn", return_value=False),
-            patch("bd_archive.commands.create_raw.raw_readme") as readme,
+            patch("bd_archive.commands.create_raw.write_readme") as readme,
             patch("bd_archive.archive.raw._hash_file_sha512") as hash_file,
             patch("bd_archive.commands.create_raw.par2.create_tree") as recovery,
             contextlib.redirect_stdout(io.StringIO()),
