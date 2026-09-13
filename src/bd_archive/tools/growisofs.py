@@ -32,6 +32,8 @@ def burn(
     With filesystem_args, -Z dev invokes mkisofs directly. The caller
     must first size the unchanged inputs with the same filesystem options.
     No ISO is saved to local storage in this mode.
+    growisofs reports write progress, speed and buffer utilization for
+    folder streams as it does for existing ISOs.
 
     growisofs's -Z dev=image syntax writes the ISO byte-for-byte to
     the disc — no on-the-fly mkisofs invocation, so what's in the
@@ -89,7 +91,8 @@ def burn(
     if speed:
         cmd += [f"-speed={speed}"]
     if filesystem_args is not None:
-        cmd += filesystem_args
+        # Use growisofs's write/buffer status and silence mkisofs's progress.
+        cmd += ["-use-the-force-luke=moi", *filesystem_args]
 
     # growisofs supports MKISOFS as a backend override. Pin it to the
     # same executable used for our size calculation, ignoring inherited
