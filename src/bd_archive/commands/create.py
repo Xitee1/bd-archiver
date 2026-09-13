@@ -477,6 +477,7 @@ def cmd_create(args):
     par2_est = slice_bytes * args.redundancy // 100
     cfg = ArchiveConfig(
         name=args.name,
+        description=args.description,
         disc_bytes=raw_capacity,
         redundancy=args.redundancy,
         compression=args.compression,

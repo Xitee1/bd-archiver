@@ -92,7 +92,8 @@ class WriteSizeTests(unittest.TestCase):
     def test_auto_recovery_accounts_for_padding_before_safety_margin(self):
         metadata = self.root / "metadata"
         metadata.mkdir()
-        for available, succeeds in ((65535, False), (65536, True)):
+        # Include the write block reserved for the final README.
+        for available, succeeds in ((98303, False), (98304, True)):
             with (
                 self.subTest(available=available),
                 patch("bd_archive.tools.mkisofs.estimate_size", return_value=34816),

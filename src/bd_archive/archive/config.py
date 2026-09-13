@@ -13,6 +13,7 @@ class ArchiveConfig:
     comp_level: str | None
     generation: int = 1
     software: str = ""
+    description: str = ""
 
     @property
     def comp_str(self) -> str:
@@ -52,6 +53,7 @@ def write_readme(
         checksum_files += f"  File:      {cfg.dar_name}-catalog.*.dar.sha512\n"
     readme_path.write_text(
         f"ARCHIVE NAME: {cfg.name}\n"
+        f"{_description_text(cfg.description)}"
         "FORMAT:       DAR\n"
         f"GENERATION:   {cfg.generation}"
         f" ({'full' if cfg.generation == 1 else 'incremental'})\n"
@@ -66,7 +68,9 @@ def write_readme(
     )
 
 
-def raw_readme(name: str, redundancy: str, recovery_enabled: bool, software: str) -> str:
+def raw_readme(
+    name: str, redundancy: str, recovery_enabled: bool, software: str, description: str = ""
+) -> str:
     """Describe a raw disc; file paths are relative to this README."""
     recovery = (
         "RECOVERY:\n"
@@ -80,6 +84,7 @@ def raw_readme(name: str, redundancy: str, recovery_enabled: bool, software: str
     )
     return (
         f"ARCHIVE NAME: {name}\n"
+        f"{_description_text(description)}"
         "FORMAT:       UDF / ISO 9660 (Rock Ridge)\n\n"
         "CHECKSUM:\n"
         "  Algorithm: SHA-512\n"
@@ -87,3 +92,10 @@ def raw_readme(name: str, redundancy: str, recovery_enabled: bool, software: str
         f"{recovery}\n"
         f"{software}"
     )
+
+
+def _description_text(description: str) -> str:
+    """Keep description text intact, with indentation for continuation lines."""
+    if not description:
+        return ""
+    return "DESCRIPTION:  " + description.replace("\n", "\n              ") + "\n"

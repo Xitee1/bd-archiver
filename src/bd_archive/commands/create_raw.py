@@ -21,6 +21,7 @@ from bd_archive.archive.raw import (
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import (
     DISC_END_MARGIN,
+    DISC_WRITE_BLOCK,
     PAR2_AND_MISC_OVERHEAD,
     RAW_PAR2_INDEX,
 )
@@ -120,10 +121,6 @@ def _create_raw(args):
         with tempfile.TemporaryDirectory(prefix="raw-", dir=work) as scratch:
             metadata = Path(scratch) / "metadata"
             metadata.mkdir()
-            (metadata / "README.txt").write_text(
-                raw_readme(args.name, redundancy, recovery_enabled, software),
-                encoding="utf-8",
-            )
             manifest = metadata / RAW_CHECKSUMS
             # Include checksum text and metadata in capacity planning without
             # reading all payload bytes before the confirmation prompt.
@@ -138,7 +135,15 @@ def _create_raw(args):
                     inventory, capacity, capacity - payload_iso_size, path_prefix=source.name
                 )
                 recovery_blocks, estimate = _plan_auto_recovery(
-                    metadata, entries, label, publisher, sizing, capacity
+                    metadata,
+                    entries,
+                    label,
+                    publisher,
+                    sizing,
+                    capacity
+                    - disc_write_bytes(
+                        len(args.description.encode("utf-8")) + 14 * args.description.count("\n")
+                    ),
                 )
                 recovery_bytes = recovery_blocks * sizing.block_size
                 redundancy = (
@@ -200,8 +205,17 @@ def _create_raw(args):
                         "Source changed while creating PAR2; retry with an unchanged source"
                     )
 
+            # Publish the README only after the recovery parameters are final.
+            readme_redundancy = (
+                f"{100 * recovery_bytes / total:.2f}% ({human_bytes(recovery_bytes)})"
+                if sizing is not None
+                else redundancy
+            )
             (metadata / "README.txt").write_text(
-                raw_readme(args.name, redundancy, recovery_enabled, software), encoding="utf-8"
+                raw_readme(
+                    args.name, readme_redundancy, recovery_enabled, software, args.description
+                ),
+                encoding="utf-8",
             )
             iso_size = mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
             if disc_write_bytes(iso_size) > capacity:
@@ -265,7 +279,8 @@ def _plan_auto_recovery(metadata, entries, label, publisher, sizing, capacity):
     """
     index = metadata / RAW_PAR2_INDEX
     volume = metadata / "recovery.vol00000+32768.par2"
-    target = capacity - DISC_END_MARGIN
+    # Reserve one write block for the README generated after recovery creation.
+    target = capacity - DISC_END_MARGIN - DISC_WRITE_BLOCK
     best = 0
     estimate = 0
     low, high = 1, MAX_PAR2_BLOCKS

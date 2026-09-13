@@ -48,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Archive name: up to 27 characters, using A-Z, a-z, 0-9, ._+-",
     )
     common.add_argument(
+        "--description", default="", help="Optional archive description included in the README"
+    )
+    common.add_argument(
         "-o",
         "--output",
         required=True,
