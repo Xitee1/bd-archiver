@@ -3,6 +3,7 @@ from pathlib import Path
 
 from bd_archive.constants import PAR2_RECOVERY_RE
 from bd_archive.shell.runner import run
+from bd_archive.ui.par2_progress import Par2ScanProgress
 
 
 class VerifyResult(Enum):
@@ -63,13 +64,15 @@ def create_tree(
 
 def verify(par2_index: Path, *, base_dir: Path | None = None) -> VerifyResult:
     # par2cmdline exit codes: 0 = all files OK, 1 = repair possible,
-    # 2 = repair not possible. Maps directly onto VerifyResult, so we
-    # use passthrough to let par2 paint its "Scanning: X%" progress
-    # straight to the terminal — verify takes ~20 min on a 25 GB BD-R
-    # and is otherwise a black screen.
+    # 2 = repair not possible. Progress only decorates output; the exit
+    # status remains authoritative for verification results.
     base_args = [f"-B{base_dir}"] if base_dir is not None else []
     # Hash one file at a time to avoid competing reads and seeks on optical media.
-    r = run(["par2", "verify", "-T1", *base_args, str(par2_index)], check=False, passthrough=True)
+    r = run(
+        ["par2", "verify", "-T1", *base_args, str(par2_index)],
+        check=False,
+        output_transform=Par2ScanProgress(),
+    )
     if r.returncode == 0:
         return VerifyResult.OK
     if r.returncode == 1:
@@ -78,7 +81,7 @@ def verify(par2_index: Path, *, base_dir: Path | None = None) -> VerifyResult:
 
 
 def repair(par2_index: Path) -> bool:
-    # Same passthrough rationale as verify: repair's Loading /
+    # Repair's Loading /
     # Constructing / Verifying steps all use \r-updated progress that
     # the line-buffered streamer would swallow.
     r = run(["par2", "repair", str(par2_index)], check=False, passthrough=True)

@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from bd_archive.tools.par2 import VerifyResult, verify
 
@@ -26,5 +26,5 @@ class Par2VerificationTests(unittest.TestCase):
                     run.assert_called_once_with(
                         ["par2", "verify", "-T1", *base_args, str(index)],
                         check=False,
-                        passthrough=True,
+                        output_transform=ANY,
                     )
