@@ -10,6 +10,14 @@ from bd_archive.tools.software import software_info
 
 
 class SoftwareVersionTests(unittest.TestCase):
+    def test_tools_without_version_queries_need_no_fallback_or_input(self):
+        with patch("bd_archive.tools.software.subprocess.run") as run:
+            result = software_info(["dvd+rw-mediainfo", "udisksctl"])
+        run.assert_not_called()
+        self.assertIn("  dvd+rw-mediainfo\n", result)
+        self.assertIn("  udisksctl\n", result)
+        self.assertNotIn("version unavailable", result)
+
     def test_query_failures_are_not_hidden(self):
         for outcome in (
             OSError("unavailable"),
