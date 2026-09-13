@@ -153,7 +153,7 @@ class NoRedundancyIntegrationTests(unittest.TestCase):
                 self.assert_payload(restored / self.source.name)
                 self.check_hashes(restored / "checksums.sha512", restored)
                 readme = (restored / "README.txt").read_text()
-                self.assertIn("PAR2 is disabled", readme)
+                self.assertIn("RECOVERY:     None", readme)
                 self.assertNotIn("par2 repair", readme)
                 (restored / self.source.name / "payload").chmod(0o600)
                 (restored / self.source.name / "payload").write_bytes(b"damaged")
@@ -186,7 +186,7 @@ class NoRedundancyIntegrationTests(unittest.TestCase):
                 for manifest in manifests:
                     self.check_hashes(manifest, archive)
                 readme = (archive / "README.txt").read_text()
-                self.assertIn("PAR2 disabled", readme)
+                self.assertIn("RECOVERY:     None", readme)
                 self.assertNotIn("par2 repair", readme)
                 restored = output / "restored"
                 restored.mkdir()
