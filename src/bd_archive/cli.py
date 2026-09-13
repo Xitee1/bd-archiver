@@ -10,7 +10,7 @@ from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
 from bd_archive.commands.verify import cmd_verify
-from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, write_timeout
+from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, MAX_WRITE_TIMEOUT, write_timeout
 from bd_archive.ui.logger import Logger, log
 
 
@@ -188,7 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=write_timeout,
         metavar="SECONDS",
         default=DEFAULT_WRITE_TIMEOUT,
-        help=f"Minimum timeout per drive write command, 1–${MAX_WRITE_TIMEOUT} seconds (default: ${DEFAULT_WRITE_TIMEOUT})",
+        help=(
+            f"Minimum timeout per drive write command, 1–{MAX_WRITE_TIMEOUT} seconds "
+            f"(default: {DEFAULT_WRITE_TIMEOUT})"
+        ),
     )
     bu.add_argument(
         "--start", type=int, default=1, help="Resume at disc N, counting from 1 (default: 1)"

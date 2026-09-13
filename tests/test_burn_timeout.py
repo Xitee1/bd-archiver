@@ -21,7 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 class TimeoutOptionTests(unittest.TestCase):
     def test_cli_default_override_and_invalid_values(self):
         parser = build_parser()
-        self.assertEqual(parser.parse_args(["burn", "-i", "out"]).write_timeout, 600)
+        self.assertEqual(
+            parser.parse_args(["burn", "-i", "out"]).write_timeout,
+            burn_timeout.DEFAULT_WRITE_TIMEOUT,
+        )
         self.assertEqual(
             parser.parse_args(["burn", "-i", "out", "--write-timeout", "900"]).write_timeout, 900
         )
@@ -128,7 +131,7 @@ class NativeTimeoutTests(unittest.TestCase):
             yield
 
     def test_native_interception_and_child_isolation(self):
-        for seconds in (600, 720):
+        for seconds in (burn_timeout.DEFAULT_WRITE_TIMEOUT, 720):
             with (
                 self.configuration(),
                 burn_timeout.prepared_burn("/dev/test-burner", seconds, dict(os.environ)) as launch,
@@ -153,7 +156,9 @@ class NativeTimeoutTests(unittest.TestCase):
             with (
                 self.configuration(library=library),
                 self.assertRaises(ValueError),
-                burn_timeout.prepared_burn("/dev/test-burner", 600, dict(os.environ)),
+                burn_timeout.prepared_burn(
+                    "/dev/test-burner", burn_timeout.DEFAULT_WRITE_TIMEOUT, dict(os.environ)
+                ),
             ):
                 self.fail("Invalid helper must not permit burning")
 
@@ -164,14 +169,18 @@ class NativeTimeoutTests(unittest.TestCase):
         with (
             self.configuration(executable=privileged),
             self.assertRaisesRegex(ValueError, "setuid"),
-            burn_timeout.prepared_burn("/dev/test-burner", 600, dict(os.environ)),
+            burn_timeout.prepared_burn(
+                "/dev/test-burner", burn_timeout.DEFAULT_WRITE_TIMEOUT, dict(os.environ)
+            ),
         ):
             self.fail("Setuid executable accepted")
         for key in ("LD_PRELOAD", "LD_AUDIT"):
             with (
                 self.configuration(),
                 self.assertRaisesRegex(ValueError, key),
-                burn_timeout.prepared_burn("/dev/test-burner", 600, {key: "other.so"}),
+                burn_timeout.prepared_burn(
+                    "/dev/test-burner", burn_timeout.DEFAULT_WRITE_TIMEOUT, {key: "other.so"}
+                ),
             ):
                 self.fail("Conflicting loader override accepted")
 
@@ -181,6 +190,8 @@ class NativeTimeoutTests(unittest.TestCase):
             self.skipTest("growisofs is unavailable")
         with (
             self.configuration(executable=executable),
-            burn_timeout.prepared_burn("/dev/test-burner", 600, dict(os.environ)),
+            burn_timeout.prepared_burn(
+                "/dev/test-burner", burn_timeout.DEFAULT_WRITE_TIMEOUT, dict(os.environ)
+            ),
         ):
             pass  # The constructor probe exits without opening any device.

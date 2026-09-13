@@ -17,7 +17,7 @@ to create ISO images instead. Exact filesystem sizing checks capacity without
 writing an ISO. You can verify the folders and try a restore before burning.
 [Burning](https://github.com/Xitee1/bd-archiver/wiki/Burning) includes automatic
 post-burn verification and can be resumed from a chosen disc in the set.
-Drive write commands have a minimum timeout of 600 seconds by default, adjustable
+Drive write commands have a minimum timeout of 180 seconds by default, adjustable
 with `burn --write-timeout SECONDS`.
 
 SHA-512 checksums help detect damaged data, while optional PAR2 recovery can

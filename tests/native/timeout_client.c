@@ -49,7 +49,8 @@ int main(int argc, char **argv)
     int burner = open("/dev/null", O_RDWR);
     int other = open("/dev/zero", O_RDWR);
     assert(burner >= 0 && other >= 0);
-    unsigned int minimum = argc > 1 ? strtoul(argv[1], NULL, 10) : 600000;
+    assert(argc == 2);
+    unsigned int minimum = strtoul(argv[1], NULL, 10);
     check(burner, 0x2a, SG_DXFER_TO_DEV, 60000, minimum, 'S', 10);
     check(burner, 0x2a, SG_DXFER_TO_DEV, 0, minimum, 'S', 10);
     check(burner, 0xaa, SG_DXFER_TO_DEV, 60000, minimum, 'S', 12);
