@@ -188,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=write_timeout,
         metavar="SECONDS",
         default=DEFAULT_WRITE_TIMEOUT,
-        help="Minimum timeout per drive write command, 1–86400 seconds (default: 600)",
+        help=f"Minimum timeout per drive write command, 1–${MAX_WRITE_TIMEOUT} seconds (default: ${DEFAULT_WRITE_TIMEOUT})",
     )
     bu.add_argument(
         "--start", type=int, default=1, help="Resume at disc N, counting from 1 (default: 1)"
