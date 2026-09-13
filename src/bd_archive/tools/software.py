@@ -75,6 +75,6 @@ def software_info(commands: list[str]) -> str:
             except (OSError, subprocess.TimeoutExpired):
                 pass
         entries.append((name, tool_version, url))
-    return "SOFTWARE:\n" + "".join(
+    return "SOFTWARE:\n" + "\n".join(
         f"  {name} {tool_version}\n  {url}\n" for name, tool_version, url in entries
     )
