@@ -68,7 +68,8 @@ def verify(par2_index: Path, *, base_dir: Path | None = None) -> VerifyResult:
     # straight to the terminal — verify takes ~20 min on a 25 GB BD-R
     # and is otherwise a black screen.
     base_args = [f"-B{base_dir}"] if base_dir is not None else []
-    r = run(["par2", "verify", *base_args, str(par2_index)], check=False, passthrough=True)
+    # Hash one file at a time to avoid competing reads and seeks on optical media.
+    r = run(["par2", "verify", "-T1", *base_args, str(par2_index)], check=False, passthrough=True)
     if r.returncode == 0:
         return VerifyResult.OK
     if r.returncode == 1:

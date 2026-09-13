@@ -900,10 +900,10 @@ index b0eff06..3659873 100644
  ## Disc is reported too large
  
 diff --git a/Verification.md b/Verification.md
-index 27af961..6d0268b 100644
+index 27af961..7c0c24e 100644
 --- a/Verification.md
 +++ b/Verification.md
-@@ -7,18 +7,24 @@ payload. It supports raw and DAR layouts, including packed and legacy discs.
+@@ -7,22 +7,33 @@ payload. It supports raw and DAR layouts, including packed and legacy discs.
  # Disc in the auto-detected drive.
  bd-archive verify
  
@@ -932,7 +932,16 @@ index 27af961..6d0268b 100644
  PAR2 is preferred when present. It checks the data described by its index and
  the recovery packets, without a second full SHA-512 read. A PAR2 failure does
  not fall back to SHA-512 to hide damaged recovery information.
-@@ -67,9 +73,17 @@ failure also exit with **1**. Read the diagnostic output before treating code 1
+ 
++PAR2 verification hashes one file at a time (`-T1`) to avoid competing reads
++and repeated seeks on optical drives. This also applies to post-burn checks
++and verification of folders and ISO images. Files are processed individually;
++this does not guarantee strictly increasing physical sector order.
++
+ Without PAR2:
+ 
+ - Raw discs use their SHA-512 manifest and require it to cover all payload files.
+@@ -67,9 +78,17 @@ failure also exit with **1**. Read the diagnostic output before treating code 1
  as proof that repair is possible. Ctrl+C/EOF cancellation through the top-level
  handler exits with 130; invalid CLI syntax uses argparse's exit code 2.
  
