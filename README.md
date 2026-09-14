@@ -34,6 +34,12 @@ unburned, partly filled disc with the next archive to make better use of disc
 capacity. [Storage planning](https://github.com/Xitee1/bd-archiver/wiki/Storage-and-layout)
 explains the disk space needed for creation and restoration.
 
+Multisession is not supported and is not planned for the foreseeable future.
+Files cannot be added to an already burned disc; collect them before burning or
+use a new disc for later additions. See the
+[multisession research](https://github.com/Xitee1/bd-archiver/wiki/Multisession)
+for the reasons and alternatives considered.
+
 ## Getting started
 
 bd-archiver runs on Linux. You can
