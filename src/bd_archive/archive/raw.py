@@ -105,6 +105,26 @@ def raw_par2_sizing(
     return RawPar2Sizing(block_size, critical)
 
 
+def fixed_raw_recovery(
+    inventory: list["RawEntry"],
+    capacity: int,
+    payload_bytes: int,
+    redundancy: int,
+    *,
+    path_prefix: str = "",
+) -> tuple[RawPar2Sizing, int]:
+    """Use explicit blocks so preparation and creation reserve identical recovery."""
+    sizing = raw_par2_sizing(
+        inventory, capacity, max(1, capacity - payload_bytes), path_prefix=path_prefix
+    )
+    source_blocks = sum(
+        (e.size + sizing.block_size - 1) // sizing.block_size
+        for e in inventory
+        if stat.S_ISREG(e.mode)
+    )
+    return sizing, max(1, (source_blocks * redundancy + 99) // 100)
+
+
 @dataclass(frozen=True)
 class RawEntry:
     path: str

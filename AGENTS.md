@@ -23,6 +23,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current output workflow: disc folders by default
 
+`prepare` is a separate, stateless raw-source splitter. It groups whole units
+(`--group-by top-level|files|depth:N`), proposes chronology-aware multi-disc
+layouts, and moves selected units into ordinary `disc_NNNN/` source directories
+only after a default-no confirmation. `--max-last-free` permits a newest deferred
+suffix. There is no saved plan, history, dry-run flag, confirmation bypass or
+automatic resume. Each resulting source is passed separately to the existing
+single-disc raw `create` command; preparation output is not burn-ready.
+`archive/prepare*.py` implements planning, sparse filesystem sizing and exclusive
+moves with verified cross-filesystem copies and a free-space preflight. Keep
+fixed-recovery block sizing shared with raw creation. See the wiki's
+`Preparing-raw-discs` page for the complete workflow and limitations.
+
 `create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`
 selects the original `images/disc_NNNN.iso` workflow described in detail below.
 This output choice is independent of `-m raw|dar`.
