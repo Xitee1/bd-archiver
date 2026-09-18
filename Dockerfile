@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       dar \
       par2 \
       genisoimage \
+      libimage-exiftool-perl \
       growisofs \
       dvd+rw-tools \
       udisks2 \

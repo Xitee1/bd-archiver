@@ -8,6 +8,7 @@ import stat
 from dataclasses import dataclass
 from decimal import Decimal
 
+from bd_archive.archive.content_dates import ContentDate, weighted_median
 from bd_archive.archive.raw import MAX_PAR2_BLOCKS, RawEntry
 
 
@@ -51,9 +52,13 @@ class Unit:
     date: int
     nonempty: int
     weight: int
+    date_start: int
+    date_end: int
 
 
-def make_units(inventory: list[RawEntry], depth: int | None) -> list[Unit]:
+def make_units(
+    inventory: list[RawEntry], depth: int | None, dates: dict[str, ContentDate]
+) -> list[Unit]:
     """Use disjoint roots; keep empty leaf directories even in file grouping."""
     groups: dict[str, list[RawEntry]] = {}
     parents = {entry.path.rpartition("/")[0] for entry in inventory}
@@ -69,6 +74,13 @@ def make_units(inventory: list[RawEntry], depth: int | None) -> list[Unit]:
     result = []
     for path, entries in groups.items():
         files = [e for e in entries if stat.S_ISREG(e.mode)]
+        if files:
+            date = weighted_median([(dates[e.path].timestamp, e.size) for e in files])
+            media = [dates[e.path].timestamp for e in files if dates[e.path].media]
+            span = media or [dates[e.path].timestamp for e in files]
+        else:
+            date = max(e.mtime_ns for e in entries)
+            span = [date]
         # Fast search weights include sector rounding and a path/metadata allowance.
         # Final proposals are measured with mkisofs before moving anything.
         weight = sum(
@@ -82,9 +94,11 @@ def make_units(inventory: list[RawEntry], depth: int | None) -> list[Unit]:
                 path,
                 tuple(entries),
                 sum(e.size for e in files),
-                max(e.mtime_ns for e in (files or entries)),
+                date,
                 sum(e.size > 0 for e in files),
                 max(1, weight),
+                min(span),
+                max(span),
             )
         )
     return sorted(result, key=lambda u: (u.date, u.path))

@@ -34,6 +34,13 @@ single-disc raw `create` command; preparation output is not burn-ready.
 moves with verified cross-filesystem copies and a free-space preflight. Keep
 fixed-recovery block sizing shared with raw creation. See the wiki's
 `Preparing-raw-discs` page for the complete workflow and limitations.
+Preparation requires ExifTool: `archive/content_dates.py` resolves whitelisted
+recording/original dates, then release dates, then file mtime. Container/muxing
+dates are excluded by tag IDs, including Matroska's misleading DateTimeOriginal
+ID 1121. `tools/exiftool.py` reads metadata in bounded batches without user config
+or stream extraction. Unit dates are size-weighted medians (earlier on exact ties);
+previews count mtime fallbacks and show media ranges separately from unit centers.
+Unknown-zone content dates and displayed ranges use UTC. Files remain unchanged.
 
 `create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`
 selects the original `images/disc_NNNN.iso` workflow described in detail below.

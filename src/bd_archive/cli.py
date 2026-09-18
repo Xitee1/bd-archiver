@@ -36,7 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
         "prepare",
         help="Plan and move files into disc-sized raw source folders",
         description="Group a source across raw data discs, preview alternatives, then move "
-        "selected files after y/N confirmation. No saved plan or processing history.",
+        "selected files after y/N confirmation. Dates use content metadata via ExifTool, "
+        "then file modification time; folders use size-weighted date medians. "
+        "No saved plan or processing history.",
     )
     pr.add_argument("-s", "--source", required=True, help="Prepared incoming files/directories")
     pr.add_argument("-o", "--output", required=True, help="New or empty destination directory")

@@ -2,9 +2,10 @@
 
 import shlex
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
+from bd_archive.archive.content_dates import scan_dates
 from bd_archive.archive.prepare import Plan, chronology, make_units, proposals
 from bd_archive.archive.prepare_move import check_space, move_plan
 from bd_archive.archive.prepare_sizing import measure
@@ -21,7 +22,7 @@ from bd_archive.ui.prompts import prompt_yn, styled_input
 
 def date_text(value: int) -> str:
     try:
-        return datetime.fromtimestamp(value / 10**9).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(value // 10**9, UTC).strftime("%Y-%m-%d")
     except (OverflowError, OSError, ValueError):
         return "out-of-range date"
 
@@ -133,7 +134,7 @@ def _prepare(args):
     capacity = args.bytes
     if capacity is not None and capacity <= 0:
         raise ValueError("--bytes must be positive")
-    check_deps("mkisofs", *([] if capacity is not None else ["dvd+rw-mediainfo"]))
+    check_deps("mkisofs", "exiftool", *([] if capacity is not None else ["dvd+rw-mediainfo"]))
     if capacity is None:
         capacity = detect_disc_capacity(resolve_device(args.device))
         if capacity is None or capacity <= 0:
@@ -141,7 +142,14 @@ def _prepare(args):
 
     log.step("Scanning source and planning raw-disc groups")
     inventory = scan_raw_source(source)
-    units = make_units(inventory, args.group_by)
+    log.info("Reading content dates with ExifTool...")
+    dates = scan_dates(source, inventory)
+    fallback = sum(date.source == "mtime" for date in dates.values())
+    log.info(
+        f"Dates: {len(dates) - fallback} files from content metadata, "
+        f"{fallback} using modification time."
+    )
+    units = make_units(inventory, args.group_by, dates)
     if not units:
         log.info("No files or directories to prepare.")
         return
@@ -180,7 +188,7 @@ def _prepare(args):
         included = sum(units[i].size for group in plan for i in group)
         _, affected, worst = chronology(plan, units)
         detail = (
-            "no overlap"
+            "no unit-center overlap"
             if not affected
             else (
                 f"{affected} units overlap earlier discs, up to {worst / (86400 * 10**9):.1f} days"
@@ -192,6 +200,7 @@ def _prepare(args):
         )
     log.info("Plan 1 includes the largest searched chronological prefix using the fewest discs.")
     log.info("Planning uses a bounded heuristic; a global optimum is not guaranteed.")
+    log.info("Chronology uses size-weighted date medians; media ranges may overlap within units.")
     choice = 0
     if len(choices) > 1:
         while True:
@@ -210,15 +219,20 @@ def _prepare(args):
     plan = choices[choice]
     chosen = {i for group in plan for i in group}
     for number, group in enumerate(plan, 1):
-        dates = [units[i].date for i in group]
+        starts = [units[i].date_start for i in group]
+        ends = [units[i].date_end for i in group]
         size = sizes[group]
         log.info(
             f"Disc {number:04d}: {human_bytes(size.payload)} data, "
             f"{human_bytes(size.free(capacity))} free before automatic recovery; "
-            f"{date_text(min(dates))} to {date_text(max(dates))}"
+            f"content range {date_text(min(starts))} to {date_text(max(ends))} (UTC)"
         )
         for i in group:
-            log.info(f"  {units[i].path} ({human_bytes(units[i].size)})")
+            unit = units[i]
+            log.info(
+                f"  {unit.path} ({human_bytes(unit.size)}): center {date_text(unit.date)}, "
+                f"range {date_text(unit.date_start)} to {date_text(unit.date_end)}"
+            )
     deferred = [u for i, u in enumerate(units) if i not in chosen]
     if deferred:
         log.info(f"Deferred: {len(deferred)} units, {human_bytes(sum(u.size for u in deferred))}")

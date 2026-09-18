@@ -3,6 +3,7 @@ import errno
 import io
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from bd_archive.archive.content_dates import ContentDate
 from bd_archive.archive.prepare import (
     Unit,
     chronology,
@@ -32,7 +34,11 @@ from bd_archive.constants import MiB
 
 
 def toy_units(sizes):
-    return [Unit(str(i), (), size, i * 86400 * 10**9, 1, size) for i, size in enumerate(sizes)]
+    return [
+        Unit(str(i), (), size, date, 1, size, date, date)
+        for i, size in enumerate(sizes)
+        for date in [i * 86400 * 10**9]
+    ]
 
 
 class PlannerTests(unittest.TestCase):
@@ -67,7 +73,7 @@ class PlannerTests(unittest.TestCase):
         self.assertGreater(severe[2], mild[2])
 
     def test_file_limit_and_oversized_indivisible_unit(self):
-        units = [Unit(str(i), (), 1, i, 20000, 1) for i in range(3)]
+        units = [Unit(str(i), (), 1, i, 20000, 1, i, i) for i in range(3)]
         self.assertEqual(len(proposals(units, 25, True, False)[0]), 3)
         self.assertEqual(len(proposals(units, 25, False, False)[0]), 1)
         with self.assertRaisesRegex(ValueError, "Unit cannot fit"):
@@ -114,7 +120,11 @@ class FilesystemTests(unittest.TestCase):
         return target
 
     def units(self, rule="top-level"):
-        return make_units(scan_raw_source(self.source), grouping(rule))
+        inventory = scan_raw_source(self.source)
+        dates = {
+            e.path: ContentDate(e.mtime_ns, "mtime") for e in inventory if stat.S_ISREG(e.mode)
+        }
+        return make_units(inventory, grouping(rule), dates)
 
     def test_grouping_depth_files_and_empty_directories(self):
         self.file("channel/video/movie.mkv")
@@ -129,13 +139,13 @@ class FilesystemTests(unittest.TestCase):
         )
         self.assertEqual(len(self.units("files")), 5)
 
-    def test_folder_date_uses_latest_file_not_directory_mtime(self):
-        old = self.file("video/movie")
+    def test_folder_date_uses_weighted_median_not_directory_or_sidecar_mtime(self):
+        old = self.file("video/movie", b"old movie" * 100)
         newer = self.file("video/sidecar")
         os.utime(old, ns=(100, 100))
         os.utime(newer, ns=(200, 200))
         os.utime(old.parent, ns=(999999, 999999))
-        self.assertEqual(self.units()[0].date, 200)
+        self.assertEqual(self.units()[0].date, 100)
 
     def test_moves_only_selected_units_preserves_paths_and_metadata(self):
         first = self.file("channel/first/movie")
@@ -249,7 +259,9 @@ class FilesystemTests(unittest.TestCase):
                 check_space(self.source, self.output, [foreign])
         self.assertFalse(self.output.exists())
 
-    @unittest.skipUnless(shutil.which("mkisofs"), "requires mkisofs")
+    @unittest.skipUnless(
+        shutil.which("mkisofs") and shutil.which("exiftool"), "requires mkisofs/exiftool"
+    )
     def test_declining_preview_leaves_source_and_output_unchanged(self):
         self.file("video/file")
         before = scan_raw_source(self.source)
@@ -269,7 +281,9 @@ class FilesystemTests(unittest.TestCase):
         self.assertEqual(scan_raw_source(self.source), before)
         self.assertFalse(self.output.exists())
 
-    @unittest.skipUnless(shutil.which("mkisofs"), "requires mkisofs")
+    @unittest.skipUnless(
+        shutil.which("mkisofs") and shutil.which("exiftool"), "requires mkisofs/exiftool"
+    )
     def test_space_failure_precedes_confirmation_and_any_move(self):
         self.file("video/file")
         args = build_parser().parse_args(
@@ -294,7 +308,9 @@ class FilesystemTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertTrue((self.source / "video/file").exists())
 
-    @unittest.skipUnless(shutil.which("mkisofs"), "requires mkisofs")
+    @unittest.skipUnless(
+        shutil.which("mkisofs") and shutil.which("exiftool"), "requires mkisofs/exiftool"
+    )
     def test_no_qualifying_last_disc_leaves_everything_untouched(self):
         self.file("video/file")
         args = build_parser().parse_args(
@@ -343,7 +359,10 @@ class FilesystemTests(unittest.TestCase):
                 )
 
 
-@unittest.skipUnless(shutil.which("mkisofs") and shutil.which("par2"), "requires mkisofs/par2")
+@unittest.skipUnless(
+    all(shutil.which(tool) for tool in ("mkisofs", "par2", "exiftool")),
+    "requires mkisofs/par2/exiftool",
+)
 class PrepareIntegrationTests(FilesystemTests):
     def test_prepare_then_create_and_verify_each_disc(self):
         for number, size in enumerate((14, 14, 10, 10)):
