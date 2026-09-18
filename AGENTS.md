@@ -23,6 +23,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current output workflow: disc folders by default
 
+`prepare` is a separate, stateless raw-source splitter. It groups whole units
+(`--group-by top-level|files|depth:N`), proposes chronology-aware multi-disc
+layouts, and moves selected units into ordinary `disc_NNNN/` source directories
+only after a default-no confirmation. `--max-last-free` permits a newest deferred
+suffix. There is no saved plan, history, dry-run flag, confirmation bypass or
+automatic resume. Each resulting source is passed separately to the existing
+single-disc raw `create` command; preparation output is not burn-ready.
+`archive/prepare*.py` implements planning, sparse filesystem sizing and exclusive
+moves with verified cross-filesystem copies and a free-space preflight. Keep
+fixed-recovery block sizing shared with raw creation. See the wiki's
+`Preparing-raw-discs` page for the complete workflow and limitations.
+Preparation requires ExifTool: `archive/content_dates.py` resolves whitelisted
+recording/original dates, then release dates, then file mtime. Container/muxing
+dates are excluded by tag IDs, including Matroska's misleading DateTimeOriginal
+ID 1121. `tools/exiftool.py` reads metadata in bounded batches without user config
+or stream extraction. Unit dates are size-weighted medians (earlier on exact ties);
+previews count mtime fallbacks and show media ranges separately from unit centers.
+Unknown-zone content dates and displayed ranges use UTC. Files remain unchanged.
+
 `create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`
 selects the original `images/disc_NNNN.iso` workflow described in detail below.
 This output choice is independent of `-m raw|dar`.

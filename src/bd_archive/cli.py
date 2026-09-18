@@ -6,9 +6,11 @@ import sys
 import argcomplete
 
 from bd_archive import __version__
+from bd_archive.archive.prepare import free_limit, grouping
 from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
+from bd_archive.commands.prepare import cmd_prepare
 from bd_archive.commands.verify import cmd_verify
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, MAX_WRITE_TIMEOUT, write_timeout
 from bd_archive.ui.logger import Logger, log
@@ -29,6 +31,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True, help="Available commands")
+
+    pr = sub.add_parser(
+        "prepare",
+        help="Plan and move files into disc-sized raw source folders",
+        description="Group a source across raw data discs, preview alternatives, then move "
+        "selected files after y/N confirmation. Dates use content metadata via ExifTool, "
+        "then file modification time; folders use size-weighted date medians. "
+        "No saved plan or processing history.",
+    )
+    pr.add_argument("-s", "--source", required=True, help="Prepared incoming files/directories")
+    pr.add_argument("-o", "--output", required=True, help="New or empty destination directory")
+    pr.add_argument("-n", "--name", default="Prepared", help="Name for suggested create commands")
+    pr.add_argument("-b", "--bytes", type=int, help="Disc capacity in bytes; no drive required")
+    pr.add_argument("-D", "--device", help="Drive for capacity detection (default: auto-detect)")
+    pr.add_argument(
+        "-r",
+        "--redundancy",
+        type=_redundancy,
+        metavar="0-100|none",
+        help="Reserve the same recovery setting as create (default: automatic; none disables PAR2)",
+    )
+    pr.add_argument(
+        "--group-by",
+        type=grouping,
+        default="top-level",
+        metavar="top-level|files|depth:N",
+        help="Indivisible units (default: top-level); preserve relative paths",
+    )
+    pr.add_argument(
+        "--max-last-free",
+        type=free_limit,
+        metavar="PERCENT|SIZE",
+        help="Allow deferring newest units: maximum last-disc free data budget, "
+        "e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
+    )
 
     # ── create ──────────────────────────────────────────────────────────
     cr = sub.add_parser(
@@ -103,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument_group(
         "Mode: raw",
         "Original files and PAR2 on one disc, without compression. No extra options; "
-        "use -m dar if the data does not fit.",
+        "use prepare to split whole files first, or -m dar for sliced archives.",
     )
     dar_options = cr.add_argument_group(
         "Mode: dar",
@@ -263,6 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dispatch(args):
     match args.command:
+        case "prepare":
+            cmd_prepare(args)
         case "create":
             cmd_create(args)
         case "burn":

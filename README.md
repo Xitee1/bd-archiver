@@ -7,7 +7,14 @@ archive preparation from burning.
 
 For files you want to open directly, the default
 [raw mode](https://github.com/Xitee1/bd-archiver/wiki/Raw-data-discs) keeps the
-original folder and its contents on a single data disc. For larger archives,
+original folder and its contents on a single data disc. Use
+[`prepare`](https://github.com/Xitee1/bd-archiver/wiki/Preparing-raw-discs) to
+divide a larger incoming collection into disc-sized source folders first. It
+previews chronological packing alternatives, moves selected files after a
+yes/no confirmation, and can leave the newest material for a future session.
+Chronology uses content dates read with ExifTool, falling back to file modification
+times; folders are ordered by their size-weighted date median.
+Then create and burn each source folder normally. For larger archives,
 [DAR mode](https://github.com/Xitee1/bd-archiver/wiki/DAR-archives) supports
 compression and splits data across multiple discs, with a dedicated restore
 command to put the files back together.
