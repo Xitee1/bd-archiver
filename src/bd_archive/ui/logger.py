@@ -38,6 +38,10 @@ class Logger:
         print(f"{red}[ ERR]{reset}  {msg}", file=sys.stderr)
 
     @classmethod
+    def blank(cls):
+        print()
+
+    @classmethod
     def step(cls, msg: str):
         print(f"\n{cls._c('cyan')}{cls._c('bold')}── {msg} ──{cls._c('reset')}")
 

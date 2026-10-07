@@ -12,17 +12,18 @@ from bd_archive.archive.disc_folder import check_output_available, prepare_folde
 from bd_archive.archive.raw import (
     MAX_PAR2_BLOCKS,
     RAW_CHECKSUMS,
+    fixed_raw_recovery,
     raw_par2_sizing,
     scan_raw_source,
     validate_raw_source_name,
     write_raw_checksums,
 )
 from bd_archive.archive.readme import write_readme
+from bd_archive.archive.share import recovery_requested
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import (
     DISC_END_MARGIN,
     DISC_WRITE_BLOCK,
-    PAR2_AND_MISC_OVERHEAD,
     RAW_PAR2_INDEX,
 )
 from bd_archive.shell.deps import check_deps
@@ -34,7 +35,10 @@ from bd_archive.tools.software import software_info
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn
 
-_DAR_MODE_HINT = "Use -m dar (or --mode dar) to split the archive across multiple discs."
+_DAR_MODE_HINT = (
+    "Use 'bd-archive prepare' to split directly readable files across multiple discs, "
+    "or -m dar (or --mode dar) for a sliced archive."
+)
 
 
 def cmd_create_raw(args):
@@ -64,9 +68,7 @@ def _create_raw(args):
             f"Raw mode cannot be combined with {', '.join(incompatible)}; "
             "use -m dar for these options"
         )
-    if args.redundancy is not None and not 0 <= args.redundancy <= 100:
-        raise ValueError(f"--redundancy must be 0-100 or none, got {args.redundancy}")
-    recovery_enabled = args.redundancy != 0
+    recovery_enabled = recovery_requested(args.redundancy)
     if args.bytes is not None and args.bytes <= 0:
         raise ValueError("--bytes must be positive")
 
@@ -114,7 +116,7 @@ def _create_raw(args):
             + _DAR_MODE_HINT
         )
     redundancy = (
-        "automatic (remaining disc capacity)" if args.redundancy is None else f"{args.redundancy}%"
+        "automatic (remaining disc capacity)" if args.redundancy is None else args.redundancy.label
     )
     work.mkdir(parents=True, exist_ok=True)
     try:
@@ -129,6 +131,7 @@ def _create_raw(args):
             )
             entries = [*payload_entries, ("", metadata)]
             sizing = None
+            fixed_sizing = None
             recovery_blocks = None
             if args.redundancy is None:
                 sizing = raw_par2_sizing(
@@ -151,14 +154,35 @@ def _create_raw(args):
                     f"({100 * recovery_bytes / total:.2f}%)"
                 )
             else:
-                estimate = (
-                    disc_write_bytes(
-                        mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
-                        + (total * args.redundancy + 99) // 100
-                        + (PAR2_AND_MISC_OVERHEAD if recovery_enabled else 0)
+                if recovery_enabled:
+                    fixed_sizing, fixed_blocks = fixed_raw_recovery(
+                        inventory,
+                        capacity,
+                        payload_iso_size,
+                        args.redundancy,
+                        path_prefix=source.name,
                     )
-                    + DISC_END_MARGIN
-                )
+                    placeholders = [
+                        metadata / RAW_PAR2_INDEX,
+                        metadata / "recovery.vol00000+32768.par2",
+                    ]
+                    for path, length in zip(
+                        placeholders, fixed_sizing.file_sizes(fixed_blocks), strict=True
+                    ):
+                        with path.open("wb") as stream:
+                            stream.truncate(length)
+                try:
+                    estimate = (
+                        disc_write_bytes(
+                            mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
+                        )
+                        + DISC_END_MARGIN
+                        + DISC_WRITE_BLOCK
+                    )
+                finally:
+                    if recovery_enabled:
+                        for path in placeholders:
+                            path.unlink()
             log.info(f"Source:          {source}")
             log.info(f"Files:           {len(files)} ({human_bytes(total)})")
             log.info(f"Disc capacity:   {human_bytes(capacity)}")
@@ -197,7 +221,13 @@ def _create_raw(args):
                         base_dir=source.parent,
                     )
                 else:
-                    par2.create_tree(source, index, args.redundancy, base_dir=source.parent)
+                    par2.create_tree(
+                        source,
+                        index,
+                        block_size=fixed_sizing.block_size,
+                        recovery_blocks=fixed_blocks,
+                        base_dir=source.parent,
+                    )
                 if not index.is_file() or not list(metadata.glob("recovery.vol*.par2")):
                     raise ValueError("PAR2 did not produce both an index and recovery data")
                 if scan_raw_source(source) != inventory:

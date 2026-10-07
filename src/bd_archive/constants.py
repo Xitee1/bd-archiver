@@ -38,6 +38,7 @@ ISO9660_LABEL_NAME_MAX = ISO9660_VOLUME_LABEL_MAX - ISO9660_LABEL_SUFFIX_LEN  # 
 
 # PAR2 recovery volumes are named "<base>.volNNN+NN.par2"; the index file
 # is plain "<base>.par2". This pattern matches recovery volumes only.
+MAX_PAR2_BLOCKS = 32768  # par2cmdline's source block limit per recovery set
 PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
 
 # Marker file extract drops into its output dir (content: the chain

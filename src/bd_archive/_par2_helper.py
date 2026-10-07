@@ -28,6 +28,7 @@ import os
 import sys
 from pathlib import Path
 
+from bd_archive.archive.share import fixed_recovery_layout, parse_redundancy
 from bd_archive.tools import par2
 
 
@@ -36,7 +37,7 @@ def main():
         print(f"usage: {sys.argv[0]} <num> <redundancy>", file=sys.stderr)
         sys.exit(2)
     num = sys.argv[1]  # zero-padded, e.g. "0001"
-    redundancy = int(sys.argv[2])
+    share = parse_redundancy(sys.argv[2])
 
     slice_dir = os.environ.get("BD_ARCHIVE_SLICE_DIR")
     basename = os.environ.get("BD_ARCHIVE_SLICE_BASENAME")
@@ -52,7 +53,11 @@ def main():
     if not slice_path.exists():
         print(f"_par2_helper: slice not found: {slice_path}", file=sys.stderr)
         sys.exit(1)
-    par2.create(slice_path, redundancy)
+    if share.percent:
+        par2.create(slice_path, int(share.value))
+    else:
+        block_size, count = fixed_recovery_layout(share, slice_path.stat().st_size)
+        par2.create(slice_path, block_size=block_size, recovery_blocks=count)
 
 
 if __name__ == "__main__":

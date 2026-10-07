@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 
+from bd_archive.archive.share import Share
+
 
 @dataclass
 class ArchiveConfig:
     name: str
     disc_bytes: int
-    redundancy: int
+    redundancy: Share
     compression: str
     comp_level: str | None
     generation: int = 1

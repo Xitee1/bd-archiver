@@ -1,24 +1,59 @@
 # PYTHON_ARGCOMPLETE_OK
 import argparse
+import functools
+import re
 import subprocess
 import sys
+import textwrap
 
 import argcomplete
 
 from bd_archive import __version__
+from bd_archive.archive.prepare import ORDERS, grouping
+from bd_archive.archive.share import parse_redundancy, parse_share
 from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
+from bd_archive.commands.prepare import cmd_prepare
 from bd_archive.commands.verify import cmd_verify
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, MAX_WRITE_TIMEOUT, write_timeout
 from bd_archive.ui.logger import Logger, log
 
 
-def _redundancy(value: str) -> int:
-    """Normalize the explicit disable option without changing mode defaults."""
-    if value.lower() == "none":
-        return 0
-    return int(value)
+def _argtype(parse):
+    """Show a type function's ValueError message in argparse's error line.
+
+    argparse replaces a plain ValueError with a generic "invalid ... value"
+    message; only ArgumentTypeError text reaches the user.
+    """
+
+    @functools.wraps(parse)
+    def convert(value):
+        try:
+            return parse(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"invalid value {value!r}: {exc}") from exc
+
+    return convert
+
+
+class _ListHelpFormatter(argparse.HelpFormatter):
+    """Keep explicit line breaks in help text; wrap each line with a hanging indent.
+
+    A line that starts with a term followed by two or more spaces wraps its
+    continuation lines under the text after the term. Help text without line
+    breaks is formatted exactly as by the default formatter.
+    """
+
+    def _split_lines(self, text, width):
+        if "\n" not in text:
+            return super()._split_lines(text, width)
+        lines = []
+        for line in text.splitlines():
+            term = re.match(r"\S+\s{2,}", line)
+            indent = " " * term.end() if term else ""
+            lines.extend(textwrap.wrap(line, width, subsequent_indent=indent) or [""])
+        return lines
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +64,69 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True, help="Available commands")
+
+    pr = sub.add_parser(
+        "prepare",
+        help="Plan and move files into disc-sized raw source folders",
+        description="Group a source across raw data discs, preview alternatives, then move "
+        "selected files after y/N confirmation. Units fill the discs in name, "
+        "modification-time or content-date order. No saved plan or processing history.",
+        formatter_class=_ListHelpFormatter,
+    )
+    pr.add_argument("-s", "--source", required=True, help="Prepared incoming files/directories")
+    pr.add_argument("-o", "--output", required=True, help="New or empty destination directory")
+    pr.add_argument("-n", "--name", default="Prepared", help="Name for suggested create commands")
+    pr.add_argument("-b", "--bytes", type=int, help="Disc capacity in bytes; no drive required")
+    pr.add_argument("-D", "--device", help="Drive for capacity detection (default: auto-detect)")
+    pr.add_argument(
+        "-r",
+        "--redundancy",
+        type=_argtype(parse_redundancy),
+        metavar="PERCENT|SIZE|none",
+        help="Reserve the same recovery setting as create: a percentage of the data (5) or "
+        "a fixed size per disc (500M, 2G); none disables PAR2 (default: automatic)",
+    )
+    pr.add_argument(
+        "--reserve",
+        type=_argtype(parse_share),
+        metavar="PERCENT|SIZE",
+        help="Keep this much of every disc free for files added before create, "
+        "e.g. 2 (percent), 50M, 1G (default: none)",
+    )
+    pr.add_argument(
+        "--group-by",
+        type=_argtype(grouping),
+        default="depth:1",
+        metavar="depth:N|depth:inf",
+        help="What stays together on one disc (default: depth:1). A unit is never split "
+        "across discs; relative paths are preserved.\n"
+        "depth:1    each direct subfolder of the source is one unit; files directly in "
+        "the source are one unit each\n"
+        "depth:2    each folder two levels below the source is one unit; files above "
+        "that level are one unit each\n"
+        "depth:inf  unlimited depth: each single file is one unit; folders are not "
+        "kept together",
+    )
+    pr.add_argument(
+        "--order-by",
+        choices=ORDERS,
+        default="name",
+        metavar="name|mtime|content-date",
+        help="Order in which units fill the discs (default: name). Folders take the "
+        "size-weighted median date of their files: a file holding more than half of "
+        "the folder's bytes decides alone.\n"
+        "name          by relative path, sorted case-sensitively\n"
+        "mtime         by file modification time, oldest first\n"
+        "content-date  by recording/release date from file metadata, read with "
+        "ExifTool; files without one use their modification time",
+    )
+    pr.add_argument(
+        "--max-free",
+        type=_argtype(parse_share),
+        metavar="PERCENT|SIZE",
+        help="Allow deferring the last units in fill order: maximum unused data budget on "
+        "every disc, e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
+    )
 
     # ── create ──────────────────────────────────────────────────────────
     cr = sub.add_parser(
@@ -77,11 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "-r",
         "--redundancy",
-        type=_redundancy,
+        type=_argtype(parse_redundancy),
         default=None,
-        metavar="0-100|none",
-        help="PAR2 recovery data, 0-100%%; 0 or none skips PAR2 "
-        "(default: raw fills free space; dar: 5%%)",
+        metavar="PERCENT|SIZE|none",
+        help="PAR2 recovery data per disc: a percentage of the data (5) or a fixed size "
+        "(500M, 2G); 0 or none skips PAR2 (default: raw fills free space; dar: 5)",
     )
     common.add_argument(
         "-D",
@@ -103,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument_group(
         "Mode: raw",
         "Original files and PAR2 on one disc, without compression. No extra options; "
-        "use -m dar if the data does not fit.",
+        "use prepare to split whole files first, or -m dar for sliced archives.",
     )
     dar_options = cr.add_argument_group(
         "Mode: dar",
@@ -185,7 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bu.add_argument(
         "--write-timeout",
-        type=write_timeout,
+        type=_argtype(write_timeout),
         metavar="SECONDS",
         default=DEFAULT_WRITE_TIMEOUT,
         help=(
@@ -263,6 +361,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dispatch(args):
     match args.command:
+        case "prepare":
+            cmd_prepare(args)
         case "create":
             cmd_create(args)
         case "burn":

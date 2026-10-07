@@ -19,9 +19,9 @@ def write_timeout(value):
     try:
         seconds = int(value)
     except (ValueError, TypeError):
-        raise ValueError("Write timeout must be an integer number of seconds") from None
+        raise ValueError("expected an integer number of seconds") from None
     if not 1 <= seconds <= MAX_WRITE_TIMEOUT:
-        raise ValueError(f"Write timeout must be between 1 and {MAX_WRITE_TIMEOUT} seconds")
+        raise ValueError(f"expected 1-{MAX_WRITE_TIMEOUT} seconds")
     return seconds
 
 
