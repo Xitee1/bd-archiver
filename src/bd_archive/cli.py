@@ -1,7 +1,10 @@
 # PYTHON_ARGCOMPLETE_OK
 import argparse
+import functools
+import re
 import subprocess
 import sys
+import textwrap
 
 import argcomplete
 
@@ -20,7 +23,46 @@ def _redundancy(value: str) -> int:
     """Normalize the explicit disable option without changing mode defaults."""
     if value.lower() == "none":
         return 0
-    return int(value)
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError("expected 0-100 or none") from None
+
+
+def _argtype(parse):
+    """Show a type function's ValueError message in argparse's error line.
+
+    argparse replaces a plain ValueError with a generic "invalid ... value"
+    message; only ArgumentTypeError text reaches the user.
+    """
+
+    @functools.wraps(parse)
+    def convert(value):
+        try:
+            return parse(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"invalid value {value!r}: {exc}") from exc
+
+    return convert
+
+
+class _ListHelpFormatter(argparse.HelpFormatter):
+    """Keep explicit line breaks in help text; wrap each line with a hanging indent.
+
+    A line that starts with a term followed by two or more spaces wraps its
+    continuation lines under the text after the term. Help text without line
+    breaks is formatted exactly as by the default formatter.
+    """
+
+    def _split_lines(self, text, width):
+        if "\n" not in text:
+            return super()._split_lines(text, width)
+        lines = []
+        for line in text.splitlines():
+            term = re.match(r"\S+\s{2,}", line)
+            indent = " " * term.end() if term else ""
+            lines.extend(textwrap.wrap(line, width, subsequent_indent=indent) or [""])
+        return lines
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         "selected files after y/N confirmation. Dates use content metadata via ExifTool, "
         "then file modification time; folders use size-weighted date medians. "
         "No saved plan or processing history.",
+        formatter_class=_ListHelpFormatter,
     )
     pr.add_argument("-s", "--source", required=True, help="Prepared incoming files/directories")
     pr.add_argument("-o", "--output", required=True, help="New or empty destination directory")
@@ -48,20 +91,27 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument(
         "-r",
         "--redundancy",
-        type=_redundancy,
+        type=_argtype(_redundancy),
         metavar="0-100|none",
         help="Reserve the same recovery setting as create (default: automatic; none disables PAR2)",
     )
     pr.add_argument(
         "--group-by",
-        type=grouping,
-        default="top-level",
-        metavar="top-level|files|depth:N",
-        help="Indivisible units (default: top-level); preserve relative paths",
+        type=_argtype(grouping),
+        default="depth:1",
+        metavar="depth:N|depth:inf",
+        help="What stays together on one disc (default: depth:1). A unit is never split "
+        "across discs; relative paths are preserved.\n"
+        "depth:1    each direct subfolder of the source is one unit; files directly in "
+        "the source are one unit each\n"
+        "depth:2    each folder two levels below the source is one unit; files above "
+        "that level are one unit each\n"
+        "depth:inf  unlimited depth: each single file is one unit; folders are not "
+        "kept together",
     )
     pr.add_argument(
         "--max-last-free",
-        type=free_limit,
+        type=_argtype(free_limit),
         metavar="PERCENT|SIZE",
         help="Allow deferring newest units: maximum last-disc free data budget, "
         "e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
@@ -114,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "-r",
         "--redundancy",
-        type=_redundancy,
+        type=_argtype(_redundancy),
         default=None,
         metavar="0-100|none",
         help="PAR2 recovery data, 0-100%%; 0 or none skips PAR2 "
@@ -222,7 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bu.add_argument(
         "--write-timeout",
-        type=write_timeout,
+        type=_argtype(write_timeout),
         metavar="SECONDS",
         default=DEFAULT_WRITE_TIMEOUT,
         help=(

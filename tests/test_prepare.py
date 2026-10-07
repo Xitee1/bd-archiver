@@ -31,6 +31,7 @@ from bd_archive.archive.raw import scan_raw_source
 from bd_archive.cli import build_parser
 from bd_archive.commands.prepare import checked_proposals, cmd_prepare
 from bd_archive.constants import MiB
+from bd_archive.tools.burn_timeout import MAX_WRITE_TIMEOUT
 
 
 def toy_units(sizes):
@@ -119,7 +120,7 @@ class FilesystemTests(unittest.TestCase):
         target.write_bytes(data)
         return target
 
-    def units(self, rule="top-level"):
+    def units(self, rule="depth:1"):
         inventory = scan_raw_source(self.source)
         dates = {
             e.path: ContentDate(e.mtime_ns, "mtime") for e in inventory if stat.S_ISREG(e.mode)
@@ -137,7 +138,54 @@ class FilesystemTests(unittest.TestCase):
             {u.path for u in self.units("depth:2")},
             {"channel/video", "channel/loose.jpg", "root.jpg", "empty"},
         )
-        self.assertEqual(len(self.units("files")), 5)
+        self.assertEqual(len(self.units("depth:inf")), 5)
+
+    def test_cli_shows_expected_format_for_invalid_values(self):
+        prepare = ["prepare", "-s", ".", "-o", "out"]
+        cases = [
+            (
+                [*prepare, "--group-by", "files"],
+                "argument --group-by: invalid value 'files': "
+                "expected depth:N (N >= 1) or depth:inf",
+            ),
+            (
+                [*prepare, "--max-last-free", "5MiB"],
+                "argument --max-last-free: invalid value '5MiB': "
+                "expected a percentage (5), decimal MB (500M) or decimal GB (2G)",
+            ),
+            (
+                [*prepare, "--max-last-free", "101"],
+                "argument --max-last-free: invalid value '101': "
+                "expected a percentage between 0 and 100",
+            ),
+            (
+                [*prepare, "-r", "off"],
+                "argument -r/--redundancy: invalid value 'off': expected 0-100 or none",
+            ),
+            (
+                ["burn", "-i", "in", "--write-timeout", "0"],
+                "argument --write-timeout: invalid value '0': "
+                f"expected 1-{MAX_WRITE_TIMEOUT} seconds",
+            ),
+        ]
+        for argv, message in cases:
+            stderr = io.StringIO()
+            with (
+                self.subTest(argv=argv),
+                contextlib.redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as exc,
+            ):
+                build_parser().parse_args(argv)
+            self.assertEqual(exc.exception.code, 2)
+            self.assertIn(message, stderr.getvalue())
+
+    def test_grouping_parser(self):
+        self.assertEqual(grouping("depth:1"), 1)
+        self.assertEqual(grouping("depth:12"), 12)
+        self.assertIsNone(grouping("depth:inf"))
+        for value in ("top-level", "files", "depth:0", "depth:", "depth:-1", "inf", "1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                grouping(value)
 
     def test_folder_date_uses_weighted_median_not_directory_or_sidecar_mtime(self):
         old = self.file("video/movie", b"old movie" * 100)

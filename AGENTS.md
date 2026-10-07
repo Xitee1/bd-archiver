@@ -24,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Current output workflow: disc folders by default
 
 `prepare` is a separate, stateless raw-source splitter. It groups whole units
-(`--group-by top-level|files|depth:N`), proposes chronology-aware multi-disc
+(`--group-by depth:N|depth:inf`), proposes chronology-aware multi-disc
 layouts, and moves selected units into ordinary `disc_NNNN/` source directories
 only after a default-no confirmation. `--max-last-free` permits a newest deferred
 suffix. There is no saved plan, history, dry-run flag, confirmation bypass or

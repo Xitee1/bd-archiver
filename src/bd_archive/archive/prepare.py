@@ -25,23 +25,20 @@ class FreeLimit:
 def free_limit(value: str) -> FreeLimit:
     match = re.fullmatch(r"(\d+(?:\.\d+)?)([MG]?)", value, re.IGNORECASE)
     if not match:
-        raise ValueError("Use a percentage (5), decimal MB (500M), or decimal GB (2G)")
+        raise ValueError("expected a percentage (5), decimal MB (500M) or decimal GB (2G)")
     amount = Decimal(match[1])
     suffix = match[2].upper()
     if not suffix and amount > 100:
-        raise ValueError("--max-last-free percentage must be between 0 and 100")
+        raise ValueError("expected a percentage between 0 and 100")
     return FreeLimit(amount * {"": 1, "M": 10**6, "G": 10**9}[suffix], not suffix)
 
 
 def grouping(value: str) -> int | None:
-    if value == "files":
-        return None
-    if value == "top-level":
-        return 1
-    match = re.fullmatch(r"depth:([1-9]\d*)", value)
+    """Parse --group-by: depth:N keeps folders N levels deep whole; depth:inf separates files."""
+    match = re.fullmatch(r"depth:(inf|[1-9]\d*)", value)
     if not match:
-        raise ValueError("--group-by must be top-level, files, or depth:N (N >= 1)")
-    return int(match[1])
+        raise ValueError("expected depth:N (N >= 1) or depth:inf")
+    return None if match[1] == "inf" else int(match[1])
 
 
 @dataclass(frozen=True)
