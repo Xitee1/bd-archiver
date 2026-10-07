@@ -21,10 +21,10 @@ class RedundancyParsingTests(unittest.TestCase):
                     args = build_parser().parse_args(
                         ["create", "-s", ".", "-n", "Test", "-o", "out", "-m", mode, "-r", value]
                     )
-                    self.assertEqual(args.redundancy, 0)
+                    self.assertTrue(args.redundancy.disabled)
 
     def test_invalid_text_is_an_argument_error(self):
-        for value in ("off", "1.5"):
+        for value in ("off", "1.5", "5MiB"):
             with (
                 self.subTest(value=value),
                 contextlib.redirect_stderr(io.StringIO()),

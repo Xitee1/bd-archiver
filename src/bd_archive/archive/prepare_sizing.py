@@ -13,6 +13,7 @@ from bd_archive.archive.raw import (
     raw_par2_sizing,
     write_raw_checksums,
 )
+from bd_archive.archive.share import Share, recovery_requested
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import DISC_END_MARGIN, DISC_WRITE_BLOCK
 from bd_archive.tools import mkisofs
@@ -31,11 +32,11 @@ class Measurement:
 
 
 def measure(
-    group: tuple[int, ...], units: list[Unit], capacity: int, redundancy: int | None
+    group: tuple[int, ...], units: list[Unit], capacity: int, redundancy: Share | None
 ) -> Measurement:
     inventory = sorted((e for i in group for e in units[i].entries), key=lambda e: e.path)
     total = sum(units[i].size for i in group)
-    if redundancy != 0 and total == 0:
+    if recovery_requested(redundancy) and total == 0:
         raise ValueError("A disc containing only empty files/directories requires -r none")
     with tempfile.TemporaryDirectory(prefix="bd-prepare-size-") as scratch:
         root = Path(scratch)
@@ -62,7 +63,7 @@ def measure(
         # A bounded README allowance; follow-up commands do not add a description.
         with (metadata / "README.txt").open("wb") as stream:
             stream.truncate(DISC_WRITE_BLOCK)
-        if redundancy != 0:
+        if recovery_requested(redundancy):
             if redundancy is None:
                 sizing = raw_par2_sizing(
                     inventory, capacity, capacity - payload_size, path_prefix=source.name

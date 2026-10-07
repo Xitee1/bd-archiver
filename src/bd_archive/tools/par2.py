@@ -17,11 +17,24 @@ def is_par2_index(path: Path) -> bool:
     return path.suffix == ".par2" and not PAR2_RECOVERY_RE.search(path.name)
 
 
-def create(target_file: Path, redundancy: int):
+def create(
+    target_file: Path,
+    redundancy: int | None = None,
+    *,
+    block_size: int | None = None,
+    recovery_blocks: int | None = None,
+):
+    """Protect one file with a percentage, or with an explicit block size and count."""
+    if recovery_blocks is not None:
+        if redundancy is not None or block_size is None or recovery_blocks < 1:
+            raise ValueError("Explicit recovery blocks require a block size and no percentage")
+        sizing = [f"-s{block_size}", f"-c{recovery_blocks}"]
+    else:
+        if redundancy is None:
+            raise ValueError("Specify redundancy or recovery blocks")
+        sizing = [f"-r{redundancy}"]
     par2_base = target_file.parent / f"{target_file.name}.par2"
-    run(
-        ["par2", "create", f"-r{redundancy}", "-n1", str(par2_base), str(target_file)], label="par2"
-    )
+    run(["par2", "create", *sizing, "-n1", str(par2_base), str(target_file)], label="par2")
 
 
 def create_tree(

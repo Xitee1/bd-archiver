@@ -16,7 +16,6 @@ from bd_archive.archive.prepare import (
     STRATEGIES,
     Unit,
     disorder,
-    free_limit,
     grouping,
     make_units,
     proposals,
@@ -29,6 +28,13 @@ from bd_archive.archive.prepare_move import (
 )
 from bd_archive.archive.prepare_sizing import Measurement, measure
 from bd_archive.archive.raw import scan_raw_source
+from bd_archive.archive.share import (
+    fixed_recovery_layout,
+    parse_redundancy,
+    parse_share,
+    recovery_blocks,
+)
+from bd_archive.archive.sizing import compute_slice_bytes
 from bd_archive.cli import build_parser
 from bd_archive.commands.prepare import (
     PACKING_TEXT,
@@ -36,7 +42,7 @@ from bd_archive.commands.prepare import (
     cmd_prepare,
     order_consistency,
 )
-from bd_archive.constants import MiB
+from bd_archive.constants import MAX_PAR2_BLOCKS, MiB
 from bd_archive.tools.burn_timeout import MAX_WRITE_TIMEOUT
 
 
@@ -91,15 +97,45 @@ class PlannerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unit cannot fit"):
             proposals(toy_units([26]), 25, True, False)
 
-    def test_limit_parser(self):
-        self.assertTrue(free_limit("5").allows(5, 100))
-        self.assertFalse(free_limit("5").allows(6, 100))
-        self.assertTrue(free_limit("0").allows(0, 100))
-        self.assertTrue(free_limit("1.5G").allows(1_500_000_000, 100))
-        self.assertFalse(free_limit("500M").allows(500_000_001, 10**10))
-        for value in ("-1", "101", "nan", "5MiB", "inf"):
+    def test_share_parser(self):
+        self.assertTrue(parse_share("5").allows(5, 100))
+        self.assertFalse(parse_share("5").allows(6, 100))
+        self.assertTrue(parse_share("0").allows(0, 100))
+        self.assertTrue(parse_share("1.5G").allows(1_500_000_000, 100))
+        self.assertFalse(parse_share("500M").allows(500_000_001, 10**10))
+        self.assertEqual(parse_share("2.5").bytes_of(1000), 25)
+        self.assertEqual(parse_share("2G").bytes_of(1000), 2_000_000_000)
+        self.assertEqual((parse_share("5").label, parse_share("2G").label), ("5%", "2G"))
+        for value in ("-1", "101", "nan", "5MiB", "inf", "none"):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                free_limit(value)
+                parse_share(value)
+
+    def test_fixed_recovery_blocks_and_slice_sizing(self):
+        self.assertEqual(recovery_blocks(parse_redundancy("5"), 2000, 4096), 100)
+        self.assertEqual(recovery_blocks(parse_redundancy("5"), 1, 4096), 1)
+        self.assertEqual(recovery_blocks(parse_redundancy("1M"), 2000, 4096), 245)
+        block_size, count = fixed_recovery_layout(parse_redundancy("50M"), 25 * 10**9)
+        self.assertEqual(block_size % 4, 0)
+        self.assertLessEqual(25 * 10**9 / block_size, MAX_PAR2_BLOCKS)
+        self.assertLessEqual(count * block_size, 50 * 10**6)
+        self.assertGreater(count * block_size, 50 * 10**6 - block_size)
+        block_size, count = fixed_recovery_layout(parse_redundancy("1M"), 25 * 10**9)
+        self.assertEqual((block_size, count), (1_000_000, 1))
+        self.assertEqual(fixed_recovery_layout(parse_redundancy("1M"), 10), (4, 65535))
+        self.assertEqual(compute_slice_bytes(100 * MiB, 0, parse_redundancy("none")), 96 * MiB)
+        self.assertEqual(compute_slice_bytes(100 * MiB, 0, parse_redundancy("20")), 80 * MiB)
+        self.assertEqual(compute_slice_bytes(100 * MiB, 0, parse_redundancy("10M")), 86 * MiB)
+        self.assertEqual(compute_slice_bytes(100 * MiB, 0, parse_redundancy("1G")), 0)
+
+    def test_redundancy_parser(self):
+        self.assertTrue(parse_redundancy("none").disabled)
+        self.assertTrue(parse_redundancy("0").disabled)
+        self.assertEqual(parse_redundancy("none").label, "none")
+        self.assertEqual(parse_redundancy("5").bytes_of(2000), 100)
+        self.assertEqual(parse_redundancy("500M").bytes_of(2000), 500_000_000)
+        for value in ("off", "1.5", "101", "5MiB"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_redundancy(value)
 
     def test_free_space_limit_applies_to_every_disc(self):
         identity = patch(
@@ -112,7 +148,11 @@ class PlannerTests(unittest.TestCase):
         def checked(units, limit):
             with identity:
                 plans, _ = checked_proposals(
-                    units, proposals(units, 25, False, True), 25, 0, free_limit(limit)
+                    units,
+                    proposals(units, 25, False, True),
+                    25,
+                    parse_redundancy("none"),
+                    parse_share(limit),
                 )
             return plans
 
@@ -129,6 +169,24 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(checked(toy_units([14]), "5"), dict.fromkeys(STRATEGIES))
         plans = checked(toy_units([14, 11, 14, 11, 5]), "100")
         self.assertEqual(sum(len(g) for g in plans["efficient"]), 5)
+
+    def test_reserve_shrinks_the_usable_capacity(self):
+        identity = patch(
+            "bd_archive.commands.prepare.measure",
+            side_effect=lambda g, u, c, r: Measurement(
+                sum(u[i].size for i in g), sum(u[i].size for i in g)
+            ),
+        )
+        units = toy_units([13, 12])
+        with identity:
+            plans, _ = checked_proposals(
+                units, proposals(units, 25, False, False), 25, parse_redundancy("none"), None
+            )
+            self.assertEqual(plans["efficient"], ((0, 1),))
+            plans, _ = checked_proposals(
+                units, proposals(units, 24, False, False), 25, parse_redundancy("none"), None, 1
+            )
+            self.assertEqual(plans["efficient"], ((0,), (1,)))
 
 
 class FilesystemTests(unittest.TestCase):
@@ -185,7 +243,8 @@ class FilesystemTests(unittest.TestCase):
             ),
             (
                 [*prepare, "-r", "off"],
-                "argument -r/--redundancy: invalid value 'off': expected 0-100 or none",
+                "argument -r/--redundancy: invalid value 'off': expected a percentage (5), "
+                "decimal MB (500M) or decimal GB (2G), or none",
             ),
             (
                 ["burn", "-i", "in", "--write-timeout", "0"],
@@ -582,13 +641,14 @@ class PrepareIntegrationTests(FilesystemTests):
         with movie.open("wb") as stream:
             stream.truncate(3 * MiB)
         units = self.units()
-        for redundancy in (None, 5):
+        for redundancy in (None, "5", "100M"):
             with self.subTest(redundancy=redundancy):
-                size = measure((0,), units, 10 * MiB, redundancy)
+                share = None if redundancy is None else parse_redundancy(redundancy)
+                size = measure((0,), units, 10 * MiB, share)
                 capacity = size.required + 128 * 1024
                 disc = self.root / f"input-{redundancy}" / "disc_0001"
                 shutil.copytree(self.source, disc)
-                options = [] if redundancy is None else ["-r", str(redundancy)]
+                options = [] if redundancy is None else ["-r", redundancy]
                 args = build_parser().parse_args(
                     [
                         "create",

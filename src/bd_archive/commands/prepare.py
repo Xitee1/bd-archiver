@@ -11,6 +11,7 @@ from bd_archive.archive.prepare import STRATEGIES, Plan, disorder, make_units, p
 from bd_archive.archive.prepare_move import check_space, move_plan
 from bd_archive.archive.prepare_sizing import measure
 from bd_archive.archive.raw import scan_raw_source
+from bd_archive.archive.share import recovery_requested
 from bd_archive.commands.create import _validate_name
 from bd_archive.constants import DISC_END_MARGIN, MiB
 from bd_archive.shell.deps import check_deps
@@ -59,13 +60,16 @@ def order_consistency(score: float) -> int:
 MAX_MEASURED_PLANS = 64  # per strategy
 
 
-def checked_proposals(units, candidates, capacity, redundancy, limit):
+def checked_proposals(units, candidates, capacity, redundancy, limit, reserve=0):
     """Measure each strategy's candidates, longest prefix first; keep the first that qualifies.
 
-    A plan qualifies when every disc fits and, with a free-space limit, no disc
-    exceeds it. Optimistic search weights are refined without splitting a unit.
+    A plan qualifies when every disc fits beside the reserve and, with a
+    free-space limit, no disc exceeds it. Measurements use the full capacity so
+    recovery sizing matches creation; optimistic search weights are refined
+    without splitting a unit.
     """
     cache = {}
+    usable = capacity - reserve
 
     def measured(group):
         if group not in cache:
@@ -80,11 +84,11 @@ def checked_proposals(units, candidates, capacity, redundancy, limit):
             result = []
             while pending:
                 group = pending.pop(0)
-                if redundancy != 0 and not sum(units[i].size for i in group):
+                if recovery_requested(redundancy) and not sum(units[i].size for i in group):
                     # Empty units must travel with non-empty data under PAR2.
                     result = []
                     break
-                if measured(group).required <= capacity:
+                if measured(group).required <= usable:
                     result.append(group)
                 elif len(group) > 1:
                     # Refine an optimistic search weight without splitting any unit.
@@ -99,7 +103,7 @@ def checked_proposals(units, candidates, capacity, redundancy, limit):
             if not plan:
                 continue
             if limit is not None and not all(
-                limit.allows(measured(g).free(capacity), measured(g).budget(capacity)) for g in plan
+                limit.allows(measured(g).free(usable), measured(g).budget(usable)) for g in plan
             ):
                 continue
             plans[strategy] = plan
@@ -119,8 +123,6 @@ def cmd_prepare(args):
 
 def _prepare(args):
     _validate_name(args.name)
-    if args.redundancy is not None and not 0 <= args.redundancy <= 100:
-        raise ValueError("--redundancy must be 0-100 or none")
     source = Path(args.source).resolve()
     output = Path(args.output).resolve()
     if not source.is_dir():
@@ -143,6 +145,10 @@ def _prepare(args):
         capacity = detect_disc_capacity(resolve_device(args.device))
         if capacity is None or capacity <= 0:
             raise ValueError("No writable disc detected; insert one or use --bytes")
+    reserve = args.reserve.bytes_of(capacity) if args.reserve is not None else 0
+    usable = capacity - reserve
+    if usable <= DISC_END_MARGIN:
+        raise ValueError("--reserve leaves no usable space on the disc")
 
     log.step("Scanning source and planning raw discs")
     inventory = scan_raw_source(source)
@@ -173,15 +179,15 @@ def _prepare(args):
         field("Files with metadata", len(dates) - fallback)
         field("Files with mtime", fallback)
     field("Disc capacity", human_bytes(capacity))
-    if args.redundancy is None:
-        field("Redundancy", "automatic")
-    elif args.redundancy == 0:
-        field("Redundancy", "none")
-    else:
-        field("Redundancy", f"{args.redundancy}%")
-    field("Max free per disc", args.max_free.text if args.max_free else "unlimited")
+    field("Reserve", args.reserve.label if args.reserve is not None else "none")
+    field("Redundancy", "automatic" if args.redundancy is None else args.redundancy.label)
+    field("Max free per disc", args.max_free.label if args.max_free else "unlimited")
     # Fast search reserve; every offered plan gets a precise sparse-tree check.
-    budget = (capacity - DISC_END_MARGIN - MiB // 2) * 100 // (100 + (args.redundancy or 0))
+    budget = usable - DISC_END_MARGIN - MiB // 2
+    if args.redundancy is not None and args.redundancy.percent:
+        budget = int(budget * 100 / (100 + args.redundancy.value))
+    elif args.redundancy is not None:
+        budget -= args.redundancy.bytes_of(budget)
     if budget <= 0:
         raise ValueError("Disc capacity is too small for filesystem and metadata")
     for index, unit in enumerate(units):
@@ -189,13 +195,15 @@ def _prepare(args):
         # conservative. Such units can still occupy a measured disc alone.
         if (
             unit.weight > budget
-            and measure((index,), units, capacity, args.redundancy).required <= capacity
+            and measure((index,), units, capacity, args.redundancy).required <= usable
         ):
             units[index] = replace(unit, weight=budget)
     candidates = proposals(units, budget, args.redundancy != 0, args.max_free is not None)
     log.blank()
     log.info("Checking filesystem, checksum and recovery space for candidate plans...")
-    plans, sizes = checked_proposals(units, candidates, capacity, args.redundancy, args.max_free)
+    plans, sizes = checked_proposals(
+        units, candidates, capacity, args.redundancy, args.max_free, reserve
+    )
     for number, strategy in enumerate(STRATEGIES, 1):
         section(f"Plan {number} ({strategy})")
         field("Packing", PACKING_TEXT[strategy])
@@ -207,7 +215,7 @@ def _prepare(args):
         field("Discs", len(plan))
         field("Included", human_bytes(included))
         field("Deferred", human_bytes(total - included))
-        field("Unused", human_bytes(sum(sizes[group].free(capacity) for group in plan)))
+        field("Unused", human_bytes(sum(sizes[group].free(usable) for group in plan)))
         if by_content:
             field("Files with metadata", sum(units[i].metadata for group in plan for i in group))
         field("Order consistency", f"{order_consistency(disorder(plan, units)[0])}%")
@@ -249,7 +257,8 @@ def _prepare(args):
         size = sizes[group]
         section(f"Disc {number:04d}")
         field("Data", human_bytes(size.payload))
-        field("Free", f"{human_bytes(size.free(capacity))} before automatic recovery")
+        spare = "filled by automatic recovery" if args.redundancy is None else "stays unused"
+        field("Free", f"{human_bytes(size.free(usable))} ({spare})")
         if by_name:
             field("Name range", f"{units[group[0]].path} to {units[group[-1]].path}")
         else:
@@ -294,7 +303,7 @@ def _prepare(args):
             str(capacity),
         ]
         if args.redundancy is not None:
-            command.extend(["-r", str(args.redundancy)])
+            command.extend(["-r", args.redundancy.text])
         if number > 1:
             log.blank()
         log.info(f"  {shlex.join(command)}")

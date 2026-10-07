@@ -7,12 +7,17 @@ from pathlib import Path
 
 from bd_archive.archive.checksums import _hash_file_sha512
 from bd_archive.archive.hardlinks import HardlinkTracker
-from bd_archive.constants import PAR2_RECOVERY_RE, RAW_PAR2_INDEX, RAW_ROOT_MARKER
+from bd_archive.archive.share import Share, recovery_blocks
+from bd_archive.constants import (
+    MAX_PAR2_BLOCKS,
+    PAR2_RECOVERY_RE,
+    RAW_PAR2_INDEX,
+    RAW_ROOT_MARKER,
+)
 from bd_archive.ui.progress import Progress
 
 RAW_CHECKSUMS = "checksums.sha512"
 # Stay within par2cmdline's source-block limit and a supported recovery count.
-MAX_PAR2_BLOCKS = 32768
 
 
 def is_raw_metadata_name(name: str) -> bool:
@@ -109,7 +114,7 @@ def fixed_raw_recovery(
     inventory: list["RawEntry"],
     capacity: int,
     payload_bytes: int,
-    redundancy: int,
+    redundancy: Share,
     *,
     path_prefix: str = "",
 ) -> tuple[RawPar2Sizing, int]:
@@ -122,7 +127,7 @@ def fixed_raw_recovery(
         for e in inventory
         if stat.S_ISREG(e.mode)
     )
-    return sizing, max(1, (source_blocks * redundancy + 99) // 100)
+    return sizing, recovery_blocks(redundancy, source_blocks, sizing.block_size)
 
 
 @dataclass(frozen=True)

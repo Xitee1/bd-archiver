@@ -9,7 +9,8 @@ import textwrap
 import argcomplete
 
 from bd_archive import __version__
-from bd_archive.archive.prepare import ORDERS, free_limit, grouping
+from bd_archive.archive.prepare import ORDERS, grouping
+from bd_archive.archive.share import parse_redundancy, parse_share
 from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
@@ -17,16 +18,6 @@ from bd_archive.commands.prepare import cmd_prepare
 from bd_archive.commands.verify import cmd_verify
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, MAX_WRITE_TIMEOUT, write_timeout
 from bd_archive.ui.logger import Logger, log
-
-
-def _redundancy(value: str) -> int:
-    """Normalize the explicit disable option without changing mode defaults."""
-    if value.lower() == "none":
-        return 0
-    try:
-        return int(value)
-    except ValueError:
-        raise ValueError("expected 0-100 or none") from None
 
 
 def _argtype(parse):
@@ -90,9 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument(
         "-r",
         "--redundancy",
-        type=_argtype(_redundancy),
-        metavar="0-100|none",
-        help="Reserve the same recovery setting as create (default: automatic; none disables PAR2)",
+        type=_argtype(parse_redundancy),
+        metavar="PERCENT|SIZE|none",
+        help="Reserve the same recovery setting as create: a percentage of the data (5) or "
+        "a fixed size per disc (500M, 2G); none disables PAR2 (default: automatic)",
+    )
+    pr.add_argument(
+        "--reserve",
+        type=_argtype(parse_share),
+        metavar="PERCENT|SIZE",
+        help="Keep this much of every disc free for files added before create, "
+        "e.g. 2 (percent), 50M, 1G (default: none)",
     )
     pr.add_argument(
         "--group-by",
@@ -123,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pr.add_argument(
         "--max-free",
-        type=_argtype(free_limit),
+        type=_argtype(parse_share),
         metavar="PERCENT|SIZE",
         help="Allow deferring the last units in fill order: maximum unused data budget on "
         "every disc, e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
@@ -176,11 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "-r",
         "--redundancy",
-        type=_argtype(_redundancy),
+        type=_argtype(parse_redundancy),
         default=None,
-        metavar="0-100|none",
-        help="PAR2 recovery data, 0-100%%; 0 or none skips PAR2 "
-        "(default: raw fills free space; dar: 5%%)",
+        metavar="PERCENT|SIZE|none",
+        help="PAR2 recovery data per disc: a percentage of the data (5) or a fixed size "
+        "(500M, 2G); 0 or none skips PAR2 (default: raw fills free space; dar: 5)",
     )
     common.add_argument(
         "-D",

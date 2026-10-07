@@ -135,7 +135,7 @@ class RawValidationTests(unittest.TestCase):
             self.assertRaises(RuntimeError),
         ):
             cmd_create(args)
-        self.assertEqual(args.redundancy, 5)
+        self.assertEqual(args.redundancy.label, "5%")
         self.assertEqual(args.compression, "zstd")
 
     def test_source_folder_cannot_collide_with_root_metadata(self):

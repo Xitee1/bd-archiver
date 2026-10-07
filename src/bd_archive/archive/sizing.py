@@ -2,6 +2,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from bd_archive.archive.share import Share
 from bd_archive.constants import DISC_WRITE_BLOCK, PAR2_AND_MISC_OVERHEAD, MiB
 from bd_archive.shell.format import human_bytes
 from bd_archive.tools import dar
@@ -13,14 +14,17 @@ def disc_write_bytes(image_bytes: int) -> int:
     return ((image_bytes + DISC_WRITE_BLOCK - 1) // DISC_WRITE_BLOCK) * DISC_WRITE_BLOCK
 
 
-def compute_slice_bytes(disc_bytes: int, catalog_est: int, redundancy: int) -> int:
+def compute_slice_bytes(disc_bytes: int, catalog_est: int, redundancy: Share) -> int:
     """Largest slice that fits on a disc with overhead. Returns 0 if it doesn't fit."""
     per_disc_overhead = catalog_est + PAR2_AND_MISC_OVERHEAD
     if per_disc_overhead >= disc_bytes:
         return 0
     available = disc_bytes - per_disc_overhead
-    slice_bytes = available * 100 // (100 + redundancy)
-    return (slice_bytes // MiB) * MiB
+    if redundancy.percent:
+        slice_bytes = int(available * 100 / (100 + redundancy.value))
+    else:
+        slice_bytes = available - redundancy.bytes_of(available)
+    return max(0, (slice_bytes // MiB) * MiB)
 
 
 def measure_compression_ratio(

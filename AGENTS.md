@@ -31,7 +31,8 @@ or nanoseconds), always offers three plans (`efficient` size-first packing,
 falls back to a more ordered packing that needs no extra disc), and moves selected
 units into ordinary `disc_NNNN/` source directories only after a default-no
 confirmation. `--max-free` permits deferring a suffix in fill order and limits the
-unused data budget on every disc. There is no saved plan, history, dry-run flag, confirmation bypass or
+unused data budget on every disc; `--reserve` keeps part of every disc free for files
+added before `create`. There is no saved plan, history, dry-run flag, confirmation bypass or
 automatic resume. Each resulting source is passed separately to the existing
 single-disc raw `create` command; preparation output is not burn-ready.
 `archive/prepare*.py` implements planning, sparse filesystem sizing and exclusive
@@ -107,7 +108,7 @@ pip install -e '.[dev]'
 ```
 
 ```bash
-bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r %] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [-y]
+bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r PERCENT|SIZE|none] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [-y]
 bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
 bd-archive verify   [<mountpoint|dir|/dev/srN|*.iso>]
 bd-archive extract  -o <output> [-D /dev/srN | -i <iso|dir>...] [-w <workdir>]
@@ -128,7 +129,7 @@ External binaries required at runtime, enforced per-subcommand via `check_deps()
 
 `udisksctl` is also used as a Polkit-based mount fallback in `DiscIO.mount` when plain `mount` fails (no permission). `mount`, `umount`, `eject` are NOT enforced — assumed to be present as part of util-linux. `lsof` is optional, used by `tools.lsof.find_device_holders` for diagnostics when the burn device is busy; gracefully no-ops if missing. Python dep: `argcomplete>=3.0` (pulled via `pyproject.toml`, used for shell tab-completion).
 
-`create -r 0` and `create -r none` skip PAR2 generation and its dependency in both modes, retaining SHA-512 checksums. The omitted-option defaults remain automatic recovery in raw mode and 5% in DAR mode.
+`create -r 0` and `create -r none` skip PAR2 generation and its dependency in both modes, retaining SHA-512 checksums. The omitted-option defaults remain automatic recovery in raw mode and 5% in DAR mode. `-r` accepts a whole percentage or a fixed size per disc (`500M`, `2G`); `archive/share.py` parses `-r`, `--reserve` and `--max-free` alike, and DAR slices get fixed sizes through explicit PAR2 block counts in `_par2_helper`.
 
 `verify` exits with `VerifyResult.value` (0=OK, 1=REPAIRABLE, 2=BROKEN) — useful for scripting. Without PAR2, it falls back to SHA-512. Missing, empty or malformed checksums and missing or damaged payloads are BROKEN (exit 2): "nothing verifiable" must not pass, e.g. when the wrong disc is mounted. SHA-512 cannot repair data. `extract` exits with `1` whenever it wrote a `corrupted-files.txt` (per-file Bad CRC from dar OR slices that failed sha512+par2), `0` on a fully clean restore.
 

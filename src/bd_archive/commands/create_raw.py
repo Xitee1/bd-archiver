@@ -19,6 +19,7 @@ from bd_archive.archive.raw import (
     write_raw_checksums,
 )
 from bd_archive.archive.readme import write_readme
+from bd_archive.archive.share import recovery_requested
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import (
     DISC_END_MARGIN,
@@ -67,9 +68,7 @@ def _create_raw(args):
             f"Raw mode cannot be combined with {', '.join(incompatible)}; "
             "use -m dar for these options"
         )
-    if args.redundancy is not None and not 0 <= args.redundancy <= 100:
-        raise ValueError(f"--redundancy must be 0-100 or none, got {args.redundancy}")
-    recovery_enabled = args.redundancy != 0
+    recovery_enabled = recovery_requested(args.redundancy)
     if args.bytes is not None and args.bytes <= 0:
         raise ValueError("--bytes must be positive")
 
@@ -117,7 +116,7 @@ def _create_raw(args):
             + _DAR_MODE_HINT
         )
     redundancy = (
-        "automatic (remaining disc capacity)" if args.redundancy is None else f"{args.redundancy}%"
+        "automatic (remaining disc capacity)" if args.redundancy is None else args.redundancy.label
     )
     work.mkdir(parents=True, exist_ok=True)
     try:
