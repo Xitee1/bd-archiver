@@ -9,7 +9,7 @@ import textwrap
 import argcomplete
 
 from bd_archive import __version__
-from bd_archive.archive.prepare import free_limit, grouping
+from bd_archive.archive.prepare import ORDERS, free_limit, grouping
 from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
@@ -78,9 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
         "prepare",
         help="Plan and move files into disc-sized raw source folders",
         description="Group a source across raw data discs, preview alternatives, then move "
-        "selected files after y/N confirmation. Dates use content metadata via ExifTool, "
-        "then file modification time; folders use size-weighted date medians. "
-        "No saved plan or processing history.",
+        "selected files after y/N confirmation. Units fill the discs in name, "
+        "modification-time or content-date order. No saved plan or processing history.",
         formatter_class=_ListHelpFormatter,
     )
     pr.add_argument("-s", "--source", required=True, help="Prepared incoming files/directories")
@@ -110,10 +109,24 @@ def build_parser() -> argparse.ArgumentParser:
         "kept together",
     )
     pr.add_argument(
+        "--order-by",
+        choices=ORDERS,
+        default="name",
+        metavar="name|mtime|content-date",
+        help="Order in which units fill the discs (default: name). Folders take the "
+        "size-weighted median date of their files: a file holding more than half of "
+        "the folder's bytes decides alone.\n"
+        "name          by relative path, sorted case-sensitively\n"
+        "mtime         by file modification time, oldest first\n"
+        "content-date  by recording/release date from file metadata, read with "
+        "ExifTool; files without one use their modification time",
+    )
+    pr.add_argument(
         "--max-last-free",
         type=_argtype(free_limit),
         metavar="PERCENT|SIZE",
-        help="Allow deferring newest units: maximum last-disc free data budget, "
+        help="Allow deferring the last units in fill order: maximum last-disc free data "
+        "budget, "
         "e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
     )
 

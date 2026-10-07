@@ -14,7 +14,7 @@ from unittest.mock import patch
 from bd_archive.archive.content_dates import ContentDate
 from bd_archive.archive.prepare import (
     Unit,
-    chronology,
+    disorder,
     free_limit,
     grouping,
     make_units,
@@ -29,14 +29,14 @@ from bd_archive.archive.prepare_move import (
 from bd_archive.archive.prepare_sizing import Measurement, measure
 from bd_archive.archive.raw import scan_raw_source
 from bd_archive.cli import build_parser
-from bd_archive.commands.prepare import checked_proposals, cmd_prepare
+from bd_archive.commands.prepare import checked_proposals, cmd_prepare, order_consistency
 from bd_archive.constants import MiB
 from bd_archive.tools.burn_timeout import MAX_WRITE_TIMEOUT
 
 
 def toy_units(sizes):
     return [
-        Unit(str(i), (), size, date, 1, size, date, date)
+        Unit(str(i), (), size, date, 1, size, date, date, date, 0)
         for i, size in enumerate(sizes)
         for date in [i * 86400 * 10**9]
     ]
@@ -47,17 +47,17 @@ class PlannerTests(unittest.TestCase):
         units = toy_units([14, 14, 11, 11, 13, 12])
         plans = proposals(units, 25, True, False)
         self.assertEqual(len(plans[0]), 3)
-        self.assertTrue(any(len(p) == 4 and chronology(p, units)[0] == 0 for p in plans))
+        self.assertTrue(any(len(p) == 4 and disorder(p, units)[0] == 0 for p in plans))
         for plan in plans:
             self.assertEqual(sorted(i for group in plan for i in group), list(range(6)))
             self.assertTrue(all(sum(units[i].size for i in group) <= 25 for group in plan))
         self.assertEqual(plans, proposals(units, 25, True, False))
 
-    def test_same_disc_count_prefers_chronology(self):
+    def test_same_disc_count_prefers_disorder(self):
         units = toy_units([12, 12, 14, 11])
         main = proposals(units, 25, True, False)[0]
         self.assertEqual(main, ((0, 1), (2, 3)))
-        self.assertEqual(chronology(main, units)[0], 0)
+        self.assertEqual(disorder(main, units)[0], 0)
 
     def test_deferred_units_are_always_a_newest_suffix(self):
         units = toy_units([14, 14, 11, 11, 13, 12])
@@ -67,14 +67,14 @@ class PlannerTests(unittest.TestCase):
 
     def test_small_and_large_overlaps_both_contribute(self):
         units = toy_units([1] * 5)
-        mild = chronology(((0, 2), (1, 3, 4)), units)
-        severe = chronology(((0, 4), (1, 2, 3)), units)
+        mild = disorder(((0, 2), (1, 3, 4)), units)
+        severe = disorder(((0, 4), (1, 2, 3)), units)
         self.assertGreater(severe[0], mild[0])
         self.assertGreater(severe[1], mild[1])
         self.assertGreater(severe[2], mild[2])
 
     def test_file_limit_and_oversized_indivisible_unit(self):
-        units = [Unit(str(i), (), 1, i, 20000, 1, i, i) for i in range(3)]
+        units = [Unit(str(i), (), 1, i, 20000, 1, i, i, i, 0) for i in range(3)]
         self.assertEqual(len(proposals(units, 25, True, False)[0]), 3)
         self.assertEqual(len(proposals(units, 25, False, False)[0]), 1)
         with self.assertRaisesRegex(ValueError, "Unit cannot fit"):
@@ -120,12 +120,12 @@ class FilesystemTests(unittest.TestCase):
         target.write_bytes(data)
         return target
 
-    def units(self, rule="depth:1"):
+    def units(self, rule="depth:1", order_by="name"):
         inventory = scan_raw_source(self.source)
         dates = {
             e.path: ContentDate(e.mtime_ns, "mtime") for e in inventory if stat.S_ISREG(e.mode)
         }
-        return make_units(inventory, grouping(rule), dates)
+        return make_units(inventory, grouping(rule), dates, order_by)
 
     def test_grouping_depth_files_and_empty_directories(self):
         self.file("channel/video/movie.mkv")
@@ -178,6 +178,73 @@ class FilesystemTests(unittest.TestCase):
                 build_parser().parse_args(argv)
             self.assertEqual(exc.exception.code, 2)
             self.assertIn(message, stderr.getvalue())
+
+    def test_name_order_ranks_units_by_path_and_date_orders_by_date(self):
+        for number, name in enumerate(("c/movie", "a/movie", "b/movie")):
+            os.utime(self.file(name), ns=(number * 10**9, number * 10**9))
+        by_name = self.units()
+        self.assertEqual([u.path for u in by_name], ["a", "b", "c"])
+        self.assertEqual([u.order for u in by_name], [0, 1, 2])
+        by_date = self.units(order_by="mtime")
+        self.assertEqual([u.path for u in by_date], ["c", "a", "b"])
+        self.assertEqual([u.order for u in by_date], [u.date for u in by_date])
+
+    def test_units_count_files_dated_from_metadata(self):
+        self.file("video/movie.mkv", b"x" * 100)
+        self.file("video/info.json")
+        inventory = scan_raw_source(self.source)
+        dates = {
+            "video/movie.mkv": ContentDate(2017, "metadata", True),
+            "video/info.json": ContentDate(2026, "mtime"),
+        }
+        (unit,) = make_units(inventory, 1, dates, "content-date")
+        self.assertEqual(unit.metadata, 1)
+        (unit,) = make_units(inventory, 1, dates, "name")
+        self.assertEqual(unit.metadata, 1)
+
+    def test_order_option_defaults_to_name_and_rejects_other_values(self):
+        args = build_parser().parse_args(["prepare", "-s", ".", "-o", "out"])
+        self.assertEqual(args.order_by, "name")
+        for value in ("name", "mtime", "content-date"):
+            args = build_parser().parse_args(
+                ["prepare", "-s", ".", "-o", "out", "--order-by", value]
+            )
+            self.assertEqual(args.order_by, value)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exc:
+            build_parser().parse_args(["prepare", "-s", ".", "-o", "out", "--order-by", "date"])
+        self.assertEqual(exc.exception.code, 2)
+
+    @unittest.skipUnless(shutil.which("mkisofs"), "requires mkisofs")
+    def test_name_order_previews_name_ranges_without_reading_metadata(self):
+        self.file("b/movie")
+        self.file("a/movie")
+        args = build_parser().parse_args(
+            ["prepare", "-s", str(self.source), "-o", str(self.output), "-b", str(20 * MiB)]
+        )
+        captured = io.StringIO()
+        with (
+            patch("bd_archive.commands.prepare.scan_dates") as scan,
+            patch("bd_archive.commands.prepare.check_deps") as deps,
+            patch("builtins.input", return_value="n"),
+            contextlib.redirect_stdout(captured),
+        ):
+            cmd_prepare(args)
+        scan.assert_not_called()
+        self.assertNotIn("exiftool", deps.call_args.args)
+        text = captured.getvalue()
+        self.assertIn("Deferred         Order consistency", text)
+        self.assertNotIn("Metadata", text)
+        self.assertRegex(text, r"\n\S*\s+1\s+1\s+\S+ \S+\s+0 B\s+100%")
+        self.assertIn("name range a to b", text)
+        self.assertIn("  a (", text)
+        self.assertNotIn("center", text)
+
+    def test_order_consistency_is_whole_percent_and_only_perfect_is_full(self):
+        self.assertEqual(order_consistency(0.0), 100)
+        self.assertEqual(order_consistency(0.001), 99)
+        self.assertEqual(order_consistency(0.29), 71)
+        self.assertEqual(order_consistency(1.0), 0)
+        self.assertEqual(order_consistency(1.5), 0)
 
     def test_grouping_parser(self):
         self.assertEqual(grouping("depth:1"), 1)

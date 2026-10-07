@@ -1,12 +1,13 @@
 """Interactively split a source into ordinary raw-disc sources by moving files."""
 
 import shlex
+import stat
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bd_archive.archive.content_dates import scan_dates
-from bd_archive.archive.prepare import Plan, chronology, make_units, proposals
+from bd_archive.archive.content_dates import ContentDate, scan_dates
+from bd_archive.archive.prepare import Plan, disorder, make_units, proposals
 from bd_archive.archive.prepare_move import check_space, move_plan
 from bd_archive.archive.prepare_sizing import measure
 from bd_archive.archive.raw import scan_raw_source
@@ -27,6 +28,16 @@ def date_text(value: int) -> str:
         return "out-of-range date"
 
 
+def order_consistency(score: float) -> int:
+    """Map the disorder score (0 = strictly in fill order) to a whole percentage.
+
+    Only a perfectly ordered plan reports 100%; any departure stays below it.
+    """
+    if score <= 0:
+        return 100
+    return max(0, min(99, int((1 - score) * 100)))
+
+
 def checked_proposals(units, candidates, capacity, redundancy, limit):
     """Refine search estimates against real filesystem and recovery reservations."""
     cache = {}
@@ -42,12 +53,12 @@ def checked_proposals(units, candidates, capacity, redundancy, limit):
         count = sum(map(len, candidate))
         if best is not None:
             best_count = sum(map(len, best))
-            best_score = chronology(best, units)[0]
+            best_score = disorder(best, units)[0]
             if count < best_count:
                 # Only inspect useful neighboring tradeoffs after finding a main plan.
                 if len(candidate) not in (len(best), len(best) - 1):
                     continue
-                if len(candidate) == len(best) and chronology(candidate, units)[0] >= best_score:
+                if len(candidate) == len(best) and disorder(candidate, units)[0] >= best_score:
                     continue
         pending = list(candidate)
         result = []
@@ -76,10 +87,10 @@ def checked_proposals(units, candidates, capacity, redundancy, limit):
             if not limit.allows(last.free(capacity), last.budget(capacity)):
                 continue
         valid.add(plan)
-        if best is None or (-count, len(plan), chronology(plan, units)[0], plan) < (
+        if best is None or (-count, len(plan), disorder(plan, units)[0], plan) < (
             -sum(map(len, best)),
             len(best),
-            chronology(best, units)[0],
+            disorder(best, units)[0],
             best,
         ):
             best = plan
@@ -92,7 +103,7 @@ def checked_proposals(units, candidates, capacity, redundancy, limit):
         return sum(units[i].size for group in plan for i in group)
 
     def score(plan):
-        return chronology(plan, units)[0]
+        return disorder(plan, units)[0]
 
     choices = [best]
     remaining = valid - {best}
@@ -134,7 +145,13 @@ def _prepare(args):
     capacity = args.bytes
     if capacity is not None and capacity <= 0:
         raise ValueError("--bytes must be positive")
-    check_deps("mkisofs", "exiftool", *([] if capacity is not None else ["dvd+rw-mediainfo"]))
+    by_content = args.order_by == "content-date"
+    by_name = args.order_by == "name"
+    check_deps(
+        "mkisofs",
+        *(["exiftool"] if by_content else []),
+        *([] if capacity is not None else ["dvd+rw-mediainfo"]),
+    )
     if capacity is None:
         capacity = detect_disc_capacity(resolve_device(args.device))
         if capacity is None or capacity <= 0:
@@ -142,14 +159,19 @@ def _prepare(args):
 
     log.step("Scanning source and planning raw-disc groups")
     inventory = scan_raw_source(source)
-    log.info("Reading content dates with ExifTool...")
-    dates = scan_dates(source, inventory)
-    fallback = sum(date.source == "mtime" for date in dates.values())
-    log.info(
-        f"Dates: {len(dates) - fallback} files from content metadata, "
-        f"{fallback} using modification time."
-    )
-    units = make_units(inventory, args.group_by, dates)
+    if by_content:
+        log.info("Reading content dates with ExifTool...")
+        dates = scan_dates(source, inventory)
+        fallback = sum(date.source == "mtime" for date in dates.values())
+        log.info(
+            f"Dates: {len(dates) - fallback} files from content metadata, "
+            f"{fallback} using modification time."
+        )
+    else:
+        dates = {
+            e.path: ContentDate(e.mtime_ns, "mtime") for e in inventory if stat.S_ISREG(e.mode)
+        }
+    units = make_units(inventory, args.group_by, dates, args.order_by)
     if not units:
         log.info("No files or directories to prepare.")
         return
@@ -183,24 +205,26 @@ def _prepare(args):
             )
         log.info("No plan meets the last-disc fill limit; all data stays in the source.")
         return
-    log.info("Plan  Discs  Included         Deferred         Chronology")
+    metadata_header = "Metadata  " if by_content else ""
+    log.info(f"Plan  Discs  Included         Deferred         {metadata_header}Order consistency")
     for number, plan in enumerate(choices, 1):
         included = sum(units[i].size for group in plan for i in group)
-        _, affected, worst = chronology(plan, units)
-        detail = (
-            "no unit-center overlap"
-            if not affected
-            else (
-                f"{affected} units overlap earlier discs, up to {worst / (86400 * 10**9):.1f} days"
-            )
-        )
+        metadata = sum(units[i].metadata for group in plan for i in group)
+        metadata_cell = f"{metadata:8}  " if by_content else ""
         log.info(
             f"{number:4}  {len(plan):5}  {human_bytes(included):15}  "
-            f"{human_bytes(total - included):15}  {detail}"
+            f"{human_bytes(total - included):15}  {metadata_cell}"
+            f"{order_consistency(disorder(plan, units)[0]):3d}%"
         )
-    log.info("Plan 1 includes the largest searched chronological prefix using the fewest discs.")
+    log.info(
+        f"Plan 1 includes the longest searched prefix in {args.order_by} order "
+        "using the fewest discs."
+    )
     log.info("Planning uses a bounded heuristic; a global optimum is not guaranteed.")
-    log.info("Chronology uses size-weighted date medians; media ranges may overlap within units.")
+    if by_content:
+        log.info("Metadata counts included files dated from content metadata.")
+    if not by_name:
+        log.info("Folder dates are size-weighted medians; media ranges may overlap within units.")
     choice = 0
     if len(choices) > 1:
         while True:
@@ -219,20 +243,28 @@ def _prepare(args):
     plan = choices[choice]
     chosen = {i for group in plan for i in group}
     for number, group in enumerate(plan, 1):
-        starts = [units[i].date_start for i in group]
-        ends = [units[i].date_end for i in group]
         size = sizes[group]
-        log.info(
+        summary = (
             f"Disc {number:04d}: {human_bytes(size.payload)} data, "
             f"{human_bytes(size.free(capacity))} free before automatic recovery; "
-            f"content range {date_text(min(starts))} to {date_text(max(ends))} (UTC)"
         )
+        if by_name:
+            log.info(f"{summary}name range {units[group[0]].path} to {units[group[-1]].path}")
+        else:
+            starts = [units[i].date_start for i in group]
+            ends = [units[i].date_end for i in group]
+            log.info(
+                f"{summary}date range {date_text(min(starts))} to {date_text(max(ends))} (UTC)"
+            )
         for i in group:
             unit = units[i]
-            log.info(
-                f"  {unit.path} ({human_bytes(unit.size)}): center {date_text(unit.date)}, "
-                f"range {date_text(unit.date_start)} to {date_text(unit.date_end)}"
-            )
+            if by_name:
+                log.info(f"  {unit.path} ({human_bytes(unit.size)})")
+            else:
+                log.info(
+                    f"  {unit.path} ({human_bytes(unit.size)}): center {date_text(unit.date)}, "
+                    f"range {date_text(unit.date_start)} to {date_text(unit.date_end)}"
+                )
     deferred = [u for i, u in enumerate(units) if i not in chosen]
     if deferred:
         log.info(f"Deferred: {len(deferred)} units, {human_bytes(sum(u.size for u in deferred))}")

@@ -1,11 +1,11 @@
-"""Stateless grouping and bounded, chronology-aware raw disc planning."""
+"""Stateless grouping and bounded, order-aware raw disc planning."""
 
 import bisect
 import math
 import os
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from bd_archive.archive.content_dates import ContentDate, weighted_median
@@ -41,6 +41,9 @@ def grouping(value: str) -> int | None:
     return None if match[1] == "inf" else int(match[1])
 
 
+ORDERS = ("name", "mtime", "content-date")
+
+
 @dataclass(frozen=True)
 class Unit:
     path: str
@@ -51,12 +54,21 @@ class Unit:
     weight: int
     date_start: int
     date_end: int
+    order: int  # fill-order key: the rank by path, or the date in nanoseconds
+    metadata: int  # files dated from content metadata
 
 
 def make_units(
-    inventory: list[RawEntry], depth: int | None, dates: dict[str, ContentDate]
+    inventory: list[RawEntry],
+    depth: int | None,
+    dates: dict[str, ContentDate],
+    order_by: str = "name",
 ) -> list[Unit]:
-    """Use disjoint roots; keep empty leaf directories even in file grouping."""
+    """Use disjoint roots; keep empty leaf directories even in file grouping.
+
+    Units are returned in fill order: by relative path for ``name``, otherwise
+    by their size-weighted median date with the path as tie-breaker.
+    """
     groups: dict[str, list[RawEntry]] = {}
     parents = {entry.path.rpartition("/")[0] for entry in inventory}
     for entry in inventory:
@@ -96,8 +108,13 @@ def make_units(
                 max(1, weight),
                 min(span),
                 max(span),
+                date,
+                sum(dates[e.path].source != "mtime" for e in files),
             )
         )
+    if order_by == "name":
+        ranked = sorted(result, key=lambda u: u.path)
+        return [replace(unit, order=rank) for rank, unit in enumerate(ranked)]
     return sorted(result, key=lambda u: (u.date, u.path))
 
 
@@ -108,22 +125,26 @@ def ordered(groups) -> Plan:
     return tuple(sorted((tuple(sorted(g)) for g in groups if g), key=lambda g: g[0]))
 
 
-def chronology(plan: Plan, units: list[Unit]) -> tuple[float, int, int]:
-    """Blend affected-unit share, average overlap, and the worst time outlier."""
+def disorder(plan: Plan, units: list[Unit]) -> tuple[float, int, int]:
+    """Blend affected-unit share, average gap and the worst outlier in fill order.
+
+    Gaps use the units' order key: nanoseconds for date orders, positions for
+    name order. Returns the score, the affected unit count and the worst gap.
+    """
     if not plan:
         return 0.0, 0, 0
-    dates = [units[i].date for g in plan for i in g]
-    span = max(max(dates) - min(dates), 1)
-    latest = min(dates)
+    keys = [units[i].order for g in plan for i in g]
+    span = max(max(keys) - min(keys), 1)
+    latest = min(keys)
     gaps = []
     for group in plan:
-        gaps.extend(max(0, latest - units[i].date) for i in group)
-        latest = max(latest, *(units[i].date for i in group))
+        gaps.extend(max(0, latest - units[i].order) for i in group)
+        latest = max(latest, *(units[i].order for i in group))
     affected = sum(gap > 0 for gap in gaps)
     worst = max(gaps, default=0)
     score = (
-        0.5 * affected / len(dates)
-        + 0.25 * sum(gap / span for gap in gaps) / len(dates)
+        0.5 * affected / len(keys)
+        + 0.25 * sum(gap / span for gap in gaps) / len(keys)
         + 0.25 * (worst / span) ** 2
     )
     return score, affected, worst
@@ -140,7 +161,7 @@ def pack(units: list[Unit], count: int, budget: int, recovery: bool, strategy: s
     for i in order:
         unit = units[i]
         target = None
-        if strategy == "chronological":
+        if strategy == "sequential":
             if (
                 groups
                 and remaining[-1] >= unit.weight
@@ -159,12 +180,12 @@ def pack(units: list[Unit], count: int, budget: int, recovery: bool, strategy: s
             groups.append([])
             remaining.append(budget)
             files.append(0)
-        elif strategy != "chronological":
+        elif strategy != "sequential":
             available.remove((remaining[target], target))
         groups[target].append(i)
         remaining[target] -= unit.weight
         files[target] += unit.nonempty
-        if strategy != "chronological":
+        if strategy != "sequential":
             bisect.insort(available, (remaining[target], target))
     return ordered(groups)
 
@@ -172,7 +193,7 @@ def pack(units: list[Unit], count: int, budget: int, recovery: bool, strategy: s
 def improve(plan: Plan, units: list[Unit], budget: int, recovery: bool) -> Plan:
     """Try bounded boundary moves/swaps across the complete set of adjacent discs."""
     best = plan
-    best_score = chronology(best, units)[0]
+    best_score = disorder(best, units)[0]
     if not best_score:
         return best
     attempts = 0
@@ -203,7 +224,7 @@ def improve(plan: Plan, units: list[Unit], budget: int, recovery: bool) -> Plan:
                     new_left = [i for i in left if i != a] + ([] if b is None else [b])
                     new_right = [i for i in right if i != b] + ([] if a is None else [a])
                     trial = ordered((*best[:boundary], new_left, new_right, *best[boundary + 2 :]))
-                    score = chronology(trial, units)[0]
+                    score = disorder(trial, units)[0]
                     if (len(trial), score) < (len(best), best_score):
                         best, best_score = trial, score
                         changed = True
@@ -220,7 +241,7 @@ def improve(plan: Plan, units: list[Unit], budget: int, recovery: bool) -> Plan:
 def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> list[Plan]:
     """Search all small-backlog cutoffs, sampled cutoffs for large backlogs.
 
-    Only chronological prefixes may be included. The search is deterministic,
+    Only prefixes in fill order may be included. The search is deterministic,
     with bounded local improvements; it does not claim global optimality.
     """
     for unit in units:
@@ -237,22 +258,22 @@ def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> li
         else:
             cuts.update(range(max(1, n - 16), n))
             cuts.update(max(1, math.ceil(n * k / 48)) for k in range(1, 48))
-            chronological = pack(units, n, budget, recovery, "chronological")
-            boundaries = [g[-1] + 1 for g in chronological]
+            sequential = pack(units, n, budget, recovery, "sequential")
+            boundaries = [g[-1] + 1 for g in sequential]
             step = max(1, len(boundaries) // 48)
             cuts.update(boundaries[::step])
     candidates = set()
     for count in sorted(cuts, reverse=True):
         variants = {
             pack(units, count, budget, recovery, strategy)
-            for strategy in ("chronological", "age", "size")
+            for strategy in ("sequential", "order", "size")
         }
-        compact = min(variants, key=lambda p: (len(p), chronology(p, units)[0], p))
+        compact = min(variants, key=lambda p: (len(p), disorder(p, units)[0], p))
         candidates.update(variants)
         # Avoid repeatedly optimizing a large backlog for every cutoff.
         if count == n or n <= 64:
             candidates.add(improve(compact, units, budget, recovery))
     return sorted(
         candidates,
-        key=lambda p: (-sum(len(g) for g in p), len(p), chronology(p, units)[0], p),
+        key=lambda p: (-sum(len(g) for g in p), len(p), disorder(p, units)[0], p),
     )

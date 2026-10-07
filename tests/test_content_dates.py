@@ -154,7 +154,8 @@ class DateTests(unittest.TestCase):
             (unit,) = make_units(inventory, 1, dates)
             self.assertEqual((unit.date, unit.date_start, unit.date_end), (2017, 2017, 2024))
             self.assertEqual(
-                [u.date for u in make_units(inventory, None, dates)], [2017, 2024, 2026]
+                [u.date for u in make_units(inventory, None, dates, "content-date")],
+                [2017, 2024, 2026],
             )
 
 
@@ -249,14 +250,27 @@ class MetadataIntegrationTests(unittest.TestCase):
             before = scan_raw_source(source)
             output = Path(temp) / "output"
             args = build_parser().parse_args(
-                ["prepare", "-s", str(source), "-o", str(output), "-b", "20000000", "-r", "none"]
+                [
+                    "prepare",
+                    "-s",
+                    str(source),
+                    "-o",
+                    str(output),
+                    "-b",
+                    "20000000",
+                    "-r",
+                    "none",
+                    "--order-by",
+                    "content-date",
+                ]
             )
             captured = io.StringIO()
             with patch("builtins.input", return_value="n"), contextlib.redirect_stdout(captured):
                 cmd_prepare(args)
             text = captured.getvalue()
             self.assertIn("1 files from content metadata, 1 using modification time", text)
+            self.assertIn("Deferred         Metadata  Order consistency", text)
+            self.assertRegex(text, r"\n\S*\s+1\s+1\s+\S+ \S+\s+0 B\s+1\s+100%")
             self.assertIn("center 2017-05-04, range 2017-05-04 to 2017-05-04", text)
-            self.assertIn("no unit-center overlap", text)
             self.assertFalse(output.exists())
             self.assertEqual(scan_raw_source(source), before)
