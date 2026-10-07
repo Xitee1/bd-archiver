@@ -26,9 +26,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `prepare` is a separate, stateless raw-source splitter. It groups whole units
 (`--group-by depth:N|depth:inf`), fills discs in `--order-by name|mtime|content-date`
 order (default `name`; `archive/prepare.py:disorder` scores departures in positions
-or nanoseconds), proposes order-aware multi-disc layouts, and moves selected units
-into ordinary `disc_NNNN/` source directories only after a default-no confirmation.
-`--max-last-free` permits deferring a suffix in fill order. There is no saved plan, history, dry-run flag, confirmation bypass or
+or nanoseconds), always offers three plans (`efficient` size-first packing,
+`balanced` in-order packing with backfilling, `ordered` strict sequence; each row
+falls back to a more ordered packing that needs no extra disc), and moves selected
+units into ordinary `disc_NNNN/` source directories only after a default-no
+confirmation. `--max-free` permits deferring a suffix in fill order and limits the
+unused data budget on every disc. There is no saved plan, history, dry-run flag, confirmation bypass or
 automatic resume. Each resulting source is passed separately to the existing
 single-disc raw `create` command; preparation output is not burn-ready.
 `archive/prepare*.py` implements planning, sparse filesystem sizing and exclusive
@@ -40,7 +43,7 @@ recording/original dates, then release dates, then file mtime. Container/muxing
 dates are excluded by tag IDs, including Matroska's misleading DateTimeOriginal
 ID 1121. `tools/exiftool.py` reads metadata in bounded batches without user config
 or stream extraction. Unit dates are size-weighted medians (earlier on exact ties);
-previews count mtime fallbacks and show media ranges separately from unit centers.
+previews count mtime fallbacks and show media date ranges per disc.
 Unknown-zone content dates and displayed ranges use UTC. Files remain unchanged.
 
 `create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`

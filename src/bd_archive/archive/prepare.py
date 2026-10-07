@@ -16,6 +16,7 @@ from bd_archive.archive.raw import MAX_PAR2_BLOCKS, RawEntry
 class FreeLimit:
     value: Decimal
     percent: bool
+    text: str
 
     def allows(self, free: int, budget: int) -> bool:
         allowed = self.value * budget / 100 if self.percent else self.value
@@ -30,7 +31,7 @@ def free_limit(value: str) -> FreeLimit:
     suffix = match[2].upper()
     if not suffix and amount > 100:
         raise ValueError("expected a percentage between 0 and 100")
-    return FreeLimit(amount * {"": 1, "M": 10**6, "G": 10**9}[suffix], not suffix)
+    return FreeLimit(amount * {"": 1, "M": 10**6, "G": 10**9}[suffix], not suffix, value)
 
 
 def grouping(value: str) -> int | None:
@@ -42,6 +43,8 @@ def grouping(value: str) -> int | None:
 
 
 ORDERS = ("name", "mtime", "content-date")
+STRATEGIES = ("efficient", "balanced", "ordered")
+_PACKING = {"efficient": "size", "balanced": "order", "ordered": "sequential"}
 
 
 @dataclass(frozen=True)
@@ -238,11 +241,14 @@ def improve(plan: Plan, units: list[Unit], budget: int, recovery: bool) -> Plan:
     return best
 
 
-def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> list[Plan]:
-    """Search all small-backlog cutoffs, sampled cutoffs for large backlogs.
+def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> dict[str, list[Plan]]:
+    """Return one candidate plan per strategy and cutoff, longest prefix first.
 
-    Only prefixes in fill order may be included. The search is deterministic,
-    with bounded local improvements; it does not claim global optimality.
+    ``efficient`` packs by size, ``balanced`` fills in order and backfills gaps,
+    ``ordered`` never reorders. Only prefixes in fill order may be included:
+    all cutoffs for small backlogs, sampled cutoffs for large ones. The search
+    is deterministic with bounded local improvements; it does not claim global
+    optimality.
     """
     for unit in units:
         if unit.weight > budget or (recovery and unit.nonempty > MAX_PAR2_BLOCKS):
@@ -262,18 +268,23 @@ def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> li
             boundaries = [g[-1] + 1 for g in sequential]
             step = max(1, len(boundaries) // 48)
             cuts.update(boundaries[::step])
-    candidates = set()
+    candidates: dict[str, list[Plan]] = {strategy: [] for strategy in STRATEGIES}
     for count in sorted(cuts, reverse=True):
-        variants = {
-            pack(units, count, budget, recovery, strategy)
-            for strategy in ("sequential", "order", "size")
-        }
-        compact = min(variants, key=lambda p: (len(p), disorder(p, units)[0], p))
-        candidates.update(variants)
-        # Avoid repeatedly optimizing a large backlog for every cutoff.
-        if count == n or n <= 64:
-            candidates.add(improve(compact, units, budget, recovery))
-    return sorted(
-        candidates,
-        key=lambda p: (-sum(len(g) for g in p), len(p), disorder(p, units)[0], p),
-    )
+        packed = {}
+        for strategy, packing in _PACKING.items():
+            plan = pack(units, count, budget, recovery, packing)
+            # Avoid repeatedly optimizing a large backlog for every cutoff.
+            if strategy != "ordered" and (count == n or n <= 64):
+                plan = improve(plan, units, budget, recovery)
+            packed[strategy] = plan
+        # Each row may fall back to a more ordered packing that needs no extra disc,
+        # so efficient never trails balanced and balanced never trails ordered.
+        for strategy, pool in (
+            ("efficient", STRATEGIES),
+            ("balanced", ("balanced", "ordered")),
+            ("ordered", ("ordered",)),
+        ):
+            candidates[strategy].append(
+                min((packed[s] for s in pool), key=lambda p: (len(p), disorder(p, units)[0], p))
+            )
+    return candidates

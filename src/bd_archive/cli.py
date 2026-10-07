@@ -122,12 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
         "ExifTool; files without one use their modification time",
     )
     pr.add_argument(
-        "--max-last-free",
+        "--max-free",
         type=_argtype(free_limit),
         metavar="PERCENT|SIZE",
-        help="Allow deferring the last units in fill order: maximum last-disc free data "
-        "budget, "
-        "e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
+        help="Allow deferring the last units in fill order: maximum unused data budget on "
+        "every disc, e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
     )
 
     # ── create ──────────────────────────────────────────────────────────

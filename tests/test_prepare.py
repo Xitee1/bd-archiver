@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from bd_archive.archive.content_dates import ContentDate
 from bd_archive.archive.prepare import (
+    STRATEGIES,
     Unit,
     disorder,
     free_limit,
@@ -29,7 +30,12 @@ from bd_archive.archive.prepare_move import (
 from bd_archive.archive.prepare_sizing import Measurement, measure
 from bd_archive.archive.raw import scan_raw_source
 from bd_archive.cli import build_parser
-from bd_archive.commands.prepare import checked_proposals, cmd_prepare, order_consistency
+from bd_archive.commands.prepare import (
+    PACKING_TEXT,
+    checked_proposals,
+    cmd_prepare,
+    order_consistency,
+)
 from bd_archive.constants import MiB
 from bd_archive.tools.burn_timeout import MAX_WRITE_TIMEOUT
 
@@ -46,24 +52,29 @@ class PlannerTests(unittest.TestCase):
     def test_units_are_atomic_and_every_selected_unit_occurs_once(self):
         units = toy_units([14, 14, 11, 11, 13, 12])
         plans = proposals(units, 25, True, False)
-        self.assertEqual(len(plans[0]), 3)
-        self.assertTrue(any(len(p) == 4 and disorder(p, units)[0] == 0 for p in plans))
-        for plan in plans:
+        self.assertEqual(list(plans), ["efficient", "balanced", "ordered"])
+        self.assertEqual(len(plans["efficient"][0]), 3)
+        self.assertEqual(len(plans["ordered"][0]), 4)
+        self.assertEqual(disorder(plans["ordered"][0], units)[0], 0)
+        for plan in (p for candidates in plans.values() for p in candidates):
             self.assertEqual(sorted(i for group in plan for i in group), list(range(6)))
             self.assertTrue(all(sum(units[i].size for i in group) <= 25 for group in plan))
         self.assertEqual(plans, proposals(units, 25, True, False))
 
-    def test_same_disc_count_prefers_disorder(self):
+    def test_strategies_agree_when_order_costs_nothing(self):
         units = toy_units([12, 12, 14, 11])
-        main = proposals(units, 25, True, False)[0]
-        self.assertEqual(main, ((0, 1), (2, 3)))
-        self.assertEqual(disorder(main, units)[0], 0)
+        for strategy, candidates in proposals(units, 25, True, False).items():
+            with self.subTest(strategy=strategy):
+                self.assertEqual(candidates, [((0, 1), (2, 3))])
 
-    def test_deferred_units_are_always_a_newest_suffix(self):
+    def test_deferred_units_are_always_a_suffix_in_fill_order(self):
         units = toy_units([14, 14, 11, 11, 13, 12])
-        for plan in proposals(units, 25, True, True):
-            selected = sorted(i for g in plan for i in g)
-            self.assertEqual(selected, list(range(len(selected))))
+        for strategy, candidates in proposals(units, 25, True, True).items():
+            with self.subTest(strategy=strategy):
+                self.assertEqual(sum(len(g) for g in candidates[0]), 6)
+                for plan in candidates:
+                    selected = sorted(i for g in plan for i in g)
+                    self.assertEqual(selected, list(range(len(selected))))
 
     def test_small_and_large_overlaps_both_contribute(self):
         units = toy_units([1] * 5)
@@ -75,8 +86,8 @@ class PlannerTests(unittest.TestCase):
 
     def test_file_limit_and_oversized_indivisible_unit(self):
         units = [Unit(str(i), (), 1, i, 20000, 1, i, i, i, 0) for i in range(3)]
-        self.assertEqual(len(proposals(units, 25, True, False)[0]), 3)
-        self.assertEqual(len(proposals(units, 25, False, False)[0]), 1)
+        self.assertEqual(len(proposals(units, 25, True, False)["efficient"][0]), 3)
+        self.assertEqual(len(proposals(units, 25, False, False)["efficient"][0]), 1)
         with self.assertRaisesRegex(ValueError, "Unit cannot fit"):
             proposals(toy_units([26]), 25, True, False)
 
@@ -90,19 +101,34 @@ class PlannerTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 free_limit(value)
 
-    def test_actual_measurement_controls_fill_and_alternatives(self):
-        units = toy_units([14, 14, 11, 11, 13, 12])
-        candidates = proposals(units, 25, False, True)
-        with patch(
+    def test_free_space_limit_applies_to_every_disc(self):
+        identity = patch(
             "bd_archive.commands.prepare.measure",
             side_effect=lambda g, u, c, r: Measurement(
                 sum(u[i].size for i in g), sum(u[i].size for i in g)
             ),
-        ):
-            choices, _ = checked_proposals(units, candidates, 25, 0, free_limit("5"))
-        self.assertEqual(sum(len(g) for g in choices[0]), 6)
-        self.assertTrue(any(sum(len(g) for g in p) == 5 for p in choices))
-        self.assertTrue(any(len(p) == 2 for p in choices))
+        )
+
+        def checked(units, limit):
+            with identity:
+                plans, _ = checked_proposals(
+                    units, proposals(units, 25, False, True), 25, 0, free_limit(limit)
+                )
+            return plans
+
+        plans = checked(toy_units([14, 14, 11, 11, 13, 12]), "5")
+        self.assertEqual(sum(len(g) for g in plans["efficient"]), 6)
+        self.assertEqual(len(plans["efficient"]), 3)
+        self.assertEqual(sum(len(g) for g in plans["balanced"]), 6)
+        # Strictly in order, disc 1 holds 14 of 25 and cannot be filled by any cutoff.
+        self.assertIsNone(plans["ordered"])
+        plans = checked(toy_units([14, 11, 14, 11, 5]), "5")
+        for strategy in ("efficient", "balanced", "ordered"):
+            with self.subTest(strategy=strategy):
+                self.assertEqual(plans[strategy], ((0, 1), (2, 3)))
+        self.assertEqual(checked(toy_units([14]), "5"), dict.fromkeys(STRATEGIES))
+        plans = checked(toy_units([14, 11, 14, 11, 5]), "100")
+        self.assertEqual(sum(len(g) for g in plans["efficient"]), 5)
 
 
 class FilesystemTests(unittest.TestCase):
@@ -149,14 +175,13 @@ class FilesystemTests(unittest.TestCase):
                 "expected depth:N (N >= 1) or depth:inf",
             ),
             (
-                [*prepare, "--max-last-free", "5MiB"],
-                "argument --max-last-free: invalid value '5MiB': "
+                [*prepare, "--max-free", "5MiB"],
+                "argument --max-free: invalid value '5MiB': "
                 "expected a percentage (5), decimal MB (500M) or decimal GB (2G)",
             ),
             (
-                [*prepare, "--max-last-free", "101"],
-                "argument --max-last-free: invalid value '101': "
-                "expected a percentage between 0 and 100",
+                [*prepare, "--max-free", "101"],
+                "argument --max-free: invalid value '101': expected a percentage between 0 and 100",
             ),
             (
                 [*prepare, "-r", "off"],
@@ -232,12 +257,19 @@ class FilesystemTests(unittest.TestCase):
         scan.assert_not_called()
         self.assertNotIn("exiftool", deps.call_args.args)
         text = captured.getvalue()
-        self.assertIn("Deferred         Order consistency", text)
-        self.assertNotIn("Metadata", text)
-        self.assertRegex(text, r"\n\S*\s+1\s+1\s+\S+ \S+\s+0 B\s+100%")
-        self.assertIn("name range a to b", text)
-        self.assertIn("  a (", text)
-        self.assertNotIn("center", text)
+        self.assertRegex(text, r"Order\s+: name")
+        self.assertRegex(text, r"Max free per disc\s+: unlimited")
+        self.assertNotIn("Files with metadata", text)
+        for number, strategy in enumerate(STRATEGIES, 1):
+            self.assertRegex(
+                text,
+                rf"Plan {number} \({strategy}\)\n.*Packing\s+: {PACKING_TEXT[strategy]}\n"
+                r".*Discs\s+: 1\n",
+            )
+        self.assertEqual(text.count("Order consistency    : 100%"), 3)
+        self.assertIn("Automatically selected plan: all available plans are identical", text)
+        self.assertRegex(text, r"Name range\s+: a to b")
+        self.assertNotIn("\n[INFO]    a (", text)
 
     def test_order_consistency_is_whole_percent_and_only_perfect_is_full(self):
         self.assertEqual(order_consistency(0.0), 100)
@@ -426,7 +458,7 @@ class FilesystemTests(unittest.TestCase):
     @unittest.skipUnless(
         shutil.which("mkisofs") and shutil.which("exiftool"), "requires mkisofs/exiftool"
     )
-    def test_no_qualifying_last_disc_leaves_everything_untouched(self):
+    def test_no_qualifying_plan_leaves_everything_untouched(self):
         self.file("video/file")
         args = build_parser().parse_args(
             [
@@ -437,7 +469,7 @@ class FilesystemTests(unittest.TestCase):
                 str(self.output),
                 "-b",
                 str(20 * MiB),
-                "--max-last-free",
+                "--max-free",
                 "5",
             ]
         )
