@@ -204,7 +204,10 @@ def _prepare(args):
         field("Discs", len(plan))
         field("Included", human_bytes(included))
         field("Deferred", human_bytes(total - included))
-        field("Unused", human_bytes(sum(sizes[group].free(usable) for group in plan)))
+        unused = sum(sizes[group].free(usable) for group in plan)
+        field("Free (unused)", human_bytes(unused))
+        field("Free (reserve)", human_bytes(reserve * len(plan)))
+        field("Free (total)", human_bytes(unused + reserve * len(plan)))
         if by_content:
             field("Files with metadata", sum(units[i].metadata for group in plan for i in group))
         field("Order consistency", f"{order_consistency(disorder(plan, units)[0])}%")
@@ -246,7 +249,9 @@ def _prepare(args):
         size = sizes[group]
         section(f"Disc {number:04d}")
         field("Data", human_bytes(size.payload))
-        field("Free", f"{human_bytes(size.free(capacity))} (for added files and recovery data)")
+        field("Free (unused)", human_bytes(size.free(usable)))
+        field("Free (reserve)", human_bytes(reserve))
+        field("Free (total)", human_bytes(size.free(usable) + reserve))
         if by_name:
             field("Name range", f"{units[group[0]].path} to {units[group[-1]].path}")
         else:

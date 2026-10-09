@@ -2,6 +2,7 @@ import contextlib
 import errno
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -330,7 +331,7 @@ class FilesystemTests(unittest.TestCase):
         self.assertRegex(text, r"Max free per disc\s+: unlimited")
         self.assertRegex(text, r"Reserve\s+: 5% \(1\.0 MiB per disc\)")
         self.assertNotIn("Redundancy", text)
-        self.assertRegex(text, r"Free\s+: .* \(for added files and recovery data\)")
+        self.assertNotIn("Free  ", text)
         self.assertNotIn("Files with metadata", text)
         for number, strategy in enumerate(STRATEGIES, 1):
             self.assertRegex(
@@ -339,6 +340,11 @@ class FilesystemTests(unittest.TestCase):
                 r".*Discs\s+: 1\n",
             )
         self.assertEqual(text.count("Order consistency    : 100%"), 3)
+        # Three plan blocks and one disc block each list the three free-space lines.
+        self.assertEqual(text.count("Free (reserve)       : 1.0 MiB"), 4)
+        free_lines = r"Free \(unused\)\s+: .*\n.*Free \(reserve\)\s+: .*\n.*Free \(total\)\s+: "
+        self.assertEqual(len(re.findall(free_lines, text)), 4)
+        self.assertRegex(text, r"Disc 0001\n.*Data\s+: .*\n.*Free \(unused\)\s+: ")
         self.assertIn("Automatically selected plan: all available plans are identical", text)
         self.assertRegex(text, r"Name range\s+: a to b")
         self.assertNotIn("\n[INFO]    a (", text)
