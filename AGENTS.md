@@ -31,13 +31,16 @@ or nanoseconds), always offers three plans (`efficient` size-first packing,
 falls back to a more ordered packing that needs no extra disc), and moves selected
 units into ordinary `disc_NNNN/` source directories only after a default-no
 confirmation. `--max-free` permits deferring a suffix in fill order and limits the
-unused data budget on every disc; `--reserve` keeps part of every disc free for files
-added before `create`. There is no saved plan, history, dry-run flag, confirmation bypass or
+unused data budget on every disc. `-r/--reserve` (default 5% of the capacity) keeps part
+of every disc free, which raw `create` without `-r` fills with PAR2 recovery data after
+any files added before `create`; `prepare` has no redundancy option. There is no saved plan,
+history, dry-run flag, confirmation bypass or
 automatic resume. Each resulting source is passed separately to the existing
 single-disc raw `create` command; preparation output is not burn-ready.
 `archive/prepare*.py` implements planning, sparse filesystem sizing and exclusive
-moves with verified cross-filesystem copies and a free-space preflight. Keep
-fixed-recovery block sizing shared with raw creation. See the wiki's
+moves with verified cross-filesystem copies and a free-space preflight. Sizing
+reserves the PAR2 index plus one recovery block per disc with non-empty files; printed
+`create` commands add `-r none` only for discs without non-empty files. See the wiki's
 `Preparing-raw-discs` page for the complete workflow and limitations.
 `--order-by content-date` requires ExifTool: `archive/content_dates.py` resolves whitelisted
 recording/original dates, then release dates, then file mtime. Container/muxing

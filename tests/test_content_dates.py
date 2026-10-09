@@ -258,8 +258,6 @@ class MetadataIntegrationTests(unittest.TestCase):
                     str(output),
                     "-b",
                     "20000000",
-                    "-r",
-                    "none",
                     "--order-by",
                     "content-date",
                 ]
