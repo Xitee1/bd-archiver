@@ -66,15 +66,31 @@ def check_space(source: Path, output: Path, selected: list[Unit]) -> None:
         )
 
 
-def rename_exclusive(source: Path, target: Path) -> None:
-    """Linux rename with RENAME_NOREPLACE, including for directory units."""
+def rename_noreplace(source: Path, target: Path) -> int:
+    """Return 0 on success, otherwise the errno of renameat2 with RENAME_NOREPLACE."""
     libc = ctypes.CDLL(None, use_errno=True)
     rename = libc.renameat2
     rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     rename.restype = ctypes.c_int
     if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1):
-        code = ctypes.get_errno()
+        return ctypes.get_errno()
+    return 0
+
+
+def rename_exclusive(source: Path, target: Path) -> None:
+    """Linux rename with RENAME_NOREPLACE, including for directory units.
+
+    Filesystems without rename flag support, such as NFS, return EINVAL and
+    fall back to a plain rename after an existence check.
+    """
+    code = rename_noreplace(source, target)
+    if code == 0:
+        return
+    if code != errno.EINVAL:
         raise OSError(code, os.strerror(code), str(target))
+    if os.path.lexists(target):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
+    os.rename(source, target)
 
 
 def sync_directory(path: Path) -> None:

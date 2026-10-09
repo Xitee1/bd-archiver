@@ -394,6 +394,29 @@ class FilesystemTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"keep")
         self.assertTrue(original.exists())
 
+    def test_exclusive_rename_falls_back_to_plain_rename_without_flag_support(self):
+        original = self.file("video/movie")
+        target = self.root / "moved"
+        with patch(
+            "bd_archive.archive.prepare_move.rename_noreplace", return_value=errno.EINVAL
+        ) as noreplace:
+            rename_exclusive(original.parent, target)
+        noreplace.assert_called_once()
+        self.assertEqual((target / "movie").read_bytes(), b"payload")
+        self.assertFalse(original.parent.exists())
+
+    def test_plain_rename_fallback_does_not_replace_existing_target(self):
+        original = self.file("file")
+        target = self.root / "existing"
+        target.write_bytes(b"keep")
+        with (
+            patch("bd_archive.archive.prepare_move.rename_noreplace", return_value=errno.EINVAL),
+            self.assertRaises(FileExistsError),
+        ):
+            rename_exclusive(original, target)
+        self.assertEqual(target.read_bytes(), b"keep")
+        self.assertTrue(original.exists())
+
     def cross_device(self, source, target):
         if source.is_relative_to(self.source):
             raise OSError(errno.EXDEV, "cross-device test")
