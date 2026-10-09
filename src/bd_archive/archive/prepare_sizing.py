@@ -7,13 +7,7 @@ from pathlib import Path
 
 from bd_archive import __version__
 from bd_archive.archive.prepare import Unit
-from bd_archive.archive.raw import (
-    RAW_CHECKSUMS,
-    fixed_raw_recovery,
-    raw_par2_sizing,
-    write_raw_checksums,
-)
-from bd_archive.archive.share import Share, recovery_requested
+from bd_archive.archive.raw import RAW_CHECKSUMS, raw_par2_sizing, write_raw_checksums
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.constants import DISC_END_MARGIN, DISC_WRITE_BLOCK
 from bd_archive.tools import mkisofs
@@ -31,13 +25,15 @@ class Measurement:
         return max(0, capacity - (self.required - self.payload))
 
 
-def measure(
-    group: tuple[int, ...], units: list[Unit], capacity: int, redundancy: Share | None
-) -> Measurement:
+def measure(group: tuple[int, ...], units: list[Unit], capacity: int) -> Measurement:
+    """Size one disc: payload, checksums, README allowance and a minimal recovery set.
+
+    Creation later fills the remaining space with recovery data, so only the
+    PAR2 index and one recovery block are reserved here. A disc without
+    non-empty files gets no recovery stand-ins; it needs ``create -r none``.
+    """
     inventory = sorted((e for i in group for e in units[i].entries), key=lambda e: e.path)
     total = sum(units[i].size for i in group)
-    if recovery_requested(redundancy) and total == 0:
-        raise ValueError("A disc containing only empty files/directories requires -r none")
     with tempfile.TemporaryDirectory(prefix="bd-prepare-size-") as scratch:
         root = Path(scratch)
         # Reserve enough path width even if the number needs more than four digits.
@@ -63,19 +59,13 @@ def measure(
         # A bounded README allowance; follow-up commands do not add a description.
         with (metadata / "README.txt").open("wb") as stream:
             stream.truncate(DISC_WRITE_BLOCK)
-        if recovery_requested(redundancy):
-            if redundancy is None:
-                sizing = raw_par2_sizing(
-                    inventory, capacity, capacity - payload_size, path_prefix=source.name
-                )
-                blocks = 1  # Automatic recovery needs at least one block.
-            else:
-                sizing, blocks = fixed_raw_recovery(
-                    inventory, capacity, payload_size, redundancy, path_prefix=source.name
-                )
+        if total:
+            sizing = raw_par2_sizing(
+                inventory, capacity, capacity - payload_size, path_prefix=source.name
+            )
             for name, length in zip(
                 ("recovery.par2", "recovery.vol00000+32768.par2"),
-                sizing.file_sizes(blocks),
+                sizing.file_sizes(1),  # Automatic recovery needs at least one block.
                 strict=True,
             ):
                 with (metadata / name).open("wb") as stream:

@@ -130,7 +130,7 @@ def disorder(plan: Plan, units: list[Unit]) -> tuple[float, int, int]:
     return score, affected, worst
 
 
-def pack(units: list[Unit], count: int, budget: int, recovery: bool, strategy: str) -> Plan:
+def pack(units: list[Unit], count: int, budget: int, strategy: str) -> Plan:
     groups: list[list[int]] = []
     remaining: list[int] = []
     files: list[int] = []
@@ -145,14 +145,14 @@ def pack(units: list[Unit], count: int, budget: int, recovery: bool, strategy: s
             if (
                 groups
                 and remaining[-1] >= unit.weight
-                and (not recovery or files[-1] + unit.nonempty <= MAX_PAR2_BLOCKS)
+                and files[-1] + unit.nonempty <= MAX_PAR2_BLOCKS
             ):
                 target = len(groups) - 1
         else:
             start = bisect.bisect_left(available, (unit.weight, -1))
             # Bound the search when many bins have exhausted their PAR2 file slots.
             for _, j in available[start : start + 64]:
-                if not recovery or files[j] + unit.nonempty <= MAX_PAR2_BLOCKS:
+                if files[j] + unit.nonempty <= MAX_PAR2_BLOCKS:
                     target = j
                     break
         if target is None:
@@ -170,7 +170,7 @@ def pack(units: list[Unit], count: int, budget: int, recovery: bool, strategy: s
     return ordered(groups)
 
 
-def improve(plan: Plan, units: list[Unit], budget: int, recovery: bool) -> Plan:
+def improve(plan: Plan, units: list[Unit], budget: int) -> Plan:
     """Try bounded boundary moves/swaps across the complete set of adjacent discs."""
     best = plan
     best_score = disorder(best, units)[0]
@@ -196,10 +196,7 @@ def improve(plan: Plan, units: list[Unit], budget: int, recovery: bool) -> Plan:
                     bw, bf = (units[b].weight, units[b].nonempty) if b is not None else (0, 0)
                     if max(left_weight - aw + bw, right_weight - bw + aw) > budget:
                         continue
-                    if (
-                        recovery
-                        and max(left_files - af + bf, right_files - bf + af) > MAX_PAR2_BLOCKS
-                    ):
+                    if max(left_files - af + bf, right_files - bf + af) > MAX_PAR2_BLOCKS:
                         continue
                     new_left = [i for i in left if i != a] + ([] if b is None else [b])
                     new_right = [i for i in right if i != b] + ([] if a is None else [a])
@@ -218,7 +215,7 @@ def improve(plan: Plan, units: list[Unit], budget: int, recovery: bool) -> Plan:
     return best
 
 
-def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> dict[str, list[Plan]]:
+def proposals(units: list[Unit], budget: int, defer: bool) -> dict[str, list[Plan]]:
     """Return one candidate plan per strategy and cutoff, longest prefix first.
 
     ``efficient`` packs by size, ``balanced`` fills in order and backfills gaps,
@@ -228,10 +225,10 @@ def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> di
     optimality.
     """
     for unit in units:
-        if unit.weight > budget or (recovery and unit.nonempty > MAX_PAR2_BLOCKS):
+        if unit.weight > budget or unit.nonempty > MAX_PAR2_BLOCKS:
             raise ValueError(
                 f"Unit cannot fit on one disc with these settings: {unit.path}. "
-                "Choose finer --group-by grouping, larger media, or different redundancy."
+                "Choose finer --group-by grouping, larger media, or a smaller --reserve."
             )
     n = len(units)
     cuts = {n}
@@ -241,7 +238,7 @@ def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> di
         else:
             cuts.update(range(max(1, n - 16), n))
             cuts.update(max(1, math.ceil(n * k / 48)) for k in range(1, 48))
-            sequential = pack(units, n, budget, recovery, "sequential")
+            sequential = pack(units, n, budget, "sequential")
             boundaries = [g[-1] + 1 for g in sequential]
             step = max(1, len(boundaries) // 48)
             cuts.update(boundaries[::step])
@@ -249,10 +246,10 @@ def proposals(units: list[Unit], budget: int, recovery: bool, defer: bool) -> di
     for count in sorted(cuts, reverse=True):
         packed = {}
         for strategy, packing in _PACKING.items():
-            plan = pack(units, count, budget, recovery, packing)
+            plan = pack(units, count, budget, packing)
             # Avoid repeatedly optimizing a large backlog for every cutoff.
             if strategy != "ordered" and (count == n or n <= 64):
-                plan = improve(plan, units, budget, recovery)
+                plan = improve(plan, units, budget)
             packed[strategy] = plan
         # Each row may fall back to a more ordered packing that needs no extra disc,
         # so efficient never trails balanced and balanced never trails ordered.

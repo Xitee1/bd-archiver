@@ -57,7 +57,7 @@ def toy_units(sizes):
 class PlannerTests(unittest.TestCase):
     def test_units_are_atomic_and_every_selected_unit_occurs_once(self):
         units = toy_units([14, 14, 11, 11, 13, 12])
-        plans = proposals(units, 25, True, False)
+        plans = proposals(units, 25, False)
         self.assertEqual(list(plans), ["efficient", "balanced", "ordered"])
         self.assertEqual(len(plans["efficient"][0]), 3)
         self.assertEqual(len(plans["ordered"][0]), 4)
@@ -65,17 +65,17 @@ class PlannerTests(unittest.TestCase):
         for plan in (p for candidates in plans.values() for p in candidates):
             self.assertEqual(sorted(i for group in plan for i in group), list(range(6)))
             self.assertTrue(all(sum(units[i].size for i in group) <= 25 for group in plan))
-        self.assertEqual(plans, proposals(units, 25, True, False))
+        self.assertEqual(plans, proposals(units, 25, False))
 
     def test_strategies_agree_when_order_costs_nothing(self):
         units = toy_units([12, 12, 14, 11])
-        for strategy, candidates in proposals(units, 25, True, False).items():
+        for strategy, candidates in proposals(units, 25, False).items():
             with self.subTest(strategy=strategy):
                 self.assertEqual(candidates, [((0, 1), (2, 3))])
 
     def test_deferred_units_are_always_a_suffix_in_fill_order(self):
         units = toy_units([14, 14, 11, 11, 13, 12])
-        for strategy, candidates in proposals(units, 25, True, True).items():
+        for strategy, candidates in proposals(units, 25, True).items():
             with self.subTest(strategy=strategy):
                 self.assertEqual(sum(len(g) for g in candidates[0]), 6)
                 for plan in candidates:
@@ -92,10 +92,9 @@ class PlannerTests(unittest.TestCase):
 
     def test_file_limit_and_oversized_indivisible_unit(self):
         units = [Unit(str(i), (), 1, i, 20000, 1, i, i, i, 0) for i in range(3)]
-        self.assertEqual(len(proposals(units, 25, True, False)["efficient"][0]), 3)
-        self.assertEqual(len(proposals(units, 25, False, False)["efficient"][0]), 1)
+        self.assertEqual(len(proposals(units, 25, False)["efficient"][0]), 3)
         with self.assertRaisesRegex(ValueError, "Unit cannot fit"):
-            proposals(toy_units([26]), 25, True, False)
+            proposals(toy_units([26]), 25, False)
 
     def test_share_parser(self):
         self.assertTrue(parse_share("5").allows(5, 100))
@@ -140,7 +139,7 @@ class PlannerTests(unittest.TestCase):
     def test_free_space_limit_applies_to_every_disc(self):
         identity = patch(
             "bd_archive.commands.prepare.measure",
-            side_effect=lambda g, u, c, r: Measurement(
+            side_effect=lambda g, u, c: Measurement(
                 sum(u[i].size for i in g), sum(u[i].size for i in g)
             ),
         )
@@ -148,11 +147,7 @@ class PlannerTests(unittest.TestCase):
         def checked(units, limit):
             with identity:
                 plans, _ = checked_proposals(
-                    units,
-                    proposals(units, 25, False, True),
-                    25,
-                    parse_redundancy("none"),
-                    parse_share(limit),
+                    units, proposals(units, 25, True), 25, parse_share(limit)
                 )
             return plans
 
@@ -173,20 +168,30 @@ class PlannerTests(unittest.TestCase):
     def test_reserve_shrinks_the_usable_capacity(self):
         identity = patch(
             "bd_archive.commands.prepare.measure",
-            side_effect=lambda g, u, c, r: Measurement(
+            side_effect=lambda g, u, c: Measurement(
                 sum(u[i].size for i in g), sum(u[i].size for i in g)
             ),
         )
         units = toy_units([13, 12])
         with identity:
-            plans, _ = checked_proposals(
-                units, proposals(units, 25, False, False), 25, parse_redundancy("none"), None
-            )
+            plans, _ = checked_proposals(units, proposals(units, 25, False), 25, None)
             self.assertEqual(plans["efficient"], ((0, 1),))
-            plans, _ = checked_proposals(
-                units, proposals(units, 24, False, False), 25, parse_redundancy("none"), None, 1
-            )
+            plans, _ = checked_proposals(units, proposals(units, 24, False), 25, None, 1)
             self.assertEqual(plans["efficient"], ((0,), (1,)))
+
+    def test_empty_units_travel_with_data_unless_nothing_is_protected(self):
+        identity = patch(
+            "bd_archive.commands.prepare.measure",
+            side_effect=lambda g, u, c: Measurement(
+                sum(u[i].size for i in g), sum(u[i].size for i in g)
+            ),
+        )
+        candidates = {"ordered": [((0,), (1,))]}
+        with identity:
+            plans, _ = checked_proposals(toy_units([0, 0]), candidates, 25, None)
+            self.assertEqual(plans["ordered"], ((0,), (1,)))
+            plans, _ = checked_proposals(toy_units([0, 10]), candidates, 25, None)
+            self.assertIsNone(plans["ordered"])
 
 
 class FilesystemTests(unittest.TestCase):
@@ -242,9 +247,14 @@ class FilesystemTests(unittest.TestCase):
                 "argument --max-free: invalid value '101': expected a percentage between 0 and 100",
             ),
             (
-                [*prepare, "-r", "off"],
-                "argument -r/--redundancy: invalid value 'off': expected a percentage (5), "
-                "decimal MB (500M) or decimal GB (2G), or none",
+                [*prepare, "--reserve", "5MiB"],
+                "argument -r/--reserve: invalid value '5MiB': "
+                "expected a percentage (5), decimal MB (500M) or decimal GB (2G)",
+            ),
+            (
+                [*prepare, "-r", "none"],
+                "argument -r/--reserve: invalid value 'none': "
+                "expected a percentage (5), decimal MB (500M) or decimal GB (2G)",
             ),
             (
                 ["burn", "-i", "in", "--write-timeout", "0"],
@@ -318,6 +328,9 @@ class FilesystemTests(unittest.TestCase):
         text = captured.getvalue()
         self.assertRegex(text, r"Order\s+: name")
         self.assertRegex(text, r"Max free per disc\s+: unlimited")
+        self.assertRegex(text, r"Reserve\s+: 5% \(1\.0 MiB per disc\)")
+        self.assertNotIn("Redundancy", text)
+        self.assertRegex(text, r"Free\s+: .* \(for added files and recovery data\)")
         self.assertNotIn("Files with metadata", text)
         for number, strategy in enumerate(STRATEGIES, 1):
             self.assertRegex(
@@ -573,6 +586,18 @@ class FilesystemTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertTrue((self.source / "video/file").exists())
 
+    def test_reserve_defaults_to_five_percent_and_has_a_short_option(self):
+        args = build_parser().parse_args(["prepare", "-s", ".", "-o", "out"])
+        self.assertEqual(args.reserve.label, "5%")
+        self.assertEqual(args.reserve.bytes_of(1000), 50)
+        args = build_parser().parse_args(["prepare", "-s", ".", "-o", "out", "--reserve", "0"])
+        self.assertEqual(args.reserve.bytes_of(1000), 0)
+        args = build_parser().parse_args(["prepare", "-s", ".", "-o", "out", "-r", "2G"])
+        self.assertEqual(args.reserve.bytes_of(1000), 2_000_000_000)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exc:
+            build_parser().parse_args(["prepare", "-s", ".", "-o", "out", "--redundancy", "5"])
+        self.assertEqual(exc.exception.code, 2)
+
     def test_prepare_has_no_bypass_or_dry_run_flags(self):
         for option in ("-y", "--dry-run", "--move"):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -608,8 +633,8 @@ class PrepareIntegrationTests(FilesystemTests):
                 str(self.output),
                 "-b",
                 str(27 * MiB),
-                "-r",
-                "none",
+                "--reserve",
+                "0",
             ]
         )
         with (
@@ -657,38 +682,32 @@ class PrepareIntegrationTests(FilesystemTests):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_fixed_and_automatic_recovery_reservations_fit_real_creation(self):
+    def test_automatic_recovery_fits_the_measured_disc(self):
         from bd_archive.commands.create import cmd_create
 
         movie = self.file("group/movie")
         with movie.open("wb") as stream:
             stream.truncate(3 * MiB)
-        units = self.units()
-        for redundancy in (None, "5", "100M"):
-            with self.subTest(redundancy=redundancy):
-                share = None if redundancy is None else parse_redundancy(redundancy)
-                size = measure((0,), units, 10 * MiB, share)
-                capacity = size.required + 128 * 1024
-                disc = self.root / f"input-{redundancy}" / "disc_0001"
-                shutil.copytree(self.source, disc)
-                options = [] if redundancy is None else ["-r", redundancy]
-                args = build_parser().parse_args(
-                    [
-                        "create",
-                        "-s",
-                        str(disc),
-                        "-n",
-                        "Test",
-                        "-o",
-                        str(self.root / f"out-{redundancy}"),
-                        "-b",
-                        str(capacity),
-                        "-y",
-                        *options,
-                    ]
-                )
-                with contextlib.redirect_stdout(io.StringIO()):
-                    cmd_create(args)
+        size = measure((0,), self.units(), 10 * MiB)
+        capacity = size.required + 128 * 1024
+        disc = self.root / "input" / "disc_0001"
+        shutil.copytree(self.source, disc)
+        args = build_parser().parse_args(
+            [
+                "create",
+                "-s",
+                str(disc),
+                "-n",
+                "Test",
+                "-o",
+                str(self.root / "out"),
+                "-b",
+                str(capacity),
+                "-y",
+            ]
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_create(args)
 
 
 if __name__ == "__main__":

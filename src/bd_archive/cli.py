@@ -80,18 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("-D", "--device", help="Drive for capacity detection (default: auto-detect)")
     pr.add_argument(
         "-r",
-        "--redundancy",
-        type=_argtype(parse_redundancy),
-        metavar="PERCENT|SIZE|none",
-        help="Reserve the same recovery setting as create: a percentage of the data (5) or "
-        "a fixed size per disc (500M, 2G); none disables PAR2 (default: automatic)",
-    )
-    pr.add_argument(
         "--reserve",
         type=_argtype(parse_share),
+        default="5",
         metavar="PERCENT|SIZE",
-        help="Keep this much of every disc free for files added before create, "
-        "e.g. 2 (percent), 50M, 1G (default: none)",
+        help="Keep this much of every disc free, e.g. 5 (percent of the capacity), 50M or 1G "
+        "(default: 5). The create mode can use this free space to fill it with redundancy. "
+        "This can also be used to add some extra files manually or intentionally not "
+        "using some space on the physical disc.",
     )
     pr.add_argument(
         "--group-by",
