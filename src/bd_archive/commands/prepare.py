@@ -189,7 +189,8 @@ def _prepare(args):
         # conservative. Such units can still occupy a measured disc alone.
         if unit.weight > budget and measure((index,), units, capacity).required <= usable:
             units[index] = replace(unit, weight=budget)
-    candidates = proposals(units, budget, args.max_free is not None)
+    max_unused = args.max_free.bytes_of(budget) if args.max_free else None
+    candidates = proposals(units, budget, max_unused)
     log.blank()
     log.info("Checking filesystem, checksum and recovery space for candidate plans...")
     plans, sizes = checked_proposals(units, candidates, capacity, args.max_free, reserve)
