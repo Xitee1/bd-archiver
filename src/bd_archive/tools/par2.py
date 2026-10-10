@@ -80,12 +80,16 @@ def verify(par2_index: Path, *, base_dir: Path | None = None) -> VerifyResult:
     # 2 = repair not possible. Progress only decorates output; the exit
     # status remains authoritative for verification results.
     base_args = [f"-B{base_dir}"] if base_dir is not None else []
+    # Without -B, PAR2 resolves file names against the index directory.
+    progress = Par2ScanProgress(base_dir if base_dir is not None else par2_index.parent)
     # Hash one file at a time to avoid competing reads and seeks on optical media.
     r = run(
         ["par2", "verify", "-T1", *base_args, str(par2_index)],
         check=False,
-        output_transform=Par2ScanProgress(),
+        output_transform=progress,
     )
+    # PAR2 may exit while the live line is still shown; end it before the result is logged.
+    print(progress.finish(), end="", flush=True)
     if r.returncode == 0:
         return VerifyResult.OK
     if r.returncode == 1:

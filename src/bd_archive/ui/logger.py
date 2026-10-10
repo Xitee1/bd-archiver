@@ -27,8 +27,13 @@ class Logger:
         print(f"{cls._c('green')}[  OK]{cls._c('reset')}  {msg}")
 
     @classmethod
+    def warn_line(cls, msg: str) -> str:
+        """The warn line as printed, for callers that manage the terminal line themselves."""
+        return f"{cls._c('yellow')}[WARN]{cls._c('reset')}  {msg}"
+
+    @classmethod
     def warn(cls, msg: str):
-        print(f"{cls._c('yellow')}[WARN]{cls._c('reset')}  {msg}")
+        print(cls.warn_line(msg))
 
     @classmethod
     def error(cls, msg: str):
