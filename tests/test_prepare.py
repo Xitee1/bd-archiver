@@ -8,6 +8,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -168,27 +169,17 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(sum(len(g) for g in plans["efficient"]), 5)
 
     def test_free_space_limit_finds_plans_the_heuristic_packings_miss(self):
-        # Weights in MiB of a real collection on 50 GB BD-R DL without reserve:
-        # size-first packing needs a fourth disc, yet three nearly full discs exist.
-        units = toy_units(
-            [
-                3564,
-                1596,
-                12523,
-                3776,
-                18218,
-                8440,
-                5632,
-                17161,
-                5155,
-                8767,
-                5013,
-                14652,
-                7864,
-                10495,
-                19250,
-            ]
-        )
+        # Weights in MiB and dates in hours of a real collection on 50 GB BD-R DL
+        # without reserve: size-first packing needs a fourth disc, yet three nearly
+        # full discs exist.
+        sizes = [3564, 1596, 12523, 3776, 18218, 8440, 5632, 17161, 5155, 8767, 5013, 14652]
+        sizes += [7864, 10495, 19250]
+        hours = [0, 805, 1511, 1674, 1733, 1786, 2071, 2159, 2300, 2626, 2715, 2721, 2793]
+        hours += [2807, 3108]
+        units = [
+            replace(unit, date=date, order=date, date_start=date, date_end=date)
+            for unit, date in zip(toy_units(sizes), (h * 3600 * 10**9 for h in hours), strict=True)
+        ]
         budget = 47730
         max_unused = parse_share("5").bytes_of(budget)
         plan = proposals(units, budget, max_unused)["efficient"][0]
@@ -197,6 +188,9 @@ class PlannerTests(unittest.TestCase):
         for group in plan:
             self.assertLessEqual(budget - sum(units[i].size for i in group), max_unused)
             self.assertGreaterEqual(budget, sum(units[i].size for i in group))
+        # The most ordered of all plans that meet the limit.
+        self.assertEqual(plan, ((0, 1, 2, 3, 5, 7), (4, 8, 9, 10, 13), (6, 11, 12, 14)))
+        self.assertEqual(order_consistency(disorder(plan, units)[0]), 84)
 
     def test_reserve_shrinks_the_usable_capacity(self):
         identity = patch(
@@ -531,7 +525,6 @@ class FilesystemTests(unittest.TestCase):
         self.assertFalse((self.root / "moved").exists())
 
     def test_space_check_only_requires_additional_cross_device_bytes(self):
-        from dataclasses import replace
 
         self.file("file", b"x" * 8192)
         unit = self.units()[0]

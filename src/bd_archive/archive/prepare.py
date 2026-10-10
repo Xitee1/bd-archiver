@@ -179,39 +179,60 @@ class _Exhausted(Exception):
 
 
 def fill(units: list[Unit], count: int, budget: int, floor: int) -> Plan | None:
-    """Search a plan for the first ``count`` units whose every disc loads ``floor..budget``.
+    """Search the most ordered plan for the first ``count`` units within ``floor..budget``.
 
-    The search is exact up to ``FILL_SEARCH_NODES`` steps and runs for at most
-    ``FILL_MAX_UNITS`` units: it tries the fewest
-    discs first and builds each disc around the earliest unplaced unit, adding
-    later units in fill order. Discs with only empty units are avoided when any
-    unit has data, as those cannot carry PAR2.
+    Every disc must load between ``floor`` and ``budget``. The search runs for at
+    most ``FILL_MAX_UNITS`` units and ``FILL_SEARCH_NODES`` steps; within that it
+    is exact, otherwise it returns the best plan found. It tries the fewest discs
+    first and builds each disc around the earliest unplaced unit, adding later
+    units in fill order. The disorder of placed discs never decreases as discs are
+    added, so branches already scoring no better than the best plan are skipped.
+    Discs with only empty units are avoided when any unit has data, as those
+    cannot carry PAR2.
     """
     if count > FILL_MAX_UNITS:
         return None
     weights = [units[i].weight for i in range(count)]
+    keys = [units[i].order for i in range(count)]
     total = sum(weights)
+    span = max(max(keys) - min(keys), 1)
     protected = any(units[i].size for i in range(count))
     nodes = 0
+    skipped = 0
+    best_score = math.inf
+    best: list[tuple[int, ...]] | None = None
 
-    def discs_for(rest: tuple[int, ...], left: int) -> tuple[tuple[int, ...], ...] | None:
-        nonlocal nodes
+    def score(affected: int, gaps: int, worst: int) -> float:
+        # The terms of disorder(), restricted to the units placed so far.
+        return 0.5 * affected / count + 0.25 * gaps / span / count + 0.25 * (worst / span) ** 2
+
+    def discs_for(rest, left, groups, latest, affected, gaps, worst) -> bool:
+        """Place ``rest`` on ``left`` discs; return whether any placement exists."""
+        nonlocal best, best_score
         if not rest:
-            return ()
+            current = score(affected, gaps, worst)
+            if current < best_score:
+                best, best_score = list(groups), current
+            return True
         if (rest, left) in failed:
-            return None
+            return False
         remaining = sum(weights[i] for i in rest)
         first, others = rest[0], rest[1:]
         tail = [0] * (len(others) + 1)
         for pos in range(len(others) - 1, -1, -1):
             tail[pos] = tail[pos + 1] + weights[others[pos]]
         chosen = [first]
+        found = False
+        before = skipped
 
-        def choose(pos: int, load: int, files: int, data: bool):
-            nonlocal nodes
+        def choose(pos, load, files, data, affected, gaps, worst, after_latest):
+            nonlocal nodes, skipped, found
             nodes += 1
             if nodes > FILL_SEARCH_NODES:
                 raise _Exhausted
+            if score(affected, gaps, worst) >= best_score:
+                skipped += 1
+                return
             after = remaining - load
             if (
                 load >= floor
@@ -219,39 +240,64 @@ def fill(units: list[Unit], count: int, budget: int, floor: int) -> Plan | None:
                 and (left - 1) * floor <= after <= (left - 1) * budget
             ):
                 taken = set(chosen)
-                result = discs_for(tuple(i for i in others if i not in taken), left - 1)
-                if result is not None:
-                    return (tuple(chosen), *result)
+                groups.append(tuple(chosen))
+                if discs_for(
+                    tuple(i for i in others if i not in taken),
+                    left - 1,
+                    groups,
+                    after_latest,
+                    affected,
+                    gaps,
+                    worst,
+                ):
+                    found = True
+                groups.pop()
             for at in range(pos, len(others)):
                 if load + tail[at] < floor:
                     break
                 i = others[at]
                 if load + weights[i] > budget or files + units[i].nonempty > MAX_PAR2_BLOCKS:
                     continue
+                gap = max(0, latest - keys[i])
                 chosen.append(i)
-                result = choose(
-                    at + 1, load + weights[i], files + units[i].nonempty, data or units[i].size > 0
+                choose(
+                    at + 1,
+                    load + weights[i],
+                    files + units[i].nonempty,
+                    data or units[i].size > 0,
+                    affected + (gap > 0),
+                    gaps + gap,
+                    max(worst, gap),
+                    max(after_latest, keys[i]),
                 )
                 chosen.pop()
-                if result is not None:
-                    return result
-            return None
 
-        result = choose(0, weights[first], units[first].nonempty, units[first].size > 0)
-        if result is None:
+        gap = max(0, latest - keys[first])
+        choose(
+            0,
+            weights[first],
+            units[first].nonempty,
+            units[first].size > 0,
+            affected + (gap > 0),
+            gaps + gap,
+            max(worst, gap),
+            max(latest, keys[first]),
+        )
+        # Without skipped branches, a failed search proves that no placement exists.
+        if not found and skipped == before:
             failed.add((rest, left))
-        return result
+        return found
 
     discs = -(-total // budget)
     # Every further disc only adds unused space.
     while discs * floor <= total:
         failed: set[tuple[tuple[int, ...], int]] = set()
         try:
-            result = discs_for(tuple(range(count)), discs)
+            discs_for(tuple(range(count)), discs, [], min(keys), 0, 0, 0)
         except _Exhausted:
-            return None
-        if result is not None:
-            return ordered(result)
+            return None if best is None else ordered(best)
+        if best is not None:
+            return ordered(best)
         discs += 1
     return None
 
