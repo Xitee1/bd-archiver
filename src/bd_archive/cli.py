@@ -308,6 +308,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bu.add_argument("--no-verify", action="store_true", help="Skip post-burn verification")
     bu.add_argument(
+        "--no-close-tray",
+        action="store_true",
+        help=(
+            "Do not close the burner's tray after burning, so the disc can be moved to "
+            "another drive for verification. The burned disc is detected by its volume "
+            "label in any drive"
+        ),
+    )
+    bu.add_argument(
         "--skip-fit-check",
         action="store_true",
         help="Skip capacity checks, including too-small and oversized-media checks",

@@ -1,20 +1,28 @@
 import contextlib
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from bd_archive.archive.disc import DiscIO, find_sg_device
+from bd_archive.archive.disc import (
+    DiscIO,
+    drives_with_label,
+    find_sg_device,
+    iso_volume_label,
+    wait_for_burned_disc,
+)
 from bd_archive.archive.disc_folder import DiscFolder, load_disc_set
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.archive.verify import verify_disc
 from bd_archive.constants import DISC_OVERSIZE_TOLERANCE
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
+from bd_archive.tools import udev
 from bd_archive.tools.growisofs import DeviceBusyError
 from bd_archive.tools.lsof import find_device_holders
 from bd_archive.tools.mediainfo import detect_disc_capacity
-from bd_archive.tools.optical import resolve_device
+from bd_archive.tools.optical import list_drives, resolve_device
 from bd_archive.tools.par2 import VerifyResult
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_disc, styled_input
@@ -53,6 +61,10 @@ def cmd_burn(args):
         log.error(f"--start must be between 1 and {disc_count}")
         sys.exit(1)
 
+    if args.no_verify and args.no_close_tray:
+        log.error("--no-close-tray requires post-burn verification")
+        sys.exit(1)
+
     device = resolve_device(args.device)
     dio = DiscIO(device)
 
@@ -75,6 +87,11 @@ def cmd_burn(args):
     log.step("Burn prepared discs")
     log.info(f"Discs:    {disc_count}")
     log.info(f"Device:   {device}")
+    if not args.no_verify and not udev.is_available():
+        log.info(
+            f"Burned discs are detected in {device} only: other drives are watched "
+            f"through the udev database ({udev.UDEV_DATA_DIR}), which is missing"
+        )
     if start > 1:
         log.info(f"Resuming from disc {start}")
 
@@ -109,6 +126,17 @@ def cmd_burn(args):
     log.step("All discs burned")
     print(f"\n  Discs:    {disc_count}")
     print(f"  Cleanup:  rm -rf {input_dir}\n")
+
+
+def _same_device(a: str, b: str) -> bool:
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _other_drives(burn_device: str) -> list[str]:
+    """Drives besides the burner that can be watched for the burned disc."""
+    if not udev.is_available():
+        return []
+    return [d.path for d in list_drives() if not _same_device(d.path, burn_device)]
 
 
 def _burn_one_disc(
@@ -171,6 +199,17 @@ def _burn_one_disc(
                 f"{human_bytes(write_bytes)} (including 32-KiB write padding)"
             )
 
+    # The burned disc is identified by its volume label in whichever drive
+    # it is loaded. Other drives that already hold a disc with that label
+    # (e.g. an earlier attempt) are snapshotted now, before the burn, and
+    # ignored until replaced.
+    if not args.no_verify:
+        verify_label = folder.volume_label if folder is not None else iso_volume_label(iso)
+        if verify_label is None:
+            raise ValueError(f"Could not read the volume label of {iso}")
+        other_drives = _other_drives(dio.device)
+        stale_drives = drives_with_label(other_drives, verify_label)
+
     # Burn (with sg-busy retry)
     log.info("Burning...")
     while True:
@@ -214,22 +253,32 @@ def _burn_one_disc(
     # Post-burn verify. growisofs auto-ejects the tray on finish (we no
     # longer pass `notray`), which is what generates the kernel
     # media-change event that makes mount actually see the new
-    # filesystem. We then wait for the disc to be back in — either via
-    # software close-tray (full-size drives) or the user pushing it in
-    # (slim drives). The 10s pre-pause is on the long side, but slower
+    # filesystem. We then wait for the burned disc in any drive: back in
+    # the burner — via software close-tray (full-size drives, unless
+    # --no-close-tray) or the user pushing it in (slim drives) — or moved
+    # to another drive. The 10s pre-pause is on the long side, but slower
     # USB BD drives can take 5–8s just to extend the tray; closing it
     # before the eject motion finishes races the two motors and can
     # leave the drive in a confused state.
+    verify_dio = dio
     if not args.no_verify:
         time.sleep(10)
-        dio.wait_for_disc_ready()
+        found = wait_for_burned_disc(
+            dio.device,
+            other_drives,
+            verify_label,
+            stale_drives,
+            close_tray=not args.no_close_tray,
+        )
+        if found != dio.device:
+            verify_dio = DiscIO(found)
 
         log.info("Post-burn verification...")
         while True:
             mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
             verify_ok = False
             try:
-                mounted, mount_err = dio.mount_with_retry(mount_dir)
+                mounted, mount_err = verify_dio.mount_with_retry(mount_dir)
                 if mounted is None:
                     log.error("Could not mount disc for verification")
                     if mount_err:
@@ -252,7 +301,7 @@ def _burn_one_disc(
                         else:
                             log.error("Post-burn verification failed!")
                     finally:
-                        dio.umount(mounted)
+                        verify_dio.umount(mounted)
             finally:
                 with contextlib.suppress(OSError):
                     mount_dir.rmdir()
@@ -267,5 +316,5 @@ def _burn_one_disc(
                 log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
                 sys.exit(1)
 
-    dio.eject()
+    verify_dio.eject()
     log.ok(f"Disc {i}/{disc_count} done")

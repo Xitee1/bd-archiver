@@ -5,7 +5,7 @@ from pathlib import Path
 
 from bd_archive.constants import POST_BURN_MOUNT_TIMEOUT
 from bd_archive.tools import eject as eject_tool
-from bd_archive.tools import growisofs, mkisofs, udisks
+from bd_archive.tools import growisofs, mkisofs, udev, udisks
 from bd_archive.tools import mount as mount_tool
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER
@@ -18,6 +18,20 @@ from bd_archive.ui.logger import log
 # motors; after that we fall through to passive polling, leaving the
 # user to push a slim-drive disc back in by hand.
 _CLOSE_TRAY_SCHEDULE_S = (0, 5, 15, 30, 50)
+
+
+def _close_tray_when_due(device: str, elapsed: float, attempts_done: int) -> int:
+    """Send the close-tray attempts that `_CLOSE_TRAY_SCHEDULE_S` has due by
+    `elapsed` seconds and return the new number of attempts done."""
+    while (
+        attempts_done < len(_CLOSE_TRAY_SCHEDULE_S)
+        and elapsed >= _CLOSE_TRAY_SCHEDULE_S[attempts_done]
+    ):
+        # close_tray is silent on success and no-ops on drives that can't
+        # motor the tray, so we don't surface every attempt.
+        eject_tool.close_tray(device)
+        attempts_done += 1
+    return attempts_done
 
 
 class LoopMountError(RuntimeError):
@@ -71,6 +85,111 @@ def find_sg_device(block_device: str) -> str | None:
         for entry in sg_dir.iterdir():
             return f"/dev/{entry.name}"
     return None
+
+
+# ISO9660 primary volume descriptor: sector 16, volume identifier at
+# bytes 40..71 (ECMA-119 8.4.6).
+_ISO_PVD_OFFSET = 16 * 2048
+_ISO_VOLUME_ID = slice(40, 72)
+
+
+def iso_volume_label(path: str | Path) -> str | None:
+    """Return the ISO9660 volume label of an image or a loaded disc, or None
+    if it has no primary volume descriptor or cannot be read (e.g. a blank
+    disc)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(_ISO_PVD_OFFSET)
+            pvd = f.read(2048)
+    except OSError:
+        return None
+    if len(pvd) < 2048 or pvd[0] != 1 or pvd[1:6] != b"CD001":
+        return None
+    return pvd[_ISO_VOLUME_ID].decode("ascii", errors="replace").rstrip(" ") or None
+
+
+def _same_label(found: str | None, label: str) -> bool:
+    return found is not None and found.casefold() == label.casefold()
+
+
+def drives_with_label(devices: list[str], label: str) -> set[str]:
+    """Return the drives whose loaded medium udev reports with `label`.
+    Reads only the udev database; no drive receives a command."""
+    return {device for device in devices if _same_label(udev.disc_label(device), label)}
+
+
+def wait_for_burned_disc(
+    burner: str, others: list[str], label: str, ignored: set[str], close_tray: bool
+) -> str:
+    """Block until the burned disc labelled `label` is loaded in the burner
+    or in one of `others`, and return that drive.
+
+    growisofs ejects the tray after burning, which is the only reliable way
+    on Linux to invalidate the kernel's cached "Blank BD-R" view of the
+    medium. With `close_tray`, the burner gets close-tray attempts per
+    `_CLOSE_TRAY_SCHEDULE_S`; slim drives without a tray motor ignore them
+    and need a manual push.
+
+    The burner is checked directly: whenever it reports a newly loaded disc,
+    its volume label is read once, so a blank disc inserted for the next
+    burn is not mistaken for the burned one. `others` are watched through
+    the udev database only and never receive a command until udev reports
+    the label, so drives that are busy burning are not disturbed. Drives in
+    `ignored` already held a disc with this label before the burn; they
+    count only after udev has reported a different medium (or none). There
+    is no hard timeout: a user who walked away can come back later. Ctrl+C
+    bubbles up the usual way to abort.
+    """
+    devices = ", ".join([burner, *others])
+    if close_tray:
+        log.info(
+            f"Waiting for the burned disc {label} in {devices} "
+            f"(the tray of {burner} closes in software; slim drives need a manual push)..."
+        )
+    else:
+        log.info(f"Waiting for the burned disc {label} in {devices} (insert it by hand)...")
+    ignored = set(ignored)
+    for device in sorted(ignored):
+        log.info(
+            f"Ignoring {device} until its disc is replaced: it already held "
+            f"a disc labelled {label} before the burn"
+        )
+
+    start = time.monotonic()
+    attempts_done = 0
+    burner_checked = False
+    while True:
+        status = eject_tool.drive_status(burner)
+        if status == eject_tool.CDS_DISC_OK or status is None:
+            # Read the label once per loaded disc. Without the CDROM ioctl
+            # (status None) the drive cannot be observed, so keep reading.
+            if not burner_checked:
+                if status is not None:
+                    # Let the drive spin up and read the TOC first.
+                    time.sleep(2)
+                if _same_label(iso_volume_label(burner), label):
+                    log.ok(f"Disc {label} found in {burner}")
+                    return burner
+                burner_checked = status is not None
+        else:
+            burner_checked = False
+
+        matches = drives_with_label(others, label)
+        ignored &= matches
+        for device in others:
+            if device not in matches or device in ignored:
+                continue
+            # udev saw the filesystem; confirm with this one drive that it
+            # is ready before the caller mounts it.
+            if eject_tool.drive_status(device) in (eject_tool.CDS_DISC_OK, None):
+                time.sleep(2)
+                log.ok(f"Disc {label} found in {device}")
+                return device
+
+        if close_tray:
+            attempts_done = _close_tray_when_due(burner, time.monotonic() - start, attempts_done)
+
+        time.sleep(1)
 
 
 class DiscIO:
@@ -137,66 +256,6 @@ class DiscIO:
 
     def eject(self):
         eject_tool.eject(self.device)
-
-    def wait_for_disc_ready(self) -> None:
-        """Block until the drive reports a loaded, ready disc.
-
-        Called right after a burn: growisofs's default post-burn behaviour
-        is to eject the tray, which is the only reliable way on Linux to
-        invalidate the kernel's cached "Blank BD-R" view of the medium
-        (without that media-change event, mount sees the pre-burn blank
-        state forever and udisks2 reports the disc as not-mountable).
-
-        On tray-load drives the disc needs to come back in before the
-        post-burn verify can mount it. We retry `eject -t` (close-tray)
-        per `_CLOSE_TRAY_SCHEDULE_S`; if the drive doesn't honour it —
-        slim/laptop drives have no tray motor — the user has to push the
-        disc in by hand. Either way we keep polling `drive_status` until
-        it reports CDS_DISC_OK, with no hard timeout: a user who walked
-        away from the burn can come back later and still see it complete.
-        Ctrl+C bubbles up the usual way to abort.
-        """
-        log.info(
-            "Waiting for the disc to be loaded "
-            "(tray-load drives close in software; "
-            "slim drives need a manual push)..."
-        )
-
-        start = time.monotonic()
-        attempts_done = 0
-
-        while True:
-            status = eject_tool.drive_status(self.device)
-            if status == eject_tool.CDS_DISC_OK:
-                # Drive sees a disc but may still be spinning up + reading
-                # the TOC. Give it a moment before the caller tries to
-                # mount, so we don't burn the first mount attempt on a
-                # not-quite-ready drive.
-                time.sleep(2)
-                log.ok("Disc loaded")
-                return
-            if status is None:
-                # CDROM ioctl unavailable (odd device, missing permission)
-                # — we can't observe the tray, so hand off to the caller's
-                # mount-with-retry polling instead of looping forever.
-                log.warn(
-                    "Cannot read drive status — proceeding to mount attempts; "
-                    "make sure the disc is loaded"
-                )
-                return
-
-            elapsed = time.monotonic() - start
-            while (
-                attempts_done < len(_CLOSE_TRAY_SCHEDULE_S)
-                and elapsed >= _CLOSE_TRAY_SCHEDULE_S[attempts_done]
-            ):
-                # close_tray is silent on success and no-ops on drives
-                # that can't motor the tray, so we don't surface every
-                # attempt — just count them out internally.
-                eject_tool.close_tray(self.device)
-                attempts_done += 1
-
-            time.sleep(1)
 
     def burn(
         self,
