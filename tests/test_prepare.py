@@ -262,6 +262,10 @@ class FilesystemTests(unittest.TestCase):
                 "argument --write-timeout: invalid value '0': "
                 f"expected 1-{MAX_WRITE_TIMEOUT} seconds",
             ),
+            (
+                ["burn", "-i", "in", "--buffer", "0"],
+                "argument --buffer: invalid value '0': expected 1M-64G",
+            ),
         ]
         for argv, message in cases:
             stderr = io.StringIO()

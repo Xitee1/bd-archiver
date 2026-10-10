@@ -8,6 +8,7 @@ from bd_archive.tools import eject as eject_tool
 from bd_archive.tools import growisofs, mkisofs, udisks
 from bd_archive.tools import mount as mount_tool
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
+from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER
 from bd_archive.ui.logger import log
 
 # Close-tray attempt schedule (cumulative seconds from start of wait):
@@ -203,8 +204,15 @@ class DiscIO:
         speed: str | None = None,
         *,
         write_timeout: int = DEFAULT_WRITE_TIMEOUT,
+        ring_buffer: int = DEFAULT_RING_BUFFER,
     ):
-        growisofs.burn(self.device, iso_path, speed, write_timeout=write_timeout)
+        growisofs.burn(
+            self.device,
+            iso_path,
+            speed,
+            write_timeout=write_timeout,
+            ring_buffer=ring_buffer,
+        )
 
     def burn_folder(
         self,
@@ -215,12 +223,14 @@ class DiscIO:
         *,
         rock_ridge=False,
         write_timeout: int = DEFAULT_WRITE_TIMEOUT,
+        ring_buffer: int = DEFAULT_RING_BUFFER,
     ):
         growisofs.burn(
             self.device,
             None,
             speed,
             write_timeout=write_timeout,
+            ring_buffer=ring_buffer,
             filesystem_args=mkisofs.filesystem_args(
                 entries, volume_label, publisher, rock_ridge=rock_ridge
             ),

@@ -17,6 +17,7 @@ from bd_archive.commands.create import cmd_create
 from bd_archive.commands.create_raw import _plan_auto_recovery
 from bd_archive.constants import DISC_END_MARGIN
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
+from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER
 
 
 class WriteSizeTests(unittest.TestCase):
@@ -43,7 +44,11 @@ class WriteSizeTests(unittest.TestCase):
 
     def test_burn_checks_padding_for_both_inputs_and_block_boundaries(self):
         args = argparse.Namespace(
-            skip_fit_check=False, no_verify=True, speed=None, write_timeout=DEFAULT_WRITE_TIMEOUT
+            skip_fit_check=False,
+            no_verify=True,
+            speed=None,
+            write_timeout=DEFAULT_WRITE_TIMEOUT,
+            buffer=DEFAULT_RING_BUFFER,
         )
         for size in (30720, 32768, 34816):
             required = disc_write_bytes(size)

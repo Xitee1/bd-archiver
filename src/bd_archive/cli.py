@@ -16,7 +16,9 @@ from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
 from bd_archive.commands.prepare import cmd_prepare
 from bd_archive.commands.verify import cmd_verify
+from bd_archive.constants import MiB
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, MAX_WRITE_TIMEOUT, write_timeout
+from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER, ring_buffer
 from bd_archive.ui.logger import Logger, log
 
 
@@ -285,6 +287,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             f"Minimum timeout per drive write command, 1–{MAX_WRITE_TIMEOUT} seconds "
             f"(default: {DEFAULT_WRITE_TIMEOUT})"
+        ),
+    )
+    bu.add_argument(
+        "--buffer",
+        type=_argtype(ring_buffer),
+        metavar="SIZE",
+        default=DEFAULT_RING_BUFFER,
+        help=(
+            "Ring buffer between the source and the drive: MiB, or a size with an M/G "
+            "suffix, 1M–64G, rounded up to a power of two "
+            f"(default: {DEFAULT_RING_BUFFER // MiB}M). The slower or less reliable the "
+            "source storage, such as a NAS with hard disks, the higher it should be, "
+            "e.g. 1G: the buffer keeps the drive fed while reading the source pauses, "
+            "and a drive that runs dry can ruin the disc."
         ),
     )
     bu.add_argument(
