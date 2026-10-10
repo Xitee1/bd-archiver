@@ -28,7 +28,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 order (default `name`; `archive/prepare.py:disorder` scores departures in positions
 or nanoseconds), always offers three plans (`efficient` size-first packing,
 `balanced` in-order packing with backfilling, `ordered` strict sequence; each row
-falls back to a more ordered packing that needs no extra disc), and moves selected
+falls back to a more ordered packing that needs no extra disc; with `--max-free`,
+plans meeting the limit rank first and `prepare.py:fill` gives `efficient` a
+bounded exact search for one, up to 200 units), and moves selected
 units into ordinary `disc_NNNN/` source directories only after a default-no
 confirmation. `--max-free` permits deferring a suffix in fill order and limits the
 unused data budget on every disc. `-r/--reserve` (default 5% of the capacity) keeps part
