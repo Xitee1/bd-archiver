@@ -106,7 +106,7 @@ def _create_raw(args):
         raise ValueError("Raw mode needs at least one non-empty file for PAR2 protection")
 
     publisher = f"bd-archive v{__version__}"
-    label = f"{args.name}_RAW"
+    label = args.name
     # Count the real directory/filesystem overhead before expensive PAR2 work.
     payload_entries = [(source.name, source)]
     payload_iso_size = mkisofs.estimate_size(payload_entries, label, publisher, rock_ridge=True)

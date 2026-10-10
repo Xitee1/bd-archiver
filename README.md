@@ -24,8 +24,8 @@ to create ISO images instead. Exact filesystem sizing checks capacity without
 writing an ISO. You can verify the folders and try a restore before burning.
 [Burning](https://github.com/Xitee1/bd-archiver/wiki/Burning) includes automatic
 post-burn verification and can be resumed from a chosen disc in the set.
-With several drives, `burn --verify-device /dev/srN|auto` verifies in another
-drive, chosen explicitly or detected by the burned volume label.
+The burned disc is detected by its volume label in any drive, so it can be
+verified in another drive; `burn --no-close-tray` keeps the burner's tray open.
 Drive write commands have a minimum timeout of 180 seconds by default, adjustable
 with `burn --write-timeout SECONDS`. A 512 MiB ring buffer keeps the drive fed
 while reading the source pauses; raise it with `burn --buffer SIZE` for slow or

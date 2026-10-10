@@ -120,9 +120,9 @@ def burn(
     trigger a kernel media-change event on Linux — without it, the
     OS keeps the disc cached as "Blank BD-R" (since that's what it
     was at burn-start) and udisks2 reports it as not-mountable. The
-    eject is then handled by `DiscIO.wait_for_disc_ready` after burn:
-    tray-load drives get re-closed in software; slim drives prompt
-    the user to push the disc back in.
+    eject is then handled by `disc.wait_for_burned_disc` after burn:
+    tray-load drives get re-closed in software unless --no-close-tray;
+    slim drives need the user to push the disc back in.
     -use-the-force-luke=spare=none: skip the BD-R format step that
     growisofs otherwise does unconditionally. Without that format,
     BD-R defect management is off: no read-after-write verify, no

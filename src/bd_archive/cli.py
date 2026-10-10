@@ -308,23 +308,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bu.add_argument("--no-verify", action="store_true", help="Skip post-burn verification")
     bu.add_argument(
-        "--verify-device",
-        metavar="DEVICE|auto",
-        default=None,
-        help=(
-            "Verify each burned disc in another drive, e.g. /dev/sr1: the burner's tray "
-            "stays open and the verify drive waits until the disc is inserted by hand. "
-            "'auto' watches all drives, including the burner, through the udev database "
-            "and verifies in the drive that receives the disc with the burned volume label "
-            "(default: verify in the burner)"
-        ),
-    )
-    bu.add_argument(
         "--no-close-tray",
         action="store_true",
         help=(
             "Do not close the burner's tray after burning, so the disc can be moved to "
-            "another drive; implied by --verify-device DEVICE"
+            "another drive for verification. The burned disc is detected by its volume "
+            "label in any drive"
         ),
     )
     bu.add_argument(

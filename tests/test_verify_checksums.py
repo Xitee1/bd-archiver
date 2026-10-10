@@ -236,6 +236,9 @@ class ChecksumVerificationTests(unittest.TestCase):
             patch("bd_archive.commands.burn.prompt_disc"),
             patch("bd_archive.commands.burn.time.sleep"),
             patch("bd_archive.commands.burn.styled_input", side_effect=AssertionError("retry")),
+            patch("bd_archive.commands.burn.iso_volume_label", return_value="disc"),
+            patch("bd_archive.commands.burn._other_drives", return_value=[]),
+            patch("bd_archive.commands.burn.wait_for_burned_disc", return_value="/dev/mock"),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             _burn_one_disc(args, self.root, iso, 1, 1, drive, iso.stat().st_size)
