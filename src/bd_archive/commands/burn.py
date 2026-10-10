@@ -1,23 +1,33 @@
 import contextlib
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from bd_archive.archive.disc import DiscIO, find_sg_device
+from bd_archive.archive.disc import (
+    DiscIO,
+    drives_with_label,
+    find_sg_device,
+    iso_volume_label,
+    wait_for_labelled_disc,
+)
 from bd_archive.archive.disc_folder import DiscFolder, load_disc_set
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.archive.verify import verify_disc
 from bd_archive.constants import DISC_OVERSIZE_TOLERANCE
 from bd_archive.shell.deps import check_deps
 from bd_archive.shell.format import human_bytes
+from bd_archive.tools import udev
 from bd_archive.tools.growisofs import DeviceBusyError
 from bd_archive.tools.lsof import find_device_holders
 from bd_archive.tools.mediainfo import detect_disc_capacity
-from bd_archive.tools.optical import resolve_device
+from bd_archive.tools.optical import list_drives, resolve_device
 from bd_archive.tools.par2 import VerifyResult
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_disc, styled_input
+
+VERIFY_DEVICE_AUTO = "auto"
 
 
 def cmd_burn(args):
@@ -53,8 +63,17 @@ def cmd_burn(args):
         log.error(f"--start must be between 1 and {disc_count}")
         sys.exit(1)
 
+    if args.no_verify and (args.verify_device is not None or args.no_close_tray):
+        log.error("--verify-device and --no-close-tray require post-burn verification")
+        sys.exit(1)
+    if args.verify_device == VERIFY_DEVICE_AUTO and not udev.is_available():
+        log.error(f"--verify-device auto requires the udev database ({udev.UDEV_DATA_DIR})")
+        log.info("Name the verify drive instead, e.g. --verify-device /dev/sr1.")
+        sys.exit(1)
+
     device = resolve_device(args.device)
     dio = DiscIO(device)
+    verify_device = _resolve_verify_device(args.verify_device, device)
 
     # The set's largest ISO defines the capacity class the whole set was
     # sized for — the oversize fit check compares against it, so a
@@ -75,6 +94,12 @@ def cmd_burn(args):
     log.step("Burn prepared discs")
     log.info(f"Discs:    {disc_count}")
     log.info(f"Device:   {device}")
+    if args.no_verify:
+        log.info("Verify:   disabled")
+    elif verify_device == VERIFY_DEVICE_AUTO:
+        log.info("Verify:   any drive, detected by volume label")
+    else:
+        log.info(f"Verify:   {verify_device or device}")
     if start > 1:
         log.info(f"Resuming from disc {start}")
 
@@ -86,7 +111,7 @@ def cmd_burn(args):
             sys.exit(1)
 
         try:
-            _burn_one_disc(args, input_dir, iso, i, disc_count, dio, max_iso_bytes)
+            _burn_one_disc(args, input_dir, iso, i, disc_count, dio, max_iso_bytes, verify_device)
         except ValueError as exc:
             log.error(str(exc))
             log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
@@ -111,6 +136,24 @@ def cmd_burn(args):
     print(f"  Cleanup:  rm -rf {input_dir}\n")
 
 
+def _same_device(a: str, b: str) -> bool:
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _resolve_verify_device(value: str | None, burn_device: str) -> str | None:
+    """Return None to verify in the burner, VERIFY_DEVICE_AUTO, or the
+    path of a separate verify drive."""
+    if value is None or value == VERIFY_DEVICE_AUTO:
+        return value
+    verify_device = resolve_device(value)
+    return None if _same_device(verify_device, burn_device) else verify_device
+
+
+def _auto_verify_devices(burn_device: str) -> list[str]:
+    others = [d.path for d in list_drives() if not _same_device(d.path, burn_device)]
+    return [burn_device, *others]
+
+
 def _burn_one_disc(
     args,
     input_dir: Path,
@@ -119,6 +162,7 @@ def _burn_one_disc(
     disc_count: int,
     dio: DiscIO,
     max_iso_bytes: int,
+    verify_device: str | None = None,
 ):
     log.step(f"Disc {i}/{disc_count}")
     folder = iso if isinstance(iso, DiscFolder) else None
@@ -171,6 +215,17 @@ def _burn_one_disc(
                 f"{human_bytes(write_bytes)} (including 32-KiB write padding)"
             )
 
+    # Auto verify identifies the burned disc by its volume label. Drives
+    # that already hold a disc with that label (e.g. an earlier attempt)
+    # are snapshotted now, before the burn, and ignored until replaced.
+    verify_label = None
+    stale_drives: set[str] = set()
+    if not args.no_verify and verify_device == VERIFY_DEVICE_AUTO:
+        verify_label = folder.volume_label if folder is not None else iso_volume_label(iso)
+        if verify_label is None:
+            raise ValueError(f"Could not read the volume label of {iso}")
+        stale_drives = drives_with_label(_auto_verify_devices(dio.device), verify_label)
+
     # Burn (with sg-busy retry)
     log.info("Burning...")
     while True:
@@ -219,17 +274,33 @@ def _burn_one_disc(
     # (slim drives). The 10s pre-pause is on the long side, but slower
     # USB BD drives can take 5–8s just to extend the tray; closing it
     # before the eject motion finishes races the two motors and can
-    # leave the drive in a confused state.
+    # leave the drive in a confused state. A separate verify drive is
+    # only polled: the burner's tray stays open for the user to move the
+    # disc.
+    verify_dio = dio
     if not args.no_verify:
         time.sleep(10)
-        dio.wait_for_disc_ready()
+        if verify_device is None:
+            dio.wait_for_disc_ready(close_tray=not args.no_close_tray)
+        elif verify_device == VERIFY_DEVICE_AUTO:
+            found = wait_for_labelled_disc(
+                _auto_verify_devices(dio.device),
+                verify_label,
+                stale_drives,
+                close_device=None if args.no_close_tray else dio.device,
+            )
+            if not _same_device(found, dio.device):
+                verify_dio = DiscIO(found)
+        else:
+            verify_dio = DiscIO(verify_device)
+            verify_dio.wait_for_disc_ready(close_tray=False)
 
         log.info("Post-burn verification...")
         while True:
             mount_dir = Path(tempfile.mkdtemp(prefix="bd-verify-"))
             verify_ok = False
             try:
-                mounted, mount_err = dio.mount_with_retry(mount_dir)
+                mounted, mount_err = verify_dio.mount_with_retry(mount_dir)
                 if mounted is None:
                     log.error("Could not mount disc for verification")
                     if mount_err:
@@ -252,7 +323,7 @@ def _burn_one_disc(
                         else:
                             log.error("Post-burn verification failed!")
                     finally:
-                        dio.umount(mounted)
+                        verify_dio.umount(mounted)
             finally:
                 with contextlib.suppress(OSError):
                     mount_dir.rmdir()
@@ -267,5 +338,5 @@ def _burn_one_disc(
                 log.info(f"Resume later with: bd-archive burn -i {input_dir} --start {i}")
                 sys.exit(1)
 
-    dio.eject()
+    verify_dio.eject()
     log.ok(f"Disc {i}/{disc_count} done")

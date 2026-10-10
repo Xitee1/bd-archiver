@@ -227,6 +227,7 @@ class ChecksumVerificationTests(unittest.TestCase):
         args = argparse.Namespace(
             skip_fit_check=True,
             no_verify=False,
+            no_close_tray=False,
             speed=None,
             write_timeout=DEFAULT_WRITE_TIMEOUT,
             buffer=DEFAULT_RING_BUFFER,

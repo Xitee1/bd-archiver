@@ -79,6 +79,12 @@ The error names the conflicting relative paths before archive/recovery creation.
   and stream the filesystem through growisofs with the same options/backend.
   Unknown capacity stops folder burns unless `--skip-fit-check` was explicit.
   ISO behavior, post-burn verification and two-press SIGINT handling remain.
+- `burn --verify-device /dev/srN` verifies in another drive: no close-tray, passive
+  `drive_status` wait there, eject of the verify drive. `--verify-device auto`
+  watches all drives only via the udev database (`tools/udev.py`, never a drive
+  command) for the burned volume label (folder manifest or ISO PVD); drives that
+  held that label before the burn are ignored until replaced. `--no-close-tray`
+  suppresses `eject -t` on the burner; both options are rejected with `--no-verify`.
 - `extract -i/--input` accepts individual DAR folders, create output directories
   or ISO files (`--iso` remains an alias). Only ISO inputs need `udisksctl`.
   `--pack-with` likewise accepts an individual DAR folder or ISO.
@@ -112,7 +118,7 @@ pip install -e '.[dev]'
 
 ```bash
 bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r PERCENT|SIZE|none] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [-y]
-bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--skip-fit-check] [-S <speed>]
+bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--verify-device /dev/srN|auto] [--no-close-tray] [--skip-fit-check] [-S <speed>]
 bd-archive verify   [<mountpoint|dir|/dev/srN|*.iso>]
 bd-archive extract  -o <output> [-D /dev/srN | -i <iso|dir>...] [-w <workdir>]
 ```
