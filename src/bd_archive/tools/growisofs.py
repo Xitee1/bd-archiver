@@ -1,10 +1,14 @@
+import functools
 import os
+import re
+import resource
 import shutil
 import signal
 import subprocess
 import time
 from pathlib import Path
 
+from bd_archive.constants import MiB
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, prepared_burn
 from bd_archive.ui.logger import log
 
@@ -12,6 +16,63 @@ from bd_archive.ui.logger import log
 # 5s is long enough for a deliberate double-press but short enough that an
 # accidental Ctrl+C plus a later real one don't compound.
 BURN_ABORT_GRACE_S = 5.0
+
+# growisofs's own ring buffer default is 32 MiB: about two seconds at 4x BD
+# speed, enough for jitter but not for a source that pauses for seconds. A
+# source that stops delivering lets the drive's buffer run empty, and after a
+# longer stall the drive can refuse to continue (INVALID ADDRESS FOR WRITE),
+# which wastes the disc. 512 MiB bridges roughly 30 s at 4x and 20 s at 6x.
+DEFAULT_RING_BUFFER = 512 * MiB
+MIN_RING_BUFFER = 1 * MiB  # growisofs's floor
+MAX_RING_BUFFER = 64 * 1024 * MiB
+
+# growisofs raises its soft RLIMIT_MEMLOCK to its compiled-in default buffer
+# size plus 16 MiB, then locks all current and future memory, then maps the
+# ring buffer. It skips the locking entirely when the raise fails, i.e. when
+# the hard limit is below this value.
+_GROWISOFS_MEMLOCK_RAISE = 48 * MiB
+# Code, heap and thread stacks that growisofs locks beside the ring buffer.
+_MEMLOCK_HEADROOM = 64 * MiB
+
+
+def ring_buffer(value) -> int:
+    """Parse `512` or `512M` (MiB) or `1G` (GiB) into bytes, rounded up to a power of two.
+
+    growisofs allocates ring buffers in powers of two, so the returned size is
+    the one it will actually use.
+    """
+    match = re.fullmatch(r"(\d+)([MG]?)", str(value).strip(), re.IGNORECASE)
+    if not match:
+        raise ValueError("expected MiB (512), a size in MiB (512M) or GiB (1G)")
+    size = int(match[1]) * (1024 * MiB if match[2].upper() == "G" else MiB)
+    if not MIN_RING_BUFFER <= size <= MAX_RING_BUFFER:
+        raise ValueError("expected 1M-64G")
+    return 1 << (size - 1).bit_length()
+
+
+def memlock_limits(limits: tuple[int, int], ring_buffer: int) -> tuple[int, int]:
+    """RLIMIT_MEMLOCK for the growisofs process so memory locking cannot refuse the buffer.
+
+    A hard limit of 48 MiB or more that is still below the ring buffer lets
+    growisofs lock its memory and then fail to map the buffer, before any
+    write. Where the hard limit covers the buffer plus headroom (or is
+    unlimited), the soft limit is raised to it so the whole buffer is locked.
+    Otherwise the hard limit is lowered below growisofs's raise target so it
+    skips locking and the buffer stays pageable.
+    """
+    soft, hard = limits
+    if hard == resource.RLIM_INFINITY or hard >= ring_buffer + _MEMLOCK_HEADROOM:
+        return hard, hard
+    cap = min(hard, _GROWISOFS_MEMLOCK_RAISE - MiB)
+    return min(soft, cap), cap
+
+
+def _apply_memlock_limits(ring_buffer: int):
+    """Child-side hook: adjust RLIMIT_MEMLOCK right before growisofs starts."""
+    limits = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    wanted = memlock_limits(limits, ring_buffer)
+    if wanted != limits:
+        resource.setrlimit(resource.RLIMIT_MEMLOCK, wanted)
 
 
 class DeviceBusyError(Exception):
@@ -30,8 +91,15 @@ def burn(
     *,
     filesystem_args: list[str] | None = None,
     write_timeout: int = DEFAULT_WRITE_TIMEOUT,
+    ring_buffer: int = DEFAULT_RING_BUFFER,
 ):
     """Burn an ISO or stream a prepared filesystem through growisofs.
+
+    ring_buffer is the growisofs ring buffer in bytes (a power of two, see
+    `ring_buffer()`), passed as -use-the-force-luke=bufsize. It is filled
+    completely before the first write and bridges pauses of the source.
+    RLIMIT_MEMLOCK of the child is adjusted by `memlock_limits` so growisofs's
+    memory locking cannot refuse the buffer.
 
     With filesystem_args, -Z dev invokes mkisofs directly. The caller
     must first size the unchanged inputs with the same filesystem options.
@@ -88,6 +156,7 @@ def burn(
     cmd = [
         "growisofs",
         "-use-the-force-luke=spare=none",
+        f"-use-the-force-luke=bufsize:{ring_buffer // MiB}m",
         "-dvd-compat",
         "-Z",
         f"{device}={iso_path}" if iso_path is not None else device,
@@ -112,12 +181,14 @@ def burn(
     # so the burn only dies when WE call terminate() — see handler below.
     with prepared_burn(device, write_timeout, env) as launch:
         log.info(f"Write command timeout: at least {write_timeout} seconds")
+        log.info(f"Ring buffer: {ring_buffer // MiB} MiB")
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            preexec_fn=functools.partial(_apply_memlock_limits, ring_buffer),
             **launch,
         )
 

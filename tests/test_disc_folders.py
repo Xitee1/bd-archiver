@@ -25,6 +25,7 @@ from bd_archive.cli import build_parser
 from bd_archive.commands.burn import _burn_one_disc, cmd_burn
 from bd_archive.tools import growisofs, mkisofs
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
+from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER
 
 
 class DiscFolderTests(unittest.TestCase):
@@ -141,7 +142,11 @@ class DiscFolderTests(unittest.TestCase):
     def test_burn_uses_folder_after_remeasurement_and_preserves_fit_gate(self):
         folder = self.prepare()
         args = argparse.Namespace(
-            skip_fit_check=False, no_verify=True, speed="4", write_timeout=DEFAULT_WRITE_TIMEOUT
+            skip_fit_check=False,
+            no_verify=True,
+            speed="4",
+            write_timeout=DEFAULT_WRITE_TIMEOUT,
+            buffer=DEFAULT_RING_BUFFER,
         )
         for capacity, burns in ((32768, True), (32767, False), (None, False)):
             drive = Mock(device="/dev/test")
@@ -164,7 +169,11 @@ class DiscFolderTests(unittest.TestCase):
     def test_change_during_insertion_prompt_prevents_burn_even_with_skip_fit(self):
         folder = self.prepare()
         args = argparse.Namespace(
-            skip_fit_check=True, no_verify=True, speed=None, write_timeout=DEFAULT_WRITE_TIMEOUT
+            skip_fit_check=True,
+            no_verify=True,
+            speed=None,
+            write_timeout=DEFAULT_WRITE_TIMEOUT,
+            buffer=DEFAULT_RING_BUFFER,
         )
         drive = Mock(device="/dev/test")
         with (
