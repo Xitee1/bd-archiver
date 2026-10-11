@@ -33,8 +33,10 @@ strict sequence; each row falls back to a more ordered packing that needs no
 extra disc; with `--max-free`, plans meeting the limit rank first and
 `plan.py:fill` gives `efficient` a bounded exact search for the most ordered one,
 up to 200 units) and builds only the plan's first disc (the group with the
-earliest unit). The preview shows this disc, the remaining data and further
-discs. `--max-free` permits deferring a suffix in fill order and limits the
+earliest unit). Each plan block describes this disc (units, data, range, free
+space, `Recovery (-r)`, `Recovery (fill)`, estimated size), the remaining data
+and further discs; `plan_sizing.plan_recovery` and creation share
+`choose_recovery`, so the preview shows the recovery creation writes. `--max-free` permits deferring a suffix in fill order and limits the
 unused data budget on every disc of a plan. Plans reserve exactly the `-r`
 recovery (default 5%); `-r 0`/`none` reserve nothing. `--attach PATH` (repeatable) puts files or
 folders outside the source at the disc root on every disc; they are never
