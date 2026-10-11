@@ -58,7 +58,7 @@ from bd_archive.tools.software import software_info
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn, styled_input
 
-PACKING_TEXT = {
+METHOD_TEXT = {
     "efficient": "by size",
     "balanced": "in order, backfilling gaps",
     "ordered": "strictly in order",
@@ -369,7 +369,7 @@ def _create_raw(args):
     recoveries = {}
     for number, strategy in enumerate(STRATEGIES, 1):
         section(f"Plan {number} ({strategy})")
-        field("Packing", PACKING_TEXT[strategy])
+        field("Method", METHOD_TEXT[strategy])
         plan = plans[strategy]
         if plan is None:
             field("Result", "no plan within the free-space limit")

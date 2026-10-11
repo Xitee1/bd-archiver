@@ -30,7 +30,7 @@ from bd_archive.archive.sizing import compute_slice_bytes
 from bd_archive.cli import build_parser
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.create_raw import (
-    PACKING_TEXT,
+    METHOD_TEXT,
     checked_proposals,
     order_consistency,
 )
@@ -388,7 +388,7 @@ class FilesystemTests(unittest.TestCase):
         for number, strategy in enumerate(STRATEGIES, 1):
             self.assertRegex(
                 text,
-                rf"Plan {number} \({strategy}\)\n.*Packing\s+: {PACKING_TEXT[strategy]}\n"
+                rf"Plan {number} \({strategy}\)\n.*Method\s+: {METHOD_TEXT[strategy]}\n"
                 r".*Units\s+: 2\n.*Data\s+: 14 B\n.*Name range\s+: a to b\n"
                 r".*Free \(unused\)\s+: .*\n.*Recovery \(fixed\)\s+: .* B \(\d+\.\d\d%\)\n"
                 r".*Estimated disc\s+: .*\n.*Remaining\s+: 0 B\n.*Further discs\s+: 0\n",

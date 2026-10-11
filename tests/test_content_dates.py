@@ -271,7 +271,7 @@ class MetadataIntegrationTests(unittest.TestCase):
             self.assertRegex(text, r"Order\s+: content-date")
             self.assertRegex(text, r"Files with metadata\s+: 1\n.*Files with mtime\s+: 1\n")
             self.assertIn("Plan 1 (efficient)", text)
-            self.assertRegex(text, r"Plan 1 \(efficient\)\n.*Packing\s+: by size\n.*Units\s+: 1\n")
+            self.assertRegex(text, r"Plan 1 \(efficient\)\n.*Method\s+: by size\n.*Units\s+: 1\n")
             self.assertRegex(text, r"Further discs\s+: 0\n")
             self.assertRegex(text, r"Order consistency\s+: 100%")
             self.assertIn("Automatically selected plan: all available plans are identical", text)
