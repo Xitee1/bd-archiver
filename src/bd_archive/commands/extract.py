@@ -676,9 +676,9 @@ def cmd_extract(args):
     print(f"  Size:         {human_bytes(total)}")
     if manifest_path is not None:
         print(f"  CORRUPT:      {manifest_path}")
-    if not workdir_is_default:
-        print(f"\n  Cleanup staging: rm -rf {work_dir}")
     print()
+    if not workdir_is_default:
+        log.info(f"The staged slices remain in {work_dir}.")
 
     # Non-zero exit when corruption was detected so scripts know the
     # restore was not fully clean.

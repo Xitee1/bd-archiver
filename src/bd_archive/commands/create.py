@@ -800,4 +800,4 @@ def cmd_create(args):
     log.info(f"Disc output:   {disc_output_dir}")
     print(f"  Catalog:      {output_dir}/{cfg.dar_name}-catalog.*.dar")
     log.info(f"Next step: bd-archive burn -i {shlex.quote(str(output_dir))}")
-    print(f"  Cleanup:      rm -rf {output_dir}\n")
+    log.info(f"The created files remain in {output_dir}.")
