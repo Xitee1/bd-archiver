@@ -191,10 +191,12 @@ def _create_raw(args):
             else:
                 log.info("PAR2 disabled; verification uses SHA-512 checksums.")
             log.info(f"Estimated disc:  {human_bytes(estimate)} (including overhead allowance)")
-            log.info(
-                f"Layout: source folder {source.name}/ at disc root; "
-                "README.txt, checksums.sha512 and recovery files beside it"
-            )
+            layout = [f"{source.name}/", "README.txt", RAW_CHECKSUMS]
+            if recovery_enabled:
+                layout += [RAW_PAR2_INDEX, "recovery.vol*.par2"]
+            log.info("Disc layout:")
+            for position, name in enumerate(layout):
+                log.info(f"  {'└──' if position == len(layout) - 1 else '├──'} {name}")
             log.info("Keep the source unchanged until creation finishes.")
             if estimate > capacity:
                 log.warn(
