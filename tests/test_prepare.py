@@ -8,6 +8,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -58,7 +59,7 @@ def toy_units(sizes):
 class PlannerTests(unittest.TestCase):
     def test_units_are_atomic_and_every_selected_unit_occurs_once(self):
         units = toy_units([14, 14, 11, 11, 13, 12])
-        plans = proposals(units, 25, False)
+        plans = proposals(units, 25)
         self.assertEqual(list(plans), ["efficient", "balanced", "ordered"])
         self.assertEqual(len(plans["efficient"][0]), 3)
         self.assertEqual(len(plans["ordered"][0]), 4)
@@ -66,17 +67,17 @@ class PlannerTests(unittest.TestCase):
         for plan in (p for candidates in plans.values() for p in candidates):
             self.assertEqual(sorted(i for group in plan for i in group), list(range(6)))
             self.assertTrue(all(sum(units[i].size for i in group) <= 25 for group in plan))
-        self.assertEqual(plans, proposals(units, 25, False))
+        self.assertEqual(plans, proposals(units, 25))
 
     def test_strategies_agree_when_order_costs_nothing(self):
         units = toy_units([12, 12, 14, 11])
-        for strategy, candidates in proposals(units, 25, False).items():
+        for strategy, candidates in proposals(units, 25).items():
             with self.subTest(strategy=strategy):
                 self.assertEqual(candidates, [((0, 1), (2, 3))])
 
     def test_deferred_units_are_always_a_suffix_in_fill_order(self):
         units = toy_units([14, 14, 11, 11, 13, 12])
-        for strategy, candidates in proposals(units, 25, True).items():
+        for strategy, candidates in proposals(units, 25, 25).items():
             with self.subTest(strategy=strategy):
                 self.assertEqual(sum(len(g) for g in candidates[0]), 6)
                 for plan in candidates:
@@ -93,9 +94,9 @@ class PlannerTests(unittest.TestCase):
 
     def test_file_limit_and_oversized_indivisible_unit(self):
         units = [Unit(str(i), (), 1, i, 20000, 1, i, i, i, 0) for i in range(3)]
-        self.assertEqual(len(proposals(units, 25, False)["efficient"][0]), 3)
+        self.assertEqual(len(proposals(units, 25)["efficient"][0]), 3)
         with self.assertRaisesRegex(ValueError, "Unit cannot fit"):
-            proposals(toy_units([26]), 25, False)
+            proposals(toy_units([26]), 25)
 
     def test_share_parser(self):
         self.assertTrue(parse_share("5").allows(5, 100))
@@ -146,9 +147,10 @@ class PlannerTests(unittest.TestCase):
         )
 
         def checked(units, limit):
+            share = parse_share(limit)
             with identity:
                 plans, _ = checked_proposals(
-                    units, proposals(units, 25, True), 25, parse_share(limit)
+                    units, proposals(units, 25, share.bytes_of(25)), 25, share
                 )
             return plans
 
@@ -166,6 +168,30 @@ class PlannerTests(unittest.TestCase):
         plans = checked(toy_units([14, 11, 14, 11, 5]), "100")
         self.assertEqual(sum(len(g) for g in plans["efficient"]), 5)
 
+    def test_free_space_limit_finds_plans_the_heuristic_packings_miss(self):
+        # Weights in MiB and dates in hours of a real collection on 50 GB BD-R DL
+        # without reserve: size-first packing needs a fourth disc, yet three nearly
+        # full discs exist.
+        sizes = [3564, 1596, 12523, 3776, 18218, 8440, 5632, 17161, 5155, 8767, 5013, 14652]
+        sizes += [7864, 10495, 19250]
+        hours = [0, 805, 1511, 1674, 1733, 1786, 2071, 2159, 2300, 2626, 2715, 2721, 2793]
+        hours += [2807, 3108]
+        units = [
+            replace(unit, date=date, order=date, date_start=date, date_end=date)
+            for unit, date in zip(toy_units(sizes), (h * 3600 * 10**9 for h in hours), strict=True)
+        ]
+        budget = 47730
+        max_unused = parse_share("5").bytes_of(budget)
+        plan = proposals(units, budget, max_unused)["efficient"][0]
+        self.assertEqual(sorted(i for g in plan for i in g), list(range(15)))
+        self.assertEqual(len(plan), 3)
+        for group in plan:
+            self.assertLessEqual(budget - sum(units[i].size for i in group), max_unused)
+            self.assertGreaterEqual(budget, sum(units[i].size for i in group))
+        # The most ordered of all plans that meet the limit.
+        self.assertEqual(plan, ((0, 1, 2, 3, 5, 7), (4, 8, 9, 10, 13), (6, 11, 12, 14)))
+        self.assertEqual(order_consistency(disorder(plan, units)[0]), 84)
+
     def test_reserve_shrinks_the_usable_capacity(self):
         identity = patch(
             "bd_archive.commands.prepare.measure",
@@ -175,9 +201,9 @@ class PlannerTests(unittest.TestCase):
         )
         units = toy_units([13, 12])
         with identity:
-            plans, _ = checked_proposals(units, proposals(units, 25, False), 25, None)
+            plans, _ = checked_proposals(units, proposals(units, 25), 25, None)
             self.assertEqual(plans["efficient"], ((0, 1),))
-            plans, _ = checked_proposals(units, proposals(units, 24, False), 25, None, 1)
+            plans, _ = checked_proposals(units, proposals(units, 24), 25, None, 1)
             self.assertEqual(plans["efficient"], ((0,), (1,)))
 
     def test_empty_units_travel_with_data_unless_nothing_is_protected(self):
@@ -499,7 +525,6 @@ class FilesystemTests(unittest.TestCase):
         self.assertFalse((self.root / "moved").exists())
 
     def test_space_check_only_requires_additional_cross_device_bytes(self):
-        from dataclasses import replace
 
         self.file("file", b"x" * 8192)
         unit = self.units()[0]
