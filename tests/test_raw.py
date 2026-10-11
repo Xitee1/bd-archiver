@@ -414,7 +414,14 @@ class RawIntegrationTests(unittest.TestCase):
         self.assertEqual(len(list(metadata.glob("recovery.vol*.par2"))), 1)
         readme = (restored / "README.txt").read_text()
         self.assertIn("ARCHIVE NAME: Media", readme)
-        self.assertRegex(readme, r"The hidden folder\s+\.bd-archive/ next to this README")
+        self.assertIn(
+            "FILES:\n"
+            "  Media/           Archived files\n"
+            f"  {self.info.name}  Attached file\n"
+            "  .bd-archive/     Checksums and recovery files; hidden folder, "
+            "file managers may not show names starting with a dot\n",
+            readme,
+        )
         self.assertNotIn("par2 repair", readme)
         self.assertIn("Index:      .bd-archive/recovery.par2", readme)
         self.assertIn("File:      .bd-archive/checksums.sha512", readme)

@@ -6,7 +6,6 @@ import shutil
 import stat
 import sys
 import tempfile
-import textwrap
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -218,20 +217,22 @@ def _recovery_text(size: int, data: int) -> str:
     return f"{human_bytes(size)} ({100 * size / data:.2f}%)" if data else human_bytes(size)
 
 
-def _readme_notes(name: str, recovery: bool) -> str:
-    """Point readers to the payload folder and the hidden metadata folder."""
-    contents = "checksums and recovery files" if recovery else "checksums"
-    return textwrap.fill(
-        f"{name}/ holds the archived files. The hidden folder {RAW_METADATA_DIR}/ next to "
-        f"this README holds the {contents}. File managers may hide it because its name "
-        "starts with a dot.",
-        76,
-        initial_indent=f"{'FILES:':14}",
-        subsequent_indent=" " * 14,
-        # Never split folder names such as .bd-archive/ across lines.
-        break_on_hyphens=False,
-        break_long_words=False,
+def _readme_notes(name: str, recovery: bool, attachments) -> str:
+    """List the disc root, pointing readers to the hidden metadata folder."""
+    contents = "Checksums and recovery files" if recovery else "Checksums"
+    rows = [(f"{name}/", "Archived files")]
+    rows += [
+        (f"{path.name}/", "Attached folder") if path.is_dir() else (path.name, "Attached file")
+        for path, _ in attachments
+    ]
+    rows.append(
+        (
+            f"{RAW_METADATA_DIR}/",
+            f"{contents}; hidden folder, file managers may not show names starting with a dot",
+        )
     )
+    width = max(len(entry) for entry, _ in rows) + 2
+    return "FILES:\n" + "".join(f"  {entry:<{width}}{meaning}\n" for entry, meaning in rows)
 
 
 def _create_raw(args):
@@ -570,7 +571,7 @@ def _create_raw(args):
             }
 
         # Publish the README only after the recovery parameters are final.
-        notes = _readme_notes(args.name, recovery is not None)
+        notes = _readme_notes(args.name, recovery is not None, attachments)
         write_readme(
             root / RAW_README,
             name=args.name,
