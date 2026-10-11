@@ -19,6 +19,8 @@ _MIN_NAME_COLUMNS = 8
 _PAR2_SHORT_PART = 28
 _PAR2_SHORT_MARK = "..."
 
+# PAR2 calls files with recovery data "recoverable", which reads like damage.
+_FILE_COUNT_RE = re.compile(r"There are (\d+) recoverable files and (\d+) other files\.")
 _TOTAL_SIZE_RE = re.compile(r"The total size of the data files is (\d+) bytes\.")
 _SCAN_RE = re.compile(r"Scanning: (\d+(?:\.\d+)?)%")
 _OPENING_RE = re.compile(r'Opening: "(.*)"')
@@ -85,6 +87,11 @@ class Par2ScanProgress:
         elif record.startswith(("Scanning extra files:", "Verifying repaired files:")):
             self.start = None
 
+        if counts := _FILE_COUNT_RE.fullmatch(record):
+            return (
+                f"Recovery set: {counts[1]} files with recovery data, "
+                f"{counts[2]} files without recovery data.\n"
+            )
         if scan := _SCAN_RE.fullmatch(record):
             return self._scan(record, float(scan[1]))
         if opening := _OPENING_RE.fullmatch(record):

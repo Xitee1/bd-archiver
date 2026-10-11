@@ -162,6 +162,13 @@ class Par2ScanProgressTests(unittest.TestCase):
         progress("Scanning extra files:\n")
         self.assertEqual(progress("Scanning: 10.0%\r"), f"{CLEAR_LINE}Scanning: 10.0%")
 
+    def test_file_counts_do_not_sound_like_damage(self):
+        progress = self.progress(started=False)
+        self.assertEqual(
+            progress("There are 64 recoverable files and 0 other files.\n"),
+            "Recovery set: 64 files with recovery data, 0 files without recovery data.\n",
+        )
+
     def test_unknown_output_and_missing_size_are_preserved(self):
         progress = self.progress(started=False)
         for line in ("Loading: 50.0%\r", "Verifying source files:\n"):

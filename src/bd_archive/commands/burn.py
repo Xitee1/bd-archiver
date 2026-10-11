@@ -124,8 +124,7 @@ def cmd_burn(args):
             )
 
     log.step("All discs burned")
-    print(f"\n  Discs:    {disc_count}")
-    print(f"  Files:    still in {input_dir}\n")
+    log.info(f"Burned {disc_count} disc(s). The burned files remain in {input_dir}.")
 
 
 def _same_device(a: str, b: str) -> bool:
