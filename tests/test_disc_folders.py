@@ -291,7 +291,7 @@ class DiscFolderIntegrationTests(unittest.TestCase):
                     restored = self.root / "restored"
                     self.cli("extract", "--input", output, "-o", restored)
                 else:
-                    restored = folders[0].root / self.source.name
+                    restored = folders[0].root / "Test"
                 self.assertEqual(
                     (restored / "payload").read_bytes(), (self.source / "payload").read_bytes()
                 )

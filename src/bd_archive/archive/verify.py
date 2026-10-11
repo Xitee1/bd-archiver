@@ -3,7 +3,7 @@ from pathlib import Path
 from bd_archive.archive.checksums import verify_manifest
 from bd_archive.archive.dar_archive import parse_dar_filename
 from bd_archive.archive.raw import RAW_CHECKSUMS, is_raw_metadata_name
-from bd_archive.constants import RAW_METADATA_DIR, RAW_PAR2_INDEX
+from bd_archive.constants import RAW_METADATA_DIR, RAW_PAR2_INDEX, RAW_README, RAW_V3_MARKER
 from bd_archive.shell.deps import check_deps
 from bd_archive.tools import par2
 from bd_archive.tools.par2 import VerifyResult, is_par2_index
@@ -28,13 +28,17 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
     # rglob, not glob: foldered discs keep each archive's files in a
     # top-level <name>-gen<N>/ directory (and a packed disc carries
     # several); legacy flat discs still match at the root.
-    # Recognize raw layouts from their verification files, without a marker.
-    # Root metadata takes precedence over metadata-like names in the payload.
-    raw_v2 = any((disc_path / name).is_file() for name in (RAW_PAR2_INDEX, RAW_CHECKSUMS))
+    # v3 is recognized first by its marker: its root README is metadata, not
+    # payload. Legacy v1/v2 are recognized from their verification files; v2
+    # root metadata takes precedence over metadata-like names in the payload.
+    raw_v3 = (disc_path / RAW_METADATA_DIR / RAW_V3_MARKER).is_file()
+    raw_v2 = not raw_v3 and any(
+        (disc_path / name).is_file() for name in (RAW_PAR2_INDEX, RAW_CHECKSUMS)
+    )
     raw_metadata = disc_path if raw_v2 else disc_path / RAW_METADATA_DIR
     raw = raw_v2 or any((raw_metadata / name).is_file() for name in (RAW_PAR2_INDEX, RAW_CHECKSUMS))
     if raw:
-        # Both layouts record paths relative to the disc root. Payload
+        # All layouts record paths relative to the disc root. Payload
         # .par2 files are ordinary data, not additional archive indices.
         index = raw_metadata / RAW_PAR2_INDEX
         par2_indices = [index] if index.is_file() else []
@@ -50,6 +54,7 @@ def verify_disc(disc_path: Path, label: str = "", quiet: bool = False) -> Verify
                 not (p.parent == disc_path and is_raw_metadata_name(p.name))
                 if raw_v2
                 else not p.is_relative_to(raw_metadata)
+                and not (raw_v3 and p == disc_path / RAW_README)
             )
         }
         manifests[raw_metadata / RAW_CHECKSUMS] = (disc_path, payload)

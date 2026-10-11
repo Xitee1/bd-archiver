@@ -1,4 +1,4 @@
-"""Percent-or-size values shared by --redundancy, --reserve and --max-free."""
+"""Percent-or-size values shared by --redundancy and --max-free."""
 
 import math
 import re

@@ -183,6 +183,19 @@ def cmd_create(args):
             sys.exit(1)
         cmd_create_raw(args)
         return
+    raw_only = [
+        flag
+        for flag, active in (
+            ("--group-by", hasattr(args, "group_by")),
+            ("--order-by", hasattr(args, "order_by")),
+            ("--max-free", getattr(args, "max_free", None) is not None),
+            ("--attach", bool(getattr(args, "attach", None))),
+        )
+        if active
+    ]
+    if raw_only:
+        log.error(f"DAR mode cannot be combined with {', '.join(raw_only)}; these require -m raw")
+        sys.exit(1)
     if args.redundancy is None:
         args.redundancy = parse_redundancy("5")
     if args.compression is None:

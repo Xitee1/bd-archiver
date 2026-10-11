@@ -100,14 +100,18 @@ class WriteSizeTests(unittest.TestCase):
     def test_auto_recovery_accounts_for_padding_before_safety_margin(self):
         metadata = self.root / "metadata"
         metadata.mkdir()
-        # Include the write block reserved for the final README.
-        for available, succeeds in ((98303, False), (98304, True)):
+        # The caller passes the capacity without the README allowance.
+        for available, minimum, succeeds in (
+            (65535, 1, False),
+            (65536, 1, True),
+            (65536, 2**15 + 1, False),
+        ):
             with (
-                self.subTest(available=available),
+                self.subTest(available=available, minimum=minimum),
                 patch("bd_archive.tools.mkisofs.estimate_size", return_value=34816),
             ):
 
-                def plan(available=available):
+                def plan(available=available, minimum=minimum):
                     return _plan_auto_recovery(
                         metadata,
                         [],
@@ -115,11 +119,11 @@ class WriteSizeTests(unittest.TestCase):
                         "test",
                         RawPar2Sizing(4, 128),
                         available + DISC_END_MARGIN,
+                        minimum,
                     )
 
                 if succeeds:
-                    _, estimate = plan()
-                    self.assertEqual(estimate, 65536)
+                    self.assertEqual(plan(), 2**15)
                 else:
                     with self.assertRaisesRegex(ValueError, "Not enough free disc capacity"):
                         plan()

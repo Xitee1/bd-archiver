@@ -6,18 +6,19 @@ integrity checks and optional recovery data with a workflow that separates
 archive preparation from burning.
 
 For files you want to open directly, the default
-[raw mode](https://github.com/Xitee1/bd-archiver/wiki/Raw-data-discs) keeps the
-original folder and its contents on a single data disc. Use
-[`prepare`](https://github.com/Xitee1/bd-archiver/wiki/Preparing-raw-discs) to
-divide a larger incoming collection into disc-sized source folders first. It
-previews packing alternatives in name, modification-time or content-date order,
-moves selected files after a yes/no confirmation, and can leave the last material
-in that order for a future session. Content dates are read with ExifTool, falling
-back to file modification times; folders are ordered by their size-weighted date median.
-Then create and burn each source folder normally. For larger archives,
+[raw mode](https://github.com/Xitee1/bd-archiver/wiki/Raw-data-discs) puts the
+original files on one data disc per run. It
+[plans](https://github.com/Xitee1/bd-archiver/wiki/Planning-raw-discs) a larger
+incoming collection across discs, previews packing alternatives in name,
+modification-time or content-date order and builds the next disc from the units
+you select, using reflinks, hardlinks or verified copies. Afterwards it offers to
+remove the archived files from the source; the rest stays for the next disc.
+Content dates are read with ExifTool, falling back to file modification times;
+folders are ordered by their size-weighted date median. `--attach` adds info
+files to every disc. For compressed backups,
 [DAR mode](https://github.com/Xitee1/bd-archiver/wiki/DAR-archives) supports
-compression and splits data across multiple discs, with a dedicated restore
-command to put the files back together.
+compression and splits data across multiple discs, even within large files,
+with a dedicated restore command to put the files back together.
 
 Archives are prepared as self-contained disc folders by default; add `--iso`
 to create ISO images instead. Exact filesystem sizing checks capacity without

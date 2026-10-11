@@ -48,9 +48,14 @@ PAR2_RECOVERY_RE = re.compile(r"\.vol\d+\+\d+\.par2$")
 # overwrite — is refused.
 EXTRACT_MARKER_NAME = ".bd-archive-extract"
 
-# Legacy raw-disc v1: payload at the root, metadata in a subdirectory.
+# Raw discs v1 and v3 keep checksums and recovery files in this hidden folder.
+# v1 (legacy): payload at the root. v3: the payload folder, attachments and
+# README.txt at the root; the v3 marker excludes that README from the payload.
 RAW_METADATA_DIR = ".bd-archive"
 RAW_MARKER = "raw-v1"
-# Former raw-disc v2 marker; reserved/ignored for compatibility, no longer written.
+RAW_V3_MARKER = "raw-v3"
+RAW_README = "README.txt"
+# Legacy raw-disc v2 kept metadata at the root. Its former marker name stays
+# reserved so v2 detection cannot match a newer disc.
 RAW_ROOT_MARKER = ".bd-archive-raw-v2"
 RAW_PAR2_INDEX = "recovery.par2"

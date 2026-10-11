@@ -372,7 +372,8 @@ def proposals(
         if unit.weight > budget or unit.nonempty > MAX_PAR2_BLOCKS:
             raise ValueError(
                 f"Unit cannot fit on one disc with these settings: {unit.path}. "
-                "Choose finer --group-by grouping, larger media, or a smaller --reserve."
+                "Choose finer --group-by grouping, larger media, or a smaller -r; "
+                "use -m dar for a sliced archive across multiple discs."
             )
     n = len(units)
     cuts = {n}

@@ -6,13 +6,20 @@ import hashlib
 import io
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from bd_archive.archive.raw import scan_raw_source, write_raw_checksums
 from bd_archive.archive.verify import verify_disc
 from bd_archive.commands.burn import _burn_one_disc
-from bd_archive.constants import RAW_MARKER, RAW_METADATA_DIR, RAW_ROOT_MARKER
+from bd_archive.constants import (
+    RAW_MARKER,
+    RAW_METADATA_DIR,
+    RAW_README,
+    RAW_ROOT_MARKER,
+    RAW_V3_MARKER,
+)
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER
 from bd_archive.tools.par2 import VerifyResult
@@ -76,11 +83,62 @@ class ChecksumVerificationTests(unittest.TestCase):
         source.mkdir()
         for name in (RAW_MARKER, "README.txt", "checksums.sha512", "recovery.par2", "empty"):
             (source / name).write_bytes(b"" if name == "empty" else name.encode())
-        inventory = scan_raw_source(source)
+        inventory = [replace(e, path=f"{source.name}/{e.path}") for e in scan_raw_source(source)]
         (self.disc / "README.txt").write_text("Instructions")
         manifest = self.disc / "checksums.sha512"
-        write_raw_checksums(source, inventory, manifest, path_prefix=source.name)
+        write_raw_checksums(self.disc, inventory, manifest)
         return source, manifest
+
+    def raw_v3(self):
+        # Payload folder and attachment at the root, metadata in the hidden folder.
+        payload = self.disc / "Media"
+        payload.mkdir()
+        for name in ("README.txt", "checksums.sha512", "recovery.par2", "empty"):
+            (payload / name).write_bytes(b"" if name == "empty" else name.encode())
+        (self.disc / "Info.txt").write_text("Attachment")
+        inventory = scan_raw_source(self.disc)
+        (self.disc / RAW_README).write_text("Instructions, written after the checksums")
+        metadata = self.disc / RAW_METADATA_DIR
+        metadata.mkdir()
+        (metadata / RAW_V3_MARKER).write_text("bd-archive raw disc format 3\n")
+        manifest = metadata / "checksums.sha512"
+        write_raw_checksums(self.disc, inventory, manifest)
+        return manifest
+
+    def test_v3_checksums_cover_payload_and_attachments_but_not_root_readme(self):
+        manifest = self.raw_v3()
+        with patch("bd_archive.archive.verify.check_deps") as deps:
+            self.verify(VerifyResult.OK)
+        deps.assert_not_called()
+        (self.disc / RAW_README).write_text("Changed README")
+        self.verify(VerifyResult.OK)
+        (self.disc / "Info.txt").write_text("Changed attachment")
+        self.verify(VerifyResult.BROKEN)
+        (self.disc / "Info.txt").write_text("Attachment")
+        (self.disc / "Unlisted.txt").write_text("Not in the manifest")
+        self.verify(VerifyResult.BROKEN)
+        (self.disc / "Unlisted.txt").unlink()
+        self.verify(VerifyResult.OK)
+        manifest.unlink()
+        self.verify(VerifyResult.BROKEN)
+
+    def test_root_readme_is_payload_without_v3_marker(self):
+        self.raw_v3()
+        (self.disc / RAW_METADATA_DIR / RAW_V3_MARKER).unlink()
+        # Legacy v1 discs keep every root file, including a README, as payload.
+        self.verify(VerifyResult.BROKEN)
+
+    def test_v3_marker_takes_precedence_over_payload_like_root_names(self):
+        self.raw_v3()
+        index = self.disc / RAW_METADATA_DIR / "recovery.par2"
+        index.touch()
+        (self.disc / "recovery.par2").touch()
+        with (
+            patch("bd_archive.archive.verify.check_deps"),
+            patch("bd_archive.archive.verify.par2.verify", return_value=VerifyResult.OK) as verify,
+        ):
+            self.verify(VerifyResult.OK)
+        verify.assert_called_once_with(index, base_dir=self.disc)
 
     def test_v2_checksums_cover_payload_but_not_root_metadata(self):
         source, manifest = self.raw_v2()

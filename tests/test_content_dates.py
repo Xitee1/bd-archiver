@@ -17,10 +17,10 @@ from bd_archive.archive.content_dates import (
     scan_dates,
     weighted_median,
 )
-from bd_archive.archive.prepare import make_units
+from bd_archive.archive.plan import make_units
 from bd_archive.archive.raw import scan_raw_source
 from bd_archive.cli import build_parser
-from bd_archive.commands.prepare import cmd_prepare
+from bd_archive.commands.create import cmd_create
 from bd_archive.tools.exiftool import read_dates
 
 
@@ -251,9 +251,11 @@ class MetadataIntegrationTests(unittest.TestCase):
             output = Path(temp) / "output"
             args = build_parser().parse_args(
                 [
-                    "prepare",
+                    "create",
                     "-s",
                     str(source),
+                    "-n",
+                    "Test",
                     "-o",
                     str(output),
                     "-b",
@@ -264,12 +266,15 @@ class MetadataIntegrationTests(unittest.TestCase):
             )
             captured = io.StringIO()
             with patch("builtins.input", return_value="n"), contextlib.redirect_stdout(captured):
-                cmd_prepare(args)
+                cmd_create(args)
             text = captured.getvalue()
             self.assertRegex(text, r"Order\s+: content-date")
             self.assertRegex(text, r"Files with metadata\s+: 1\n.*Files with mtime\s+: 1\n")
             self.assertIn("Plan 1 (efficient)", text)
-            self.assertRegex(text, r"Plan 1 \(efficient\)\n.*Packing\s+: by size\n.*Discs\s+: 1\n")
+            self.assertRegex(
+                text, r"Plan 1 \(efficient\)\n.*Packing\s+: by size\n.*This disc\s+: .*\n"
+            )
+            self.assertRegex(text, r"Further discs\s+: 0\n")
             self.assertRegex(text, r"Order consistency\s+: 100%")
             self.assertIn("Automatically selected plan: all available plans are identical", text)
             self.assertRegex(text, r"Date range\s+: 2017-05-04 to 2017-05-04 \(UTC\)")

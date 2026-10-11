@@ -198,13 +198,13 @@ class ReflinkFilesystemTests(unittest.TestCase):
         messages = self.cli(
             "create", "-s", source, "-n", "Test", "-o", output, "-b", "10000000", "-r", "0", "-y"
         )
-        self.assertIn("reflinked 1.0 MiB; copied 0 B", messages)
+        self.assertIn("reflinked 1.0 MiB; hardlinked 0 B; copied 0 B", messages)
         (source / "payload").write_bytes(b"changed original")
         disc = output / "discs/disc_0001"
         self.cli("verify", disc)
-        self.assertEqual((disc / source.name / "payload").read_bytes(), b"A" * (1024 * 1024))
-        self.assertTrue((disc / source.name / "empty directory").is_dir())
-        self.assertEqual((disc / source.name / "empty").stat().st_size, 0)
+        self.assertEqual((disc / "Test" / "payload").read_bytes(), b"A" * (1024 * 1024))
+        self.assertTrue((disc / "Test" / "empty directory").is_dir())
+        self.assertEqual((disc / "Test" / "empty").stat().st_size, 0)
 
     @unittest.skipUnless(
         all(shutil.which(tool) for tool in ("dar", "mkisofs", "dvd+rw-mediainfo")),
