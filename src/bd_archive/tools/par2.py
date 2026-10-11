@@ -3,7 +3,7 @@ from pathlib import Path
 
 from bd_archive.constants import PAR2_RECOVERY_RE
 from bd_archive.shell.runner import run
-from bd_archive.ui.par2_progress import Par2ScanProgress
+from bd_archive.ui.par2_progress import Par2CreateProgress, Par2ScanProgress
 
 
 class VerifyResult(Enum):
@@ -53,20 +53,25 @@ def create_disc(
     """
     if block_size < 4 or recovery_blocks < 1:
         raise ValueError("PAR2 needs a block size and at least one recovery block")
-    run(
-        [
-            "par2",
-            "create",
-            f"-B{base_dir}",
-            f"-s{block_size}",
-            f"-c{recovery_blocks}",
-            "-n1",
-            "-R",
-            str(par2_index),
-            *(str(root / "*") if root.is_dir() else str(root) for root in roots),
-        ],
-        label="par2",
-    )
+    progress = Par2CreateProgress()
+    try:
+        run(
+            [
+                "par2",
+                "create",
+                f"-B{base_dir}",
+                f"-s{block_size}",
+                f"-c{recovery_blocks}",
+                "-n1",
+                "-R",
+                str(par2_index),
+                *(str(root / "*") if root.is_dir() else str(root) for root in roots),
+            ],
+            output_transform=progress,
+        )
+    finally:
+        # End the live line before any later output or error message.
+        print(progress.finish(), end="", flush=True)
 
 
 def verify(par2_index: Path, *, base_dir: Path | None = None) -> VerifyResult:

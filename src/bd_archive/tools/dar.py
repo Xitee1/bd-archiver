@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 from bd_archive.shell.runner import run
+from bd_archive.ui.par2_progress import Par2CreateProgress
 
 # dar 2.7 prints "Error while restoring <path> : Bad CRC, data corruption
 # occurred" when a file's per-file CRC fails during extract. dar logs this
@@ -88,9 +89,16 @@ def create_sliced(
     if excludes:
         for path in excludes:
             cmd += ["-P", _glob_escape(path)]
-    if execute_hook is not None:
-        cmd += ["-E", execute_hook]
-    run(cmd, label="dar")
+    if execute_hook is None:
+        run(cmd, label="dar")
+        return
+    cmd += ["-E", execute_hook]
+    # The hook's PAR2 progress arrives inside DAR's output; show it on one live line.
+    progress = Par2CreateProgress("  [dar] ")
+    try:
+        run(cmd, output_transform=progress)
+    finally:
+        print(progress.finish(), end="", flush=True)
 
 
 def list_catalog_paths(catalog_base: Path) -> set[str]:

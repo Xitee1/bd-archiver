@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from bd_archive.shell.runner import run
 from bd_archive.ui.logger import log
-from bd_archive.ui.par2_progress import CLEAR_LINE, Par2ScanProgress, fit_name
+from bd_archive.ui.par2_progress import CLEAR_LINE, Par2CreateProgress, Par2ScanProgress, fit_name
 
 LONG_NAME = "disc_0001/channels/UC0s46sfQCldOw45NTfY79XA/tPbN5XSTOjs/tPbN5XSTOjs.info.json"
 # PAR2 prints names longer than 56 characters as 28 + "..." + 28 characters.
@@ -222,3 +222,78 @@ class Par2ScanProgressTests(unittest.TestCase):
     def test_transform_retains_error_handling(self):
         with redirect_stdout(io.StringIO()), self.assertRaises(subprocess.CalledProcessError):
             run([sys.executable, "-c", "raise SystemExit(2)"], output_transform=lambda line: line)
+
+
+class Par2CreateProgressTests(unittest.TestCase):
+    def progress(self, tty=True, prefix="  [par2] "):
+        self.enterContext(patch("sys.stdout.isatty", return_value=tty))
+        self.enterContext(
+            patch(
+                "bd_archive.ui.par2_progress.shutil.get_terminal_size",
+                return_value=os.terminal_size((100, 24)),
+            )
+        )
+        progress = Par2CreateProgress(prefix)
+        for line in (
+            "Block size: 1048576\n",
+            "Source file count: 2\n",
+            "Source block count: 100\n",
+        ):
+            self.assertEqual(progress(line), f"{prefix}{line}")
+        return progress
+
+    def record(self, progress, line, at):
+        with patch("bd_archive.ui.par2_progress.time.monotonic", return_value=at):
+            return progress(line)
+
+    def test_processing_updates_one_line_with_speed_and_eta(self):
+        progress = self.progress()
+        self.assertEqual(
+            self.record(progress, "Processing: 0.0%\r", 10),
+            f"{CLEAR_LINE}  [par2] Processing: 0.0%",
+        )
+        # 100 blocks of 1 MiB: 25% after 5 s is 5 MiB/s, 15 s remaining.
+        self.assertEqual(
+            self.record(progress, "Processing: 25.0%\r", 15),
+            f"{CLEAR_LINE}  [par2] Processing: 25.0%  |  5.0 MiB/s  |  ETA 0m15s",
+        )
+        self.assertEqual(
+            progress("Writing recovery packets\n"),
+            f"{CLEAR_LINE}  [par2] Processing: 25.0%  |  5.0 MiB/s  |  ETA 0m15s\n"
+            "  [par2] Writing recovery packets\n",
+        )
+        self.assertEqual(progress.finish(), "")
+
+    def test_opening_counts_files_and_shows_the_current_name(self):
+        progress = self.progress()
+        self.assertEqual(
+            progress("Opening: photos/a.jpg\n"),
+            f"{CLEAR_LINE}  [par2] Opening: 1/2 files  |  photos/a.jpg",
+        )
+        progress("Opening: photos/b.jpg\n")
+        # The permanent line keeps the count, not a file name.
+        self.assertEqual(progress.finish(), f"{CLEAR_LINE}  [par2] Opening: 2/2 files\n")
+
+    def test_relayed_dar_output_keeps_labels_and_dar_lines(self):
+        progress = self.progress(prefix="  [dar] ")
+        self.assertEqual(
+            progress("  [par2] Constructing: 1.0%\n"),
+            f"{CLEAR_LINE}  [dar]   [par2] Constructing: 1.0%",
+        )
+        self.assertEqual(
+            progress("  [par2] Constructing: done.\n"),
+            f"{CLEAR_LINE}  [dar]   [par2] Constructing: done.",
+        )
+        self.assertEqual(
+            progress("slice written\n"),
+            f"{CLEAR_LINE}  [dar]   [par2] Constructing: done.\n  [dar] slice written\n",
+        )
+
+    def test_logs_are_throttled_without_terminal_escape_codes(self):
+        progress = self.progress(tty=False)
+        self.assertEqual(
+            self.record(progress, "Processing: 10.0%\r", 0), "  [par2] Processing: 10.0%\n"
+        )
+        self.assertEqual(self.record(progress, "Processing: 20.0%\r", 2), "")
+        self.assertTrue(self.record(progress, "Processing: 30.0%\r", 6).endswith("\n"))
+        self.assertTrue(self.record(progress, "Processing: 100.0%\r", 7).endswith("\n"))

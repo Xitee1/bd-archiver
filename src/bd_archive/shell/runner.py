@@ -61,7 +61,9 @@ def run(
             if output_transform is not None:
                 print(output_transform(line), end="", flush=True)
             else:
-                print(f"{prefix}{line}", end="")
+                # Flush so output relayed through a parent process (such as
+                # PAR2 progress from DAR's slice hook) arrives as it happens.
+                print(f"{prefix}{line}", end="", flush=True)
         proc.wait()
     except KeyboardInterrupt:
         # Child is in our process group → SIGINT already reached it.
