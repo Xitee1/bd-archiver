@@ -467,7 +467,9 @@ class RawIntegrationTests(unittest.TestCase):
 
     def test_redundancy_is_exact_unless_free_space_is_filled(self):
         result = self.create(auto=True)
-        self.assertRegex(result.stdout, r"Redundancy\s+: 5%\n")
+        self.assertRegex(
+            result.stdout, r"Redundancy\s+: 5% of the data \(-r\)\n.*Fill free space\s+: disabled\n"
+        )
         iso = self.output / "images/disc_0001.iso"
         self.assertLess(iso.stat().st_size, 2_000_000)
         exact = self.redundancy(iso, "exact")
@@ -478,12 +480,23 @@ class RawIntegrationTests(unittest.TestCase):
             result = self.create("-r", minimum, "--fill-recovery", auto=True)
             self.assertRegex(
                 result.stdout,
-                rf"Redundancy\s+: {minimum}%; free space adds more \(--fill-recovery\)",
+                rf"Redundancy\s+: {minimum}% of the data \(-r\)\n"
+                r".*Fill free space\s+: enabled \(--fill-recovery\)\n",
             )
             iso = self.output / "images/disc_0001.iso"
             self.assertGreater(iso.stat().st_size, 8_900_000)
             self.assertLessEqual(disc_write_bytes(iso.stat().st_size), 10_000_000 - DISC_END_MARGIN)
-            self.assertGreater(self.redundancy(iso, f"filled-{minimum}"), 5)
+            # The preview shows exactly the recovery that creation writes.
+            shares = [
+                float(share)
+                for share in re.findall(
+                    r"Recovery \((?:-r|fill)\)\s+: .*\(([\d.]+)%\)", result.stdout
+                )
+            ]
+            self.assertEqual(len(shares), 6)
+            created = self.redundancy(iso, f"filled-{minimum}")
+            self.assertAlmostEqual(sum(shares[: len(shares) // 3]), created, delta=0.011)
+            self.assertGreater(created, 5)
 
     def test_fill_recovery_cannot_be_combined_with_none(self):
         result = self.create("-r", "none", "--fill-recovery", auto=True, expected=1)

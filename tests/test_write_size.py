@@ -9,12 +9,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from bd_archive.archive.disc_folder import DiscFolder, prepare_folder, tree_signature
+from bd_archive.archive.plan_sizing import fill_recovery_blocks
 from bd_archive.archive.raw import RawPar2Sizing
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.cli import build_parser
 from bd_archive.commands.burn import _burn_one_disc
 from bd_archive.commands.create import cmd_create
-from bd_archive.commands.create_raw import _plan_auto_recovery
 from bd_archive.constants import DISC_END_MARGIN
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER
@@ -112,7 +112,7 @@ class WriteSizeTests(unittest.TestCase):
             ):
 
                 def plan(available=available, minimum=minimum):
-                    return _plan_auto_recovery(
+                    return fill_recovery_blocks(
                         metadata,
                         [],
                         "Test",

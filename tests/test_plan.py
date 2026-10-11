@@ -378,21 +378,27 @@ class FilesystemTests(unittest.TestCase):
         text = captured.getvalue()
         self.assertRegex(text, r"Order\s+: name")
         self.assertRegex(text, r"Max free\s+: unlimited")
-        self.assertRegex(text, r"Redundancy\s+: 5%\n")
+        self.assertRegex(
+            text, r"Redundancy\s+: 5% of the data \(-r\)\n.*Fill free space\s+: disabled\n"
+        )
         self.assertNotIn("Reserve", text)
         self.assertNotIn("Files with metadata", text)
+        self.assertNotIn("Recovery (fill)", text)
         for number, strategy in enumerate(STRATEGIES, 1):
             self.assertRegex(
                 text,
                 rf"Plan {number} \({strategy}\)\n.*Packing\s+: {PACKING_TEXT[strategy]}\n"
-                r".*This disc\s+: 14 B\n.*Free \(unused\)\s+: .*\n.*Remaining\s+: 0 B\n"
-                r".*Further discs\s+: 0\n",
+                r".*Units\s+: 2\n.*Data\s+: 14 B\n.*Name range\s+: a to b\n"
+                r".*Free \(unused\)\s+: .*\n.*Recovery \(-r\)\s+: .* B \(\d+\.\d\d%\)\n"
+                r".*Estimated disc\s+: .*\n.*Remaining\s+: 0 B\n.*Further discs\s+: 0\n",
             )
         self.assertEqual(text.count("Order consistency    : 100%"), 3)
         self.assertIn("Automatically selected plan: all available plans are identical", text)
-        self.assertRegex(text, r"Disc\n.*Name\s+: Test\n.*Units\s+: 2\n.*Data\s+: 14 B\n")
-        self.assertRegex(text, r"Name range\s+: a to b")
-        self.assertRegex(text, r"Disc layout\n.*├── Test/\n.*├── README.txt\n.*└── .bd-archive/\n")
+        self.assertNotIn("Remaining in source", text)
+        self.assertRegex(
+            text,
+            r"Disc layout\n.*Name\s+: Test\n.*├── Test/\n.*├── README.txt\n.*└── .bd-archive/\n",
+        )
         self.assertIn("Cancelled; nothing was created.", text)
         self.assertNotIn("\n[INFO]    a (", text)
         self.assertFalse(self.output.exists())

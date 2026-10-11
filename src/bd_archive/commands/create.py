@@ -23,7 +23,7 @@ from bd_archive.archive.disc_folder import (
     tree_signature,
 )
 from bd_archive.archive.readme import write_readme
-from bd_archive.archive.share import fill_skipped_message, parse_redundancy
+from bd_archive.archive.share import FILL_MIN_PERMILLE, fill_skipped_message, parse_redundancy
 from bd_archive.archive.sizing import (
     compute_slice_bytes,
     dar_fill_layout,
@@ -341,6 +341,11 @@ def cmd_create(args):
             log.info("Burn the leftover disc on its own instead, or use larger media.")
             sys.exit(1)
 
+    # Space for each slice and its recovery data; --fill-recovery uses the
+    # same rule for every finished slice (archive.sizing.dar_recovery_bytes).
+    available = slice_available(sizing_target, scan.catalog_est)
+    first_available = slice_available(sizing_target - pack_bytes, scan.catalog_est)
+
     # Workdir must exist before --sample so the sample tempdir lives
     # in the user-chosen location (e.g. tmpfs). Default-pathed workdir
     # also implies output_dir/disc_output_dir creation here, since the
@@ -384,6 +389,14 @@ def cmd_create(args):
     else:
         archive_est = int(scan.total_bytes * ratio)
 
+    def _last_slice(est: int) -> tuple[int, int]:
+        """(n_discs, last slice size) for a positive archive size."""
+        if est <= first_slice_bytes:
+            return 1, est
+        n = 1 + (est - first_slice_bytes + slice_bytes - 1) // slice_bytes
+        last_sl = est - first_slice_bytes - (n - 2) * slice_bytes
+        return n, last_sl or slice_bytes
+
     def _layout(est: int) -> tuple[int, int, int]:
         """(n_discs, last_disc_content, last_fill_pct) for a given archive size.
 
@@ -398,13 +411,7 @@ def cmd_create(args):
             # still take up a disc, but the data portion is empty.
             overhead = pack_bytes + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
             return 1, overhead, overhead * 100 // sizing_target
-        if est <= first_slice_bytes:
-            n, last_sl = 1, est
-        else:
-            n = 1 + (est - first_slice_bytes + slice_bytes - 1) // slice_bytes
-            last_sl = est - first_slice_bytes - (n - 2) * slice_bytes
-            if last_sl == 0:
-                last_sl = slice_bytes
+        n, last_sl = _last_slice(est)
         last_content = (
             last_sl + args.redundancy.bytes_of(last_sl) + scan.catalog_est + PAR2_AND_MISC_OVERHEAD
         )
@@ -520,12 +527,16 @@ def cmd_create(args):
     log.step("Disc layout")
     log.info(f"Disc capacity:    {human_bytes(raw_capacity)} (writable)")
     log.info(f"Slice size:       {human_bytes(slice_bytes)}")
-    log.info(
-        f"PAR2 redundancy:  {cfg.redundancy.label} (~{human_bytes(par2_est)})"
-        + ("; free space adds more (--fill-recovery)" if fill else "")
-    )
     if cfg.redundancy.disabled and not fill:
-        log.info("PAR2 disabled; verification uses SHA-512 checksums.")
+        log.info("Redundancy:       none (SHA-512 checksums only)")
+    elif cfg.redundancy.percent:
+        log.info(
+            f"Redundancy:       {cfg.redundancy.label} of the data (-r), "
+            f"~{human_bytes(par2_est)} per full disc"
+        )
+    else:
+        log.info(f"Redundancy:       {cfg.redundancy.label} per disc (-r)")
+    log.info(f"Fill free space:  {'enabled (--fill-recovery)' if fill else 'disabled'}")
     log.info(f"Compression:      {cfg.comp_str} (ratio {ratio:.3f}, {ratio_source})")
     archive_kind = "delta vs base" if ref_catalog is not None else "full source"
     log.info(f"Estimated archive: {human_bytes(archive_est)} ({archive_kind})")
@@ -547,6 +558,20 @@ def cmd_create(args):
     log.info(f"Free on last:     {human_bytes(last_disc_free)} archive")
     if abs(ratio - 1.0) > 0.001:
         log.info(f"                  ~{human_bytes(last_disc_free_raw)} raw (at ratio {ratio:.3f})")
+    if fill and archive_est > 0:
+        # The same rule the -E hook applies to the finished last slice.
+        last_n, last_sl = _last_slice(archive_est)
+        last_recovery = dar_recovery_bytes(
+            last_sl, first_available if last_n == 1 else available, cfg.redundancy, True
+        )
+        last_fill = last_recovery - cfg.redundancy.bytes_of(last_sl)
+        if last_fill > 0:
+            log.info(f"Recovery (fill):  ~{human_bytes(last_fill)} on the last disc (estimate)")
+        else:
+            log.info(
+                f"Recovery (fill):  skipped on the last disc "
+                f"(below {FILL_MIN_PERMILLE / 10}% of its data, estimate)"
+            )
 
     if deferred_files:
         defer_bytes = sum(f.size for f in deferred_files)
@@ -596,10 +621,6 @@ def cmd_create(args):
     # digits and safe to pass inline.
     log.step("Creating dar archive")
     par2_hook = None
-    # Space for each slice and its recovery data; --fill-recovery uses the
-    # same rule for every finished slice (archive.sizing.dar_recovery_bytes).
-    available = slice_available(sizing_target, scan.catalog_est)
-    first_available = slice_available(sizing_target - pack_bytes, scan.catalog_est)
     if not cfg.redundancy.disabled or fill:
         os.environ["BD_ARCHIVE_SLICE_DIR"] = str(tmp_dir)
         os.environ["BD_ARCHIVE_SLICE_BASENAME"] = cfg.dar_name
@@ -832,7 +853,7 @@ def cmd_create(args):
     print(f"  Discs:        {slice_count} x {human_bytes(raw_capacity)}")
     print(
         f"  PAR2:         {cfg.redundancy.label} per disc"
-        + (", plus free space (--fill-recovery)" if fill else "")
+        + (", plus filled free space (--fill-recovery)" if fill else "")
     )
     print(f"  Compression:  {cfg.comp_str}")
     log.info(f"Disc output:   {disc_output_dir}")

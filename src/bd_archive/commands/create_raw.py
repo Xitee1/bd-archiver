@@ -24,22 +24,21 @@ from bd_archive.archive.plan import STRATEGIES, Plan, disorder, make_units, prop
 from bd_archive.archive.plan_sizing import (
     RAW_V3_MARKER_TEXT,
     DiscLayout,
+    choose_recovery,
     measure,
+    plan_recovery,
     readme_allowance,
 )
 from bd_archive.archive.raw import (
-    MAX_PAR2_BLOCKS,
     RAW_CHECKSUMS,
     RawEntry,
-    fixed_raw_recovery,
     is_reserved_root_name,
-    raw_par2_sizing,
     scan_attachment,
     scan_raw_source,
     write_raw_checksums,
 )
 from bd_archive.archive.readme import write_readme
-from bd_archive.archive.share import fill_skipped_message, fill_worthwhile
+from bd_archive.archive.share import FILL_MIN_PERMILLE, fill_skipped_message
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.archive.staging import StageItem, check_space, check_unit, remove_units, stage
 from bd_archive.constants import (
@@ -213,6 +212,11 @@ def _layout_lines(name: str, attachments, recovery_enabled: bool) -> list[str]:
     return lines
 
 
+def _recovery_text(size: int, data: int) -> str:
+    """Recovery bytes and their share of the disc's data, as written to the README."""
+    return f"{human_bytes(size)} ({100 * size / data:.2f}%)" if data else human_bytes(size)
+
+
 def _readme_notes(name: str, recovery: bool) -> str:
     """Point readers to the payload folder and the hidden metadata folder."""
     contents = "checksums and recovery files" if recovery else "checksums"
@@ -333,11 +337,11 @@ def _create_raw(args):
     field("Disc capacity", human_bytes(capacity))
     if not recovery_enabled:
         field("Redundancy", "none (SHA-512 checksums only)")
+    elif args.redundancy.percent:
+        field("Redundancy", f"{args.redundancy.label} of the data (-r)")
     else:
-        field(
-            "Redundancy",
-            args.redundancy.label + ("; free space adds more (--fill-recovery)" if fill else ""),
-        )
+        field("Redundancy", f"{args.redundancy.label} per disc (-r)")
+    field("Fill free space", "enabled (--fill-recovery)" if fill else "disabled")
     field("Max free", max_free.label if max_free else "unlimited")
 
     # Fast search budget for unit data; every offered plan gets a precise sparse-tree check.
@@ -362,6 +366,7 @@ def _create_raw(args):
     log.blank()
     log.info("Checking filesystem, checksum and recovery space for candidate plans...")
     plans, sizes = checked_proposals(units, candidates, capacity, max_free, layout)
+    recoveries = {}
     for number, strategy in enumerate(STRATEGIES, 1):
         section(f"Plan {number} ({strategy})")
         field("Packing", PACKING_TEXT[strategy])
@@ -369,17 +374,39 @@ def _create_raw(args):
         if plan is None:
             field("Result", "no plan within the free-space limit")
             continue
-        size = sizes[plan[0]]
-        deferred = len(units) - sum(len(group) for group in plan)
-        field("This disc", human_bytes(size.payload))
+        # The plan's first disc is the one this run creates.
+        group = plan[0]
+        size = sizes[group]
+        if group not in recoveries:
+            recoveries[group] = plan_recovery(group, units, capacity, layout, fill)
+        recovery, estimate = recoveries[group]
+        deferred = len(units) - sum(len(g) for g in plan)
+        field("Units", len(group))
+        field("Data", human_bytes(size.payload))
+        if order_by == "name":
+            field("Name range", f"{units[group[0]].path} to {units[group[-1]].path}")
+        else:
+            starts = [units[i].date_start for i in group]
+            ends = [units[i].date_end for i in group]
+            field("Date range", f"{date_text(min(starts))} to {date_text(max(ends))} (UTC)")
+        if by_content:
+            field("Files with metadata", sum(units[i].metadata for i in group))
         field("Free (unused)", human_bytes(size.free(capacity)))
+        if recovery_enabled:
+            field("Recovery (-r)", _recovery_text(recovery.minimum_bytes, recovery.data))
+        if fill:
+            field(
+                "Recovery (fill)",
+                _recovery_text(recovery.fill_bytes, recovery.data)
+                if recovery.fill_bytes
+                else f"skipped (below {FILL_MIN_PERMILLE / 10}% of the disc's data)",
+            )
+        field("Estimated disc", human_bytes(estimate))
         field("Remaining", human_bytes(total - size.payload))
         field(
             "Further discs",
             f"{len(plan) - 1}" + (f" (+ {deferred} deferred units)" if deferred else ""),
         )
-        if by_content:
-            field("Files with metadata", sum(units[i].metadata for i in plan[0]))
         field("Order consistency", f"{order_consistency(disorder(plan, units)[0])}%")
     available = [number for number, strategy in enumerate(STRATEGIES, 1) if plans[strategy]]
     if not available:
@@ -421,33 +448,11 @@ def _create_raw(args):
         log.step("Automatically selected plan: no other plan available")
     plan = plans[STRATEGIES[choice - 1]]
     group = plan[0]
-    size = sizes[group]
     selected = [units[i] for i in group]
-    deferred = len(units) - sum(len(g) for g in plan)
-    section("Disc")
-    field("Name", args.name)
-    field("Units", len(group))
-    field("Data", human_bytes(size.payload))
-    if attachments:
-        field("Attachments", f"{len(attachments)} ({human_bytes(attached_size)})")
-    field("Free (unused)", human_bytes(size.free(capacity)))
-    field("Estimated disc", human_bytes(size.required))
-    if order_by == "name":
-        field("Name range", f"{units[group[0]].path} to {units[group[-1]].path}")
-    else:
-        starts = [units[i].date_start for i in group]
-        ends = [units[i].date_end for i in group]
-        field("Date range", f"{date_text(min(starts))} to {date_text(max(ends))} (UTC)")
     section("Disc layout")
+    field("Name", args.name)
     for line in _layout_lines(args.name, attachments, recovery_enabled):
         log.info(f"  {line}")
-    section("Remaining in source")
-    field("Units", len(units) - len(group))
-    field("Size", human_bytes(total - size.payload))
-    field(
-        "Further discs",
-        f"{len(plan) - 1}" + (f" (+ {deferred} deferred units)" if deferred else ""),
-    )
     log.blank()
     log.info("Keep the selected files unchanged until creation finishes.")
     if not args.yes and not prompt_yn("Create this disc?", default_yes=False):
@@ -530,32 +535,12 @@ def _create_raw(args):
         write_raw_checksums(root, disc_inventory, metadata / RAW_CHECKSUMS, digests=digests)
         check_payload("hashing")
         recovery = None
-        data = sum(e.size for e in disc_inventory if stat.S_ISREG(e.mode))
-        blocks = 0
-        if recovery_enabled and data:
-            if minimum is not None:
-                sizing, blocks = fixed_raw_recovery(
-                    disc_inventory, capacity, payload_iso_size, minimum
-                )
-            else:
-                sizing = raw_par2_sizing(
-                    disc_inventory, capacity, max(1, capacity - payload_iso_size)
-                )
-            if fill:
-                best = _plan_auto_recovery(
-                    metadata,
-                    entries,
-                    label,
-                    publisher,
-                    sizing,
-                    capacity - layout.readme_bytes,
-                    blocks,
-                )
-                extra = max(0, best - blocks) * sizing.block_size
-                if fill_worthwhile(extra, data):
-                    blocks = best
-                else:
-                    log.info(fill_skipped_message(extra))
+        choice = choose_recovery(
+            metadata, entries, disc_inventory, capacity, payload_iso_size, layout, fill
+        )
+        if fill and choice.sizing is not None and not choice.fill_bytes:
+            log.info(fill_skipped_message(choice.extra))
+        blocks, sizing, data = choice.blocks, choice.sizing, choice.data
         if blocks:
             recovery_bytes = blocks * sizing.block_size
             roots = sorted(
@@ -651,41 +636,3 @@ def _create_raw(args):
     else:
         log.info("Source unchanged: the next run plans these units again.")
     log.info(f"Next step: bd-archive burn -i {shlex.quote(str(output))}")
-
-
-def _plan_auto_recovery(metadata, entries, label, publisher, sizing, capacity, minimum):
-    """Size sparse stand-ins, then remove them before real PAR2 creation.
-
-    mkisofs accounts for sector rounding, directory records and multi-extent
-    files. No payload or recovery bytes are read/written during this search.
-    Only our two temporary placeholder files are removed. ``capacity``
-    already excludes the README allowance.
-    """
-    index = metadata / RAW_PAR2_INDEX
-    volume = metadata / "recovery.vol00000+32768.par2"
-    target = capacity - DISC_END_MARGIN
-    best = 0
-    low, high = 1, MAX_PAR2_BLOCKS
-    try:
-        while low <= high:
-            count = (low + high) // 2
-            for path, size in zip((index, volume), sizing.file_sizes(count), strict=True):
-                with path.open("wb") as placeholder:
-                    placeholder.truncate(size)
-            size = disc_write_bytes(
-                mkisofs.estimate_size(entries, label, publisher, rock_ridge=True)
-            )
-            if size <= target:
-                best = count
-                low = count + 1
-            else:
-                high = count - 1
-    finally:
-        index.unlink(missing_ok=True)
-        volume.unlink(missing_ok=True)
-    if best < minimum:
-        raise ValueError(
-            "Not enough free disc capacity for checksums, the minimum PAR2 recovery data and "
-            "the safety margin; use a larger disc or a smaller -r."
-        )
-    return best
