@@ -531,11 +531,11 @@ def cmd_create(args):
         log.info("Redundancy:       none (SHA-512 checksums only)")
     elif cfg.redundancy.percent:
         log.info(
-            f"Redundancy:       {cfg.redundancy.label} of the data (-r), "
+            f"Redundancy:       {cfg.redundancy.label} of the data (fixed), "
             f"~{human_bytes(par2_est)} per full disc"
         )
     else:
-        log.info(f"Redundancy:       {cfg.redundancy.label} per disc (-r)")
+        log.info(f"Redundancy:       {cfg.redundancy.label} per disc (fixed)")
     log.info(f"Fill free space:  {'enabled (--fill-recovery)' if fill else 'disabled'}")
     log.info(f"Compression:      {cfg.comp_str} (ratio {ratio:.3f}, {ratio_source})")
     archive_kind = "delta vs base" if ref_catalog is not None else "full source"

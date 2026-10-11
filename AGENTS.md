@@ -34,7 +34,8 @@ extra disc; with `--max-free`, plans meeting the limit rank first and
 `plan.py:fill` gives `efficient` a bounded exact search for the most ordered one,
 up to 200 units) and builds only the plan's first disc (the group with the
 earliest unit). Each plan block describes this disc (units, data, range, free
-space, `Recovery (-r)`, `Recovery (fill)`, estimated size), the remaining data
+space, `Recovery (fixed)`, with `--fill-recovery` also `Recovery (fill)` and
+`Recovery (total)`, estimated size), the remaining data
 and further discs; `plan_sizing.plan_recovery` and creation share
 `choose_recovery`, so the preview shows the recovery creation writes. `--max-free` permits deferring a suffix in fill order and limits the
 unused data budget on every disc of a plan. Plans reserve exactly the `-r`

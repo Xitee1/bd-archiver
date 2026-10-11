@@ -338,9 +338,9 @@ def _create_raw(args):
     if not recovery_enabled:
         field("Redundancy", "none (SHA-512 checksums only)")
     elif args.redundancy.percent:
-        field("Redundancy", f"{args.redundancy.label} of the data (-r)")
+        field("Redundancy", f"{args.redundancy.label} of the data (fixed)")
     else:
-        field("Redundancy", f"{args.redundancy.label} per disc (-r)")
+        field("Redundancy", f"{args.redundancy.label} per disc (fixed)")
     field("Fill free space", "enabled (--fill-recovery)" if fill else "disabled")
     field("Max free", max_free.label if max_free else "unlimited")
 
@@ -393,7 +393,7 @@ def _create_raw(args):
             field("Files with metadata", sum(units[i].metadata for i in group))
         field("Free (unused)", human_bytes(size.free(capacity)))
         if recovery_enabled:
-            field("Recovery (-r)", _recovery_text(recovery.minimum_bytes, recovery.data))
+            field("Recovery (fixed)", _recovery_text(recovery.minimum_bytes, recovery.data))
         if fill:
             field(
                 "Recovery (fill)",
@@ -401,6 +401,7 @@ def _create_raw(args):
                 if recovery.fill_bytes
                 else f"skipped (below {FILL_MIN_PERMILLE / 10}% of the disc's data)",
             )
+            field("Recovery (total)", _recovery_text(recovery.bytes, recovery.data))
         field("Estimated disc", human_bytes(estimate))
         field("Remaining", human_bytes(total - size.payload))
         field(
