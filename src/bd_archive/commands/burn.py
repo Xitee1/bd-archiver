@@ -125,7 +125,7 @@ def cmd_burn(args):
 
     log.step("All discs burned")
     print(f"\n  Discs:    {disc_count}")
-    print(f"  Cleanup:  rm -rf {input_dir}\n")
+    print(f"  Files:    still in {input_dir}\n")
 
 
 def _same_device(a: str, b: str) -> bool:
