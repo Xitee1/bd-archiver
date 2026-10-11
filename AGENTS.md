@@ -52,7 +52,8 @@ most ordered plan and never removes source files. Any failure before
 publication removes everything created under the output. `remove_units` checks
 all selected units (ignoring ctime, which hardlinking changes) before unlinking
 and removes emptied grouping ancestors, never the source root. No plan, history
-or numbering is stored; output is always `discs/disc_0001` (or `images/disc_0001.iso`).
+or numbering is stored; output is always `<output>/disc/` with `<output>/manifest.json`
+(`disc_folder.SINGLE_DISC`; `burn` treats it like `disc_0001`), or `images/disc_0001.iso`.
 Raw-only options are rejected with `-m dar`. See the wiki's `Raw-data-discs` and
 `Planning-raw-discs` pages.
 `--order-by content-date` requires ExifTool: `archive/content_dates.py` resolves whitelisted
@@ -63,7 +64,8 @@ or stream extraction. Unit dates are size-weighted medians (earlier on exact tie
 previews count mtime fallbacks and show the media date range of the disc.
 Unknown-zone content dates and displayed ranges use UTC. Files remain unchanged.
 
-`create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`
+`create` now prepares self-contained disc folders: raw `disc/` plus `manifest.json`
+directly in the output, DAR `discs/disc_NNNN/` plus `discs/manifest.json`. `create --iso`
 selects the original `images/disc_NNNN.iso` workflow described in detail below.
 This output choice is independent of `-m raw|dar`.
 
@@ -107,7 +109,7 @@ The error names the conflicting relative paths before archive/recovery creation.
   or ISO files (`--iso` remains an alias). Only ISO inputs need `udisksctl`.
   `--pack-with` likewise accepts an individual DAR folder or ISO.
 - Incomplete folder sets cannot be burned; creation refuses output containing
-  either existing ISOs or any nonempty `discs/` tree. Keep folders and their
+  existing ISOs, any nonempty `discs/` tree, or a raw `disc/` / `manifest.json`. Keep folders and their
   manifest together and preserve permissions/mtimes when copying the set.
 - Review current workflow details in the wiki; statements below about mandatory
   ISO assembly, `images/`-only discovery and no connecting manifest describe

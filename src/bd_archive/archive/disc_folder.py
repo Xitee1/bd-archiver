@@ -2,6 +2,7 @@
 
 import errno
 import json
+import os
 import shutil
 import stat
 from dataclasses import dataclass
@@ -14,6 +15,13 @@ from bd_archive.ui.logger import log
 from bd_archive.ui.progress import copy_with_progress
 
 MANIFEST = "manifest.json"
+# A raw run writes one disc: <output>/disc/ beside <output>/manifest.json.
+# DAR sets keep numbered folders: <output>/discs/disc_NNNN/ and discs/manifest.json.
+SINGLE_DISC = "disc"
+
+
+def _expected_names(count: int, single: bool) -> list[str]:
+    return [SINGLE_DISC] if single else [f"disc_{i:04d}" for i in range(1, count + 1)]
 
 
 def check_output_available(output: Path) -> None:
@@ -22,7 +30,12 @@ def check_output_available(output: Path) -> None:
     discs = output / "discs"
     if discs.exists() and not discs.is_dir():
         raise ValueError(f"Disc output path is not a directory: {discs}")
-    if list(images.glob("disc_*.iso")) or (discs.exists() and any(discs.iterdir())):
+    if (
+        list(images.glob("disc_*.iso"))
+        or (discs.exists() and any(discs.iterdir()))
+        or os.path.lexists(output / SINGLE_DISC)
+        or os.path.lexists(output / MANIFEST)
+    ):
         raise ValueError(f"{output} already contains disc output; choose another output directory")
 
 
@@ -150,10 +163,14 @@ def prepare_folder(
 
 
 def save_disc_set(discs_dir: Path, folders: list[DiscFolder]) -> None:
-    """Publish the complete set only after every disc passed its size check."""
+    """Publish the complete set only after every disc passed its size check.
+
+    A single disc may be named ``disc``; sets use ``disc_NNNN`` from 1.
+    """
     data = {"version": 1, "discs": []}
-    for i, folder in enumerate(folders, 1):
-        if folder.root != discs_dir / f"disc_{i:04d}":
+    single = len(folders) == 1 and folders[0].root.name == SINGLE_DISC
+    for folder, name in zip(folders, _expected_names(len(folders), single), strict=True):
+        if folder.root != discs_dir / name:
             raise ValueError("Disc folders must be numbered consecutively from 1")
         folder.check_unchanged()
         data["discs"].append(
@@ -181,8 +198,10 @@ def load_disc_set(discs_dir: Path) -> list[DiscFolder]:
         if data["version"] != 1 or not isinstance(data["discs"], list) or not data["discs"]:
             raise ValueError("unsupported version or empty disc list")
         folders = []
-        for i, item in enumerate(data["discs"], 1):
-            if item["directory"] != f"disc_{i:04d}":
+        single = len(data["discs"]) == 1 and data["discs"][0].get("directory") == SINGLE_DISC
+        names = _expected_names(len(data["discs"]), single)
+        for item, name in zip(data["discs"], names, strict=True):
+            if item["directory"] != name:
                 raise ValueError("invalid disc sequence")
             if (
                 not isinstance(item["volume_label"], str)
@@ -204,6 +223,8 @@ def load_disc_set(discs_dir: Path) -> list[DiscFolder]:
                 )
             )
         actual = set(discs_dir.glob("disc_*"))
+        if (discs_dir / SINGLE_DISC).exists():
+            actual.add(discs_dir / SINGLE_DISC)
         if actual != {folder.root for folder in folders}:
             raise ValueError("missing or unexpected disc folders")
         return folders

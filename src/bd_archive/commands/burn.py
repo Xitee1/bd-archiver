@@ -12,7 +12,7 @@ from bd_archive.archive.disc import (
     iso_volume_label,
     wait_for_burned_disc,
 )
-from bd_archive.archive.disc_folder import DiscFolder, load_disc_set
+from bd_archive.archive.disc_folder import SINGLE_DISC, DiscFolder, load_disc_set
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.archive.verify import verify_disc
 from bd_archive.constants import DISC_OVERSIZE_TOLERANCE
@@ -35,7 +35,8 @@ def cmd_burn(args):
     images_dir = input_dir / "images"
 
     isos = sorted(images_dir.glob("disc_*.iso"))
-    discs_dir = input_dir / "discs"
+    # A raw run's single disc sits directly in the output; DAR sets use discs/.
+    discs_dir = input_dir if (input_dir / SINGLE_DISC).exists() else input_dir / "discs"
     folders = []
     if discs_dir.exists() and not discs_dir.is_dir():
         raise ValueError(f"Disc output path is not a directory: {discs_dir}")

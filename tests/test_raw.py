@@ -626,7 +626,7 @@ class RawIntegrationTests(unittest.TestCase):
             cmd_create(self.args("-y", "--attach", str(self.info)))
         hash_file.assert_not_called()
         self.assertIn("reflinked 0 B; hardlinked 0 B; copied", messages.getvalue())
-        disc = self.output / "discs/disc_0001"
+        disc = self.output / "disc"
         self.assertNotEqual(
             (disc / "Media" / self.movie).stat().st_ino, (self.source / self.movie).stat().st_ino
         )
@@ -648,7 +648,7 @@ class RawIntegrationTests(unittest.TestCase):
             "Source unchanged: the next run plans these units again.", messages.getvalue()
         )
         self.assertEqual(unchanged(scan_raw_source(self.source)), unchanged(before))
-        disc = self.output / "discs/disc_0001"
+        disc = self.output / "disc"
         archived = {p.name for p in (disc / "Media").iterdir()}
         self.assertTrue(archived)
         self.assertLess(len(archived), len(list(self.source.iterdir())))
@@ -661,7 +661,7 @@ class RawIntegrationTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()) as messages,
         ):
             cmd_create(self.args("--attach", str(self.info)))
-        disc = self.output / "discs/disc_0001"
+        disc = self.output / "disc"
         archived = {p.name for p in (disc / "Media").iterdir()}
         self.assertIn(
             f"Removed {len(archived)} archived units from the source", messages.getvalue()

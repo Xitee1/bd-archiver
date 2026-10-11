@@ -200,7 +200,7 @@ class ReflinkFilesystemTests(unittest.TestCase):
         )
         self.assertIn("reflinked 1.0 MiB; hardlinked 0 B; copied 0 B", messages)
         (source / "payload").write_bytes(b"changed original")
-        disc = output / "discs/disc_0001"
+        disc = output / "disc"
         self.cli("verify", disc)
         self.assertEqual((disc / "Test" / "payload").read_bytes(), b"A" * (1024 * 1024))
         self.assertTrue((disc / "Test" / "empty directory").is_dir())

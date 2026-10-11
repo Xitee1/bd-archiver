@@ -14,6 +14,7 @@ from pathlib import Path
 from bd_archive import __version__
 from bd_archive.archive.content_dates import ContentDate, scan_dates
 from bd_archive.archive.disc_folder import (
+    SINGLE_DISC,
     DiscFolder,
     check_output_available,
     save_disc_set,
@@ -274,7 +275,8 @@ def _create_raw(args):
         getattr(args, "attach", None) or [], source, (output, work), args.name
     )
     check_output_available(output)
-    images = output / ("images" if args.iso else "discs")
+    # Folder output: the disc and its manifest directly in the output directory.
+    images = output / "images" if args.iso else output
 
     by_content = order_by == "content-date"
     deps = ["mkisofs"]
@@ -501,7 +503,7 @@ def _create_raw(args):
             root = staging / "disc"
         else:
             images.mkdir(parents=True, exist_ok=True)
-            root = images / "disc_0001"
+            root = images / SINGLE_DISC
         check_space(root, items)
         root.mkdir()
         if staging is None:
@@ -624,7 +626,7 @@ def _create_raw(args):
             with contextlib.suppress(OSError):
                 output.rmdir()
 
-    disc_path = images / ("disc_0001.iso" if args.iso else "disc_0001")
+    disc_path = images / ("disc_0001.iso" if args.iso else SINGLE_DISC)
     log.ok(f"Raw disc ready: {disc_path} ({human_bytes(iso_size)})")
     log.blank()
     if args.yes:
