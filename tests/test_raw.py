@@ -60,7 +60,7 @@ class RawValidationTests(unittest.TestCase):
             ):
                 cmd_create(args)
             self.assertEqual(args.mode, "raw")
-            self.assertIsNone(args.redundancy)
+            self.assertEqual(args.redundancy.label, "5%")
             self.assertIsNone(args.compression)
             raw.assert_called_once_with(args)
             deps.assert_not_called()
@@ -460,15 +460,35 @@ class RawIntegrationTests(unittest.TestCase):
         (metadata / "recovery.par2").unlink()
         self.cli("verify", restored, expected=2)
 
-    def test_default_keeps_five_percent_and_fills_free_space(self):
+    def redundancy(self, iso, name):
+        readme = (self.unpack(iso, name) / "README.txt").read_text()
+        match = re.search(r"Redundancy: ([\d.]+)%", readme)
+        return None if match is None else float(match[1])
+
+    def test_redundancy_is_exact_unless_free_space_is_filled(self):
         result = self.create(auto=True)
-        self.assertRegex(result.stdout, r"Redundancy\s+: at least 5%; free space adds more")
+        self.assertRegex(result.stdout, r"Redundancy\s+: 5%\n")
         iso = self.output / "images/disc_0001.iso"
-        self.assertGreater(iso.stat().st_size, 8_900_000)
-        self.assertLessEqual(disc_write_bytes(iso.stat().st_size), 10_000_000 - DISC_END_MARGIN)
-        readme = (self.unpack(iso) / "README.txt").read_text()
-        redundancy = float(re.search(r"Redundancy: ([\d.]+)%", readme)[1])
-        self.assertGreater(redundancy, 5)
+        self.assertLess(iso.stat().st_size, 2_000_000)
+        exact = self.redundancy(iso, "exact")
+        self.assertGreaterEqual(exact, 5)
+        self.assertLess(exact, 7)
+        for minimum in ("5", "0"):
+            self.output = self.root / f"fill-{minimum}"
+            result = self.create("-r", minimum, "--fill-recovery", auto=True)
+            self.assertRegex(
+                result.stdout,
+                rf"Redundancy\s+: {minimum}%; free space adds more \(--fill-recovery\)",
+            )
+            iso = self.output / "images/disc_0001.iso"
+            self.assertGreater(iso.stat().st_size, 8_900_000)
+            self.assertLessEqual(disc_write_bytes(iso.stat().st_size), 10_000_000 - DISC_END_MARGIN)
+            self.assertGreater(self.redundancy(iso, f"filled-{minimum}"), 5)
+
+    def test_fill_recovery_cannot_be_combined_with_none(self):
+        result = self.create("-r", "none", "--fill-recovery", auto=True, expected=1)
+        self.assertIn("cannot be combined with -r none", result.stdout + result.stderr)
+        self.assertFalse(self.output.exists())
 
     def test_nearly_full_disc_needs_room_for_minimum_recovery(self):
         with (self.source / self.movie).open("wb") as movie:
@@ -495,11 +515,21 @@ class RawIntegrationTests(unittest.TestCase):
         self.assertIn("-m dar", result.stdout + result.stderr)
         self.assertFalse(self.output.exists())
         self.assertEqual(scan_raw_source(self.source), before)
-        # Without recovery data, the same disc fits.
-        self.create("-b", capacity, "-r", "none")
-        iso = self.output / "images/disc_0001.iso"
-        self.assertLessEqual(disc_write_bytes(iso.stat().st_size), capacity - DISC_END_MARGIN)
-        self.assertGreater(disc_write_bytes(iso.stat().st_size), capacity - 2 * MiB)
+        # Without recovery data, the same disc fits. Filling the little free
+        # space left would add too little recovery data and is skipped.
+        for options in (["-r", "none"], ["-r", "0", "--fill-recovery"]):
+            self.output = self.root / f"fits-{options[1]}"
+            result = self.create("-b", capacity, *options)
+            iso = self.output / "images/disc_0001.iso"
+            self.assertLessEqual(disc_write_bytes(iso.stat().st_size), capacity - DISC_END_MARGIN)
+            self.assertGreater(disc_write_bytes(iso.stat().st_size), capacity - 2 * MiB)
+            readme = (self.unpack(iso, f"readme-{options[1]}") / "README.txt").read_text()
+            self.assertIn("RECOVERY:     None", readme)
+        self.assertRegex(
+            result.stdout,
+            r"Filling free space would add only .* recovery data "
+            r"\(below 0\.5% of the disc's data\); skipped\.",
+        )
 
     def test_par2_size_model_bounds_real_packet_sizes(self):
         from bd_archive.tools import par2

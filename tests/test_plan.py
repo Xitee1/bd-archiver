@@ -378,7 +378,7 @@ class FilesystemTests(unittest.TestCase):
         text = captured.getvalue()
         self.assertRegex(text, r"Order\s+: name")
         self.assertRegex(text, r"Max free\s+: unlimited")
-        self.assertRegex(text, r"Redundancy\s+: at least 5%; free space adds more")
+        self.assertRegex(text, r"Redundancy\s+: 5%\n")
         self.assertNotIn("Reserve", text)
         self.assertNotIn("Files with metadata", text)
         for number, strategy in enumerate(STRATEGIES, 1):

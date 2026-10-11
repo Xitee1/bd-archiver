@@ -35,10 +35,8 @@ extra disc; with `--max-free`, plans meeting the limit rank first and
 up to 200 units) and builds only the plan's first disc (the group with the
 earliest unit). The preview shows this disc, the remaining data and further
 discs. `--max-free` permits deferring a suffix in fill order and limits the
-unused data budget on every disc of a plan. `-r` is the only space option:
-without it plans reserve 5% recovery (`DEFAULT_RECOVERY`) and creation fills the
-remaining free space with more PAR2 (never below that minimum); explicit `-r`
-is exact; `-r none` reserves nothing. `--attach PATH` (repeatable) puts files or
+unused data budget on every disc of a plan. Plans reserve exactly the `-r`
+recovery (default 5%); `-r 0`/`none` reserve nothing. `--attach PATH` (repeatable) puts files or
 folders outside the source at the disc root on every disc; they are never
 removed and use reflink or verified copy, never hardlinks. `archive/plan_sizing.py`
 measures a candidate disc with sparse stand-ins in the final v3 layout
@@ -134,7 +132,7 @@ pip install -e '.[dev]'
 ```
 
 ```bash
-bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r PERCENT|SIZE|none] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [--group-by depth:N|depth:inf] [--order-by name|mtime|content-date] [--max-free PERCENT|SIZE] [--attach PATH]... [-y]
+bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r PERCENT|SIZE|none] [--fill-recovery] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [--group-by depth:N|depth:inf] [--order-by name|mtime|content-date] [--max-free PERCENT|SIZE] [--attach PATH]... [-y]
 bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--no-close-tray] [--skip-fit-check] [-S <speed>]
 bd-archive verify   [<mountpoint|dir|/dev/srN|*.iso>]
 bd-archive extract  -o <output> [-D /dev/srN | -i <iso|dir>...] [-w <workdir>]
@@ -155,7 +153,7 @@ External binaries required at runtime, enforced per-subcommand via `check_deps()
 
 `udisksctl` is also used as a Polkit-based mount fallback in `DiscIO.mount` when plain `mount` fails (no permission). `mount`, `umount`, `eject` are NOT enforced — assumed to be present as part of util-linux. `lsof` is optional, used by `tools.lsof.find_device_holders` for diagnostics when the burn device is busy; gracefully no-ops if missing. Python dep: `argcomplete>=3.0` (pulled via `pyproject.toml`, used for shell tab-completion).
 
-`create -r 0` and `create -r none` skip PAR2 generation and its dependency in both modes, retaining SHA-512 checksums. The omitted-option defaults are at least 5% plus the remaining free space in raw mode and 5% in DAR mode. `-r` accepts a whole percentage or a fixed size per disc (`500M`, `2G`); `archive/share.py` parses `-r` and `--max-free` alike, and DAR slices get fixed sizes through explicit PAR2 block counts in `_par2_helper`.
+`create -r 0` and `create -r none` skip PAR2 generation and its dependency in both modes, retaining SHA-512 checksums. The omitted-option default is 5% in both modes (set in `cmd_create`); `-r` is exact and the rest of each disc stays free. `--fill-recovery` (both modes) additionally fills each disc's free space with PAR2, skipped with a `fill_skipped_message` notice when it would add less than 0.5% of the disc's data (`share.fill_worthwhile`, `FILL_MIN_PERMILLE`). `-r 0 --fill-recovery` fills only free space; `-r none --fill-recovery` is rejected. Raw fills via `_plan_auto_recovery` (sparse placeholders measured with mkisofs, at least the `-r` blocks). DAR uses one rule for every slice, inside the `-E` hook right after the slice is written: `sizing.dar_recovery_bytes(actual slice size, slice_available(...), minimum, fill)` with `dar_fill_layout` counting 68-byte packet headers; the hook gets the per-disc budget through `BD_ARCHIVE_SLICE_AVAILABLE`/`BD_ARCHIVE_FIRST_SLICE_AVAILABLE`, so PAR2 is still computed once per slice from the page cache. The slice-sizing reserve (catalog estimate + `PAR2_AND_MISC_OVERHEAD`) stays unused; the final fit check remains the gate. `-r` accepts a whole percentage or a fixed size per disc (`500M`, `2G`); `archive/share.py` parses `-r` and `--max-free` alike, and DAR slices get fixed sizes through explicit PAR2 block counts in `_par2_helper`.
 
 `verify` exits with `VerifyResult.value` (0=OK, 1=REPAIRABLE, 2=BROKEN) — useful for scripting. Without PAR2, it falls back to SHA-512. Missing, empty or malformed checksums and missing or damaged payloads are BROKEN (exit 2): "nothing verifiable" must not pass, e.g. when the wrong disc is mounted. SHA-512 cannot repair data. `extract` exits with `1` whenever it wrote a `corrupted-files.txt` (per-file Bad CRC from dar OR slices that failed sha512+par2), `0` on a fully clean restore.
 

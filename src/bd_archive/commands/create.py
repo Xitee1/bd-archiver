@@ -23,11 +23,14 @@ from bd_archive.archive.disc_folder import (
     tree_signature,
 )
 from bd_archive.archive.readme import write_readme
-from bd_archive.archive.share import parse_redundancy
+from bd_archive.archive.share import fill_skipped_message, parse_redundancy
 from bd_archive.archive.sizing import (
     compute_slice_bytes,
+    dar_fill_layout,
+    dar_recovery_bytes,
     disc_write_bytes,
     measure_compression_ratio,
+    slice_available,
 )
 from bd_archive.archive.source_scan import (
     SourceFile,
@@ -175,7 +178,22 @@ def _pack_graft_entries(pack_mount: Path) -> list[tuple[str, Path]]:
     return entries
 
 
+def _filled_redundancy(size: int, slice_size: int) -> str:
+    """Actual recovery of a slice extended by --fill-recovery, as created by the hook."""
+    block_size, count = dar_fill_layout(size, slice_size)
+    recovery = block_size * count
+    return f"{100 * recovery / slice_size:.2f}% ({human_bytes(recovery)})"
+
+
 def cmd_create(args):
+    fill = getattr(args, "fill_recovery", False)
+    if fill and args.redundancy is not None and args.redundancy.text.lower() == "none":
+        log.error(
+            "--fill-recovery cannot be combined with -r none; use -r 0 to fill free space only"
+        )
+        sys.exit(1)
+    if args.redundancy is None:
+        args.redundancy = parse_redundancy("5")
     if args.mode == "raw":
         _validate_name(args.name)
         if len(args.name) > ISO9660_VOLUME_LABEL_MAX - 5:
@@ -196,12 +214,10 @@ def cmd_create(args):
     if raw_only:
         log.error(f"DAR mode cannot be combined with {', '.join(raw_only)}; these require -m raw")
         sys.exit(1)
-    if args.redundancy is None:
-        args.redundancy = parse_redundancy("5")
     if args.compression is None:
         args.compression = "zstd"
     deps = ["dar", "mkisofs", "dvd+rw-mediainfo"]
-    if not args.redundancy.disabled:
+    if not args.redundancy.disabled or fill:
         deps.append("par2")
     if args.pack_with is not None and not Path(args.pack_with).is_dir():
         # --pack-with loop-mounts the leftover ISO via udisksctl.
@@ -504,8 +520,11 @@ def cmd_create(args):
     log.step("Disc layout")
     log.info(f"Disc capacity:    {human_bytes(raw_capacity)} (writable)")
     log.info(f"Slice size:       {human_bytes(slice_bytes)}")
-    log.info(f"PAR2 redundancy:  {cfg.redundancy.label} (~{human_bytes(par2_est)})")
-    if cfg.redundancy.disabled:
+    log.info(
+        f"PAR2 redundancy:  {cfg.redundancy.label} (~{human_bytes(par2_est)})"
+        + ("; free space adds more (--fill-recovery)" if fill else "")
+    )
+    if cfg.redundancy.disabled and not fill:
         log.info("PAR2 disabled; verification uses SHA-512 checksums.")
     log.info(f"Compression:      {cfg.comp_str} (ratio {ratio:.3f}, {ratio_source})")
     archive_kind = "delta vs base" if ref_catalog is not None else "full source"
@@ -577,11 +596,18 @@ def cmd_create(args):
     # digits and safe to pass inline.
     log.step("Creating dar archive")
     par2_hook = None
-    if not cfg.redundancy.disabled:
+    # Space for each slice and its recovery data; --fill-recovery uses the
+    # same rule for every finished slice (archive.sizing.dar_recovery_bytes).
+    available = slice_available(sizing_target, scan.catalog_est)
+    first_available = slice_available(sizing_target - pack_bytes, scan.catalog_est)
+    if not cfg.redundancy.disabled or fill:
         os.environ["BD_ARCHIVE_SLICE_DIR"] = str(tmp_dir)
         os.environ["BD_ARCHIVE_SLICE_BASENAME"] = cfg.dar_name
+        os.environ["BD_ARCHIVE_SLICE_AVAILABLE"] = str(available)
+        os.environ["BD_ARCHIVE_FIRST_SLICE_AVAILABLE"] = str(first_available)
         par2_hook = (
             f"{shlex.quote(sys.executable)} -m bd_archive._par2_helper %N {cfg.redundancy.text}"
+            + (" fill" if fill else "")
         )
     dar_archive.create(
         source,
@@ -630,10 +656,17 @@ def cmd_create(args):
         # par2 was already produced via the -E hook during dar create
         # (above). Verify the files are present — a missing file means
         # the helper silently failed on this slice.
-        par2_files = (
-            sorted(tmp_dir.glob(f"{slice_name}.*par2")) if not cfg.redundancy.disabled else []
+        base_recovery = cfg.redundancy.bytes_of(slice_size)
+        recovery_size = dar_recovery_bytes(
+            slice_size, first_available if i == 1 else available, cfg.redundancy, fill
         )
-        if not cfg.redundancy.disabled and not par2_files:
+        if fill and recovery_size == base_recovery:
+            space = (first_available if i == 1 else available) - slice_size
+            log.info(
+                f"Disc {i}/{slice_count}: {fill_skipped_message(max(0, space - base_recovery))}"
+            )
+        par2_files = sorted(tmp_dir.glob(f"{slice_name}.*par2")) if recovery_size else []
+        if recovery_size and not par2_files:
             log.error(
                 f"par2 files missing for {slice_name} "
                 f"(_par2_helper likely failed during dar create)"
@@ -660,11 +693,13 @@ def cmd_create(args):
             recovery={
                 "Format": "PAR2",
                 "Coverage": "DAR slice",
-                "Redundancy": cfg.redundancy.label,
+                "Redundancy": _filled_redundancy(recovery_size, slice_size)
+                if recovery_size > base_recovery
+                else cfg.redundancy.label,
                 "Index": f"{slice_name}.par2",
                 "Volumes": f"{slice_name}.vol*.par2",
             }
-            if not cfg.redundancy.disabled
+            if recovery_size
             else None,
             software=software,
         )
@@ -795,7 +830,10 @@ def cmd_create(args):
     print(f"\n  Source:       {human_bytes(scan.total_bytes)}")
     print(f"  Archive:      {human_bytes(total_archive)} ({ratio}%)")
     print(f"  Discs:        {slice_count} x {human_bytes(raw_capacity)}")
-    print(f"  PAR2:         {cfg.redundancy.label} per disc")
+    print(
+        f"  PAR2:         {cfg.redundancy.label} per disc"
+        + (", plus free space (--fill-recovery)" if fill else "")
+    )
     print(f"  Compression:  {cfg.comp_str}")
     log.info(f"Disc output:   {disc_output_dir}")
     print(f"  Catalog:      {output_dir}/{cfg.dar_name}-catalog.*.dar")

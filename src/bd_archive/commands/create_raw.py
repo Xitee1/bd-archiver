@@ -33,12 +33,13 @@ from bd_archive.archive.raw import (
     RawEntry,
     fixed_raw_recovery,
     is_reserved_root_name,
+    raw_par2_sizing,
     scan_attachment,
     scan_raw_source,
     write_raw_checksums,
 )
 from bd_archive.archive.readme import write_readme
-from bd_archive.archive.share import parse_redundancy, recovery_requested
+from bd_archive.archive.share import fill_skipped_message, fill_worthwhile
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.archive.staging import StageItem, check_space, check_unit, remove_units, stage
 from bd_archive.constants import (
@@ -57,9 +58,6 @@ from bd_archive.tools.optical import resolve_device
 from bd_archive.tools.software import software_info
 from bd_archive.ui.logger import log
 from bd_archive.ui.prompts import prompt_yn, styled_input
-
-# Without -r, every plan keeps room for at least this much recovery data.
-DEFAULT_RECOVERY = parse_redundancy("5")
 
 PACKING_TEXT = {
     "efficient": "by size",
@@ -253,8 +251,10 @@ def _create_raw(args):
     group_by = getattr(args, "group_by", 1)
     order_by = getattr(args, "order_by", "name")
     max_free = getattr(args, "max_free", None)
-    recovery_enabled = recovery_requested(args.redundancy)
-    minimum = (args.redundancy or DEFAULT_RECOVERY) if recovery_enabled else None
+    # -r is the recovery every plan reserves; --fill-recovery may add more.
+    minimum = None if args.redundancy.disabled else args.redundancy
+    fill = getattr(args, "fill_recovery", False)
+    recovery_enabled = minimum is not None or fill
     if args.bytes is not None and args.bytes <= 0:
         raise ValueError("--bytes must be positive")
 
@@ -311,7 +311,7 @@ def _create_raw(args):
     hardlinks.check()
     attached_size = sum(e.size for e in attached if stat.S_ISREG(e.mode))
     total = sum(u.size for u in units)
-    if recovery_enabled and not total + attached_size:
+    if minimum is not None and not total + attached_size:
         raise ValueError("PAR2 needs at least one non-empty file; use -r none")
 
     publisher = f"bd-archive v{__version__}"
@@ -331,12 +331,13 @@ def _create_raw(args):
     if attachments:
         field("Attachments", f"{len(attachments)} ({human_bytes(attached_size)})")
     field("Disc capacity", human_bytes(capacity))
-    if minimum is None:
+    if not recovery_enabled:
         field("Redundancy", "none (SHA-512 checksums only)")
-    elif args.redundancy is None:
-        field("Redundancy", f"at least {minimum.label}; free space adds more")
     else:
-        field("Redundancy", minimum.label)
+        field(
+            "Redundancy",
+            args.redundancy.label + ("; free space adds more (--fill-recovery)" if fill else ""),
+        )
     field("Max free", max_free.label if max_free else "unlimited")
 
     # Fast search budget for unit data; every offered plan gets a precise sparse-tree check.
@@ -529,10 +530,19 @@ def _create_raw(args):
         write_raw_checksums(root, disc_inventory, metadata / RAW_CHECKSUMS, digests=digests)
         check_payload("hashing")
         recovery = None
-        if minimum is not None:
-            sizing, blocks = fixed_raw_recovery(disc_inventory, capacity, payload_iso_size, minimum)
-            if args.redundancy is None:
-                blocks = _plan_auto_recovery(
+        data = sum(e.size for e in disc_inventory if stat.S_ISREG(e.mode))
+        blocks = 0
+        if recovery_enabled and data:
+            if minimum is not None:
+                sizing, blocks = fixed_raw_recovery(
+                    disc_inventory, capacity, payload_iso_size, minimum
+                )
+            else:
+                sizing = raw_par2_sizing(
+                    disc_inventory, capacity, max(1, capacity - payload_iso_size)
+                )
+            if fill:
+                best = _plan_auto_recovery(
                     metadata,
                     entries,
                     label,
@@ -541,8 +551,13 @@ def _create_raw(args):
                     capacity - layout.readme_bytes,
                     blocks,
                 )
+                extra = max(0, best - blocks) * sizing.block_size
+                if fill_worthwhile(extra, data):
+                    blocks = best
+                else:
+                    log.info(fill_skipped_message(extra))
+        if blocks:
             recovery_bytes = blocks * sizing.block_size
-            data = sum(e.size for e in disc_inventory if stat.S_ISREG(e.mode))
             roots = sorted(
                 {e.path.split("/")[0] for e in disc_inventory if stat.S_ISREG(e.mode) and e.size}
             )

@@ -123,8 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PERCENT|SIZE|none",
         help="PAR2 recovery data per disc: a percentage of the data (5) or a fixed size "
-        "(500M, 2G); 0 or none skips PAR2 (default: raw keeps room for at least 5 and fills "
-        "the remaining free space; dar: 5)",
+        "(500M, 2G); 0 or none skips PAR2 (default: 5)",
+    )
+    common.add_argument(
+        "--fill-recovery",
+        action="store_true",
+        help="Also fill each disc's remaining free space with PAR2 recovery data; skipped "
+        "on a disc where it would add less than 0.5%% of its data. Combine with -r 0 to "
+        "use only the free space; not allowed with -r none.",
     )
     common.add_argument(
         "-D",

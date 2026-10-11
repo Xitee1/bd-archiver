@@ -6,6 +6,7 @@ import errno
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -300,10 +301,28 @@ class DiscFolderIntegrationTests(unittest.TestCase):
 
     def test_raw_automatic_recovery_folder_fits_capacity(self):
         output = self.root / "auto"
-        folder = self.create("raw", output)[0]
+        folder = self.create("raw", output, "--fill-recovery")[0]
         self.assertGreater(folder.image_bytes, 8_900_000)
         self.assertLessEqual(folder.image_bytes, 10_000_000)
         self.cli("verify", folder.root)
+
+    def test_dar_fill_recovery_fills_free_space_and_still_fits(self):
+        for minimum in ("5", "0"):
+            output = self.root / f"dar-fill-{minimum}"
+            with self.subTest(minimum=minimum):
+                folders = self.create("dar", output, "-r", minimum, "--fill-recovery")
+                self.assertEqual(len(folders), 2)
+                for folder in folders:
+                    readme = (folder.root / "Test-gen1" / "README.txt").read_text()
+                    redundancy = float(re.search(r"Redundancy: ([\d.]+)%", readme)[1])
+                    self.assertGreater(redundancy, 5)
+                    self.assertLessEqual(folder.image_bytes, 10_000_000)
+                    self.cli("verify", folder.root)
+                restored = self.root / f"restored-fill-{minimum}"
+                self.cli("extract", "--input", output, "-o", restored)
+                self.assertEqual(
+                    (restored / "payload").read_bytes(), (self.source / "payload").read_bytes()
+                )
 
     def test_restore_workdir_cannot_change_input_folder(self):
         (self.source / "payload").write_bytes(b"small archive")
