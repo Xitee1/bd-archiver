@@ -11,5 +11,8 @@ def check_deps(*commands: str):
         print("  Arch:   pacman -Syu dar par2cmdline dvd+rw-tools cdrtools")
         print("  Debian: apt install dar par2 growisofs genisoimage")
         if "exiftool" in missing:
-            print("  ExifTool (prepare): Arch: perl-image-exiftool; Debian: libimage-exiftool-perl")
+            print(
+                "  ExifTool (create --order-by content-date): "
+                "Arch: perl-image-exiftool; Debian: libimage-exiftool-perl"
+            )
         sys.exit(1)

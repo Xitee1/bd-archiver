@@ -23,36 +23,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current output workflow: disc folders by default
 
-`prepare` is a separate, stateless raw-source splitter. It groups whole units
+Raw `create` (`commands/create_raw.py`) plans and builds **one disc per run**;
+there is no separate `prepare` command. It groups whole units
 (`--group-by depth:N|depth:inf`), fills discs in `--order-by name|mtime|content-date`
-order (default `name`; `archive/prepare.py:disorder` scores departures in positions
-or nanoseconds), always offers three plans (`efficient` size-first packing,
-`balanced` in-order packing with backfilling, `ordered` strict sequence; each row
-falls back to a more ordered packing that needs no extra disc; with `--max-free`,
-plans meeting the limit rank first and `prepare.py:fill` gives `efficient` a
-bounded exact search for the most ordered one, up to 200 units), and moves selected
-units into ordinary `disc_NNNN/` source directories only after a default-no
-confirmation. `--max-free` permits deferring a suffix in fill order and limits the
-unused data budget on every disc. `-r/--reserve` (default 5% of the capacity) keeps part
-of every disc free, which raw `create` without `-r` fills with PAR2 recovery data after
-any files added before `create`; `prepare` has no redundancy option. There is no saved plan,
-history, dry-run flag, confirmation bypass or
-automatic resume. Each resulting source is passed separately to the existing
-single-disc raw `create` command; preparation output is not burn-ready.
-`archive/prepare*.py` implements planning, sparse filesystem sizing and exclusive
-moves with verified cross-filesystem copies and a free-space preflight. Sizing
-reserves the PAR2 index plus one recovery block per disc with non-empty files; printed
-`create` commands add `-r none` only for discs without non-empty files. See the wiki's
-`Preparing-raw-discs` page for the complete workflow and limitations.
+order (default `name`; `archive/plan.py:disorder` scores departures in positions
+or nanoseconds), always offers three plans for the whole source (`efficient`
+size-first packing, `balanced` in-order packing with backfilling, `ordered`
+strict sequence; each row falls back to a more ordered packing that needs no
+extra disc; with `--max-free`, plans meeting the limit rank first and
+`plan.py:fill` gives `efficient` a bounded exact search for the most ordered one,
+up to 200 units) and builds only the plan's first disc (the group with the
+earliest unit). Each plan block describes this disc (units, data, range, free
+space, `Recovery (fixed)`, with `--fill-recovery` also `Recovery (fill)` and
+`Recovery (total)`, estimated size), the remaining data
+and further discs; `plan_sizing.plan_recovery` and creation share
+`choose_recovery`, so the preview shows the recovery creation writes. `--max-free` permits deferring a suffix in fill order and limits the
+unused data budget on every disc of a plan. Plans reserve exactly the `-r`
+recovery (default 5%); `-r 0`/`none` reserve nothing. `--attach PATH` (repeatable) puts files or
+folders outside the source at the disc root on every disc; they are never
+removed and use reflink or verified copy, never hardlinks. `archive/plan_sizing.py`
+measures a candidate disc with sparse stand-ins in the final v3 layout
+(payload, attachments, checksums, README allowance, minimum recovery).
+`archive/staging.py` builds the disc tree after a default-no `Create this disc?`
+confirmation: reflink, else hardlink (units only), else `copy_verified` (whose
+SHA-512 is reused for the manifest). The source is unchanged until the final
+default-no `Remove the N archived units from the source?` prompt; `-y` selects the
+most ordered plan and never removes source files. Any failure before
+publication removes everything created under the output. `remove_units` checks
+all selected units (ignoring ctime, which hardlinking changes) before unlinking
+and removes emptied grouping ancestors, never the source root. No plan, history
+or numbering is stored; output is always `<output>/disc/` with `<output>/manifest.json`
+(`disc_folder.SINGLE_DISC`; `burn` treats it like `disc_0001`), or `images/disc_0001.iso`.
+Raw-only options are rejected with `-m dar`. See the wiki's `Raw-data-discs` and
+`Planning-raw-discs` pages.
 `--order-by content-date` requires ExifTool: `archive/content_dates.py` resolves whitelisted
 recording/original dates, then release dates, then file mtime. Container/muxing
 dates are excluded by tag IDs, including Matroska's misleading DateTimeOriginal
 ID 1121. `tools/exiftool.py` reads metadata in bounded batches without user config
 or stream extraction. Unit dates are size-weighted medians (earlier on exact ties);
-previews count mtime fallbacks and show media date ranges per disc.
+previews count mtime fallbacks and show the media date range of the disc.
 Unknown-zone content dates and displayed ranges use UTC. Files remain unchanged.
 
-`create` now prepares self-contained `discs/disc_NNNN/` folders. `create --iso`
+`create` now prepares self-contained disc folders: raw `disc/` plus `manifest.json`
+directly in the output, DAR `discs/disc_NNNN/` plus `discs/manifest.json`. `create --iso`
 selects the original `images/disc_NNNN.iso` workflow described in detail below.
 This output choice is independent of `-m raw|dar`.
 
@@ -70,12 +83,14 @@ The error names the conflicting relative paths before archive/recovery creation.
   for folders and ISOs, as does raw recovery planning. Manifest `image_bytes`
   remains the unpadded filesystem size; older manifests need no migration.
 - DAR slices/recovery move from scratch without rewriting on the same filesystem;
-  cross-filesystem workdirs require copies. Non-moved files, including raw
-  payload and packed archive files, try a reflink before a normal progress copy.
-  `tools/reflink.py` preserves metadata and propagates I/O/storage/permission errors;
-  only unsupported cloning falls back. Per-disc totals report logical bytes
-  reflinked, copied and moved. User sources/packed archives are never moved or
-  hard-linked. Restore staging and optional ISO output retain their existing paths.
+  cross-filesystem workdirs require copies. Non-moved DAR files, including packed
+  archive files, try a reflink before a normal progress copy. Raw payload uses
+  `archive/staging.py` instead (reflink, hardlink, verified copy; totals report
+  reflinked, hardlinked and copied). `tools/reflink.py` preserves metadata and
+  propagates I/O/storage/permission errors; only unsupported cloning falls back.
+  DAR totals report logical bytes reflinked, copied and moved. Packed archives are
+  never moved or hard-linked. Restore staging and optional ISO output retain
+  their existing paths.
 - `burn` reads folders plus the manifest, or legacy ISOs. Folder burns require
   `mkisofs`, remeasure after the insertion prompt, reject changed file metadata,
   and stream the filesystem through growisofs with the same options/backend.
@@ -94,7 +109,7 @@ The error names the conflicting relative paths before archive/recovery creation.
   or ISO files (`--iso` remains an alias). Only ISO inputs need `udisksctl`.
   `--pack-with` likewise accepts an individual DAR folder or ISO.
 - Incomplete folder sets cannot be burned; creation refuses output containing
-  either existing ISOs or any nonempty `discs/` tree. Keep folders and their
+  existing ISOs, any nonempty `discs/` tree, or a raw `disc/` / `manifest.json`. Keep folders and their
   manifest together and preserve permissions/mtimes when copying the set.
 - Review current workflow details in the wiki; statements below about mandatory
   ISO assembly, `images/`-only discovery and no connecting manifest describe
@@ -122,7 +137,7 @@ pip install -e '.[dev]'
 ```
 
 ```bash
-bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r PERCENT|SIZE|none] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [-y]
+bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r PERCENT|SIZE|none] [--fill-recovery] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [--group-by depth:N|depth:inf] [--order-by name|mtime|content-date] [--max-free PERCENT|SIZE] [--attach PATH]... [-y]
 bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--no-close-tray] [--skip-fit-check] [-S <speed>]
 bd-archive verify   [<mountpoint|dir|/dev/srN|*.iso>]
 bd-archive extract  -o <output> [-D /dev/srN | -i <iso|dir>...] [-w <workdir>]
@@ -136,14 +151,14 @@ bd-archive extract  -o <output> [-D /dev/srN | -i <iso|dir>...] [-w <workdir>]
 
 External binaries required at runtime, enforced per-subcommand via `check_deps()`:
 - `create -m dar`: `dar`, `par2`, `mkisofs`, `dvd+rw-mediainfo`, plus `udisksctl` when `--pack-with` is used (loop-mounts the leftover ISO)
-- `create -m raw`: `par2`, `mkisofs`, plus `dvd+rw-mediainfo` only without `-b`; no dar dependency
+- `create -m raw`: `par2`, `mkisofs`, plus `dvd+rw-mediainfo` only without `-b` and `exiftool` only with `--order-by content-date`; no dar dependency
 - `burn`: `growisofs`, `dvd+rw-mediainfo`
 - `verify`: `par2` only when PAR2 indices exist; otherwise SHA-512 runs in Python. ISO files additionally require `udisksctl` (loop-mount).
 - `extract`: `dar`, `par2`, plus `udisksctl` when `-i/--iso` is used (loop-mounts each image)
 
 `udisksctl` is also used as a Polkit-based mount fallback in `DiscIO.mount` when plain `mount` fails (no permission). `mount`, `umount`, `eject` are NOT enforced — assumed to be present as part of util-linux. `lsof` is optional, used by `tools.lsof.find_device_holders` for diagnostics when the burn device is busy; gracefully no-ops if missing. Python dep: `argcomplete>=3.0` (pulled via `pyproject.toml`, used for shell tab-completion).
 
-`create -r 0` and `create -r none` skip PAR2 generation and its dependency in both modes, retaining SHA-512 checksums. The omitted-option defaults remain automatic recovery in raw mode and 5% in DAR mode. `-r` accepts a whole percentage or a fixed size per disc (`500M`, `2G`); `archive/share.py` parses `-r`, `--reserve` and `--max-free` alike, and DAR slices get fixed sizes through explicit PAR2 block counts in `_par2_helper`.
+`create -r 0` and `create -r none` skip PAR2 generation and its dependency in both modes, retaining SHA-512 checksums. The omitted-option default is 5% in both modes (set in `cmd_create`); `-r` is exact and the rest of each disc stays free. `--fill-recovery` (both modes) additionally fills each disc's free space with PAR2, skipped with a `fill_skipped_message` notice when it would add less than 0.5% of the disc's data (`share.fill_worthwhile`, `FILL_MIN_PERMILLE`). `-r 0 --fill-recovery` fills only free space; `-r none --fill-recovery` is rejected. Raw fills via `_plan_auto_recovery` (sparse placeholders measured with mkisofs, at least the `-r` blocks). DAR uses one rule for every slice, inside the `-E` hook right after the slice is written: `sizing.dar_recovery_bytes(actual slice size, slice_available(...), minimum, fill)` with `dar_fill_layout` counting 68-byte packet headers; the hook gets the per-disc budget through `BD_ARCHIVE_SLICE_AVAILABLE`/`BD_ARCHIVE_FIRST_SLICE_AVAILABLE`, so PAR2 is still computed once per slice from the page cache. The slice-sizing reserve (catalog estimate + `PAR2_AND_MISC_OVERHEAD`) stays unused; the final fit check remains the gate. `-r` accepts a whole percentage or a fixed size per disc (`500M`, `2G`); `archive/share.py` parses `-r` and `--max-free` alike, and DAR slices get fixed sizes through explicit PAR2 block counts in `_par2_helper`.
 
 `verify` exits with `VerifyResult.value` (0=OK, 1=REPAIRABLE, 2=BROKEN) — useful for scripting. Without PAR2, it falls back to SHA-512. Missing, empty or malformed checksums and missing or damaged payloads are BROKEN (exit 2): "nothing verifiable" must not pass, e.g. when the wrong disc is mounted. SHA-512 cannot repair data. `extract` exits with `1` whenever it wrote a `corrupted-files.txt` (per-file Bad CRC from dar OR slices that failed sha512+par2), `0` on a fully clean restore.
 
@@ -174,11 +189,16 @@ src/bd_archive/
 │   ├── config.py       # ArchiveConfig (incl. generation, dar_name), write_readme
 │   ├── dar_archive.py  # DarArchive (slices, catalog, work-dir layout) + parse_dar_filename (chain/gen detection) + dar_basename + find_disc_archives/DiscArchive (foldered vs legacy-flat disc discovery)
 │   ├── disc.py         # DiscIO (mount/mount_with_retry/umount/eject/burn) + wait_for_burned_disc/iso_volume_label + find_sg_device + loop_mounted/LoopMountError (shared ISO loop-mount ctx used by create --pack-with, verify <iso>, extract --iso)
+│   ├── plan.py         # raw units (make_units), fill orders, three-strategy planner (proposals/fill/improve), disorder score
+│   ├── plan_sizing.py  # DiscLayout + measure(): sparse-tree size of one candidate raw disc in the v3 layout
+│   ├── raw.py          # raw inventory (scan_raw_source/scan_attachment), checksum manifest, PAR2 sizing, reserved root names
+│   ├── staging.py      # raw disc tree: reflink/hardlink/verified copy (stage), space check, remove_units
 │   ├── sizing.py       # compute_slice_bytes, measure_compression_ratio
 │   ├── source_scan.py  # SourceScan + scan_source; SourceFile + list_source_files (auto-defer pool); scan_delta_bytes (incremental preview)
 │   └── verify.py       # verify_disc()
 └── commands/           # one file per subcommand
-    ├── create.py
+    ├── create.py       # dispatch; DAR creation
+    ├── create_raw.py   # raw planning preview, disc build, source cleanup prompt
     ├── burn.py
     ├── verify.py
     └── extract.py
@@ -188,7 +208,7 @@ Layering: `commands/` → `archive/` → `tools/` → `shell/`. Lower layers nev
 
 ## Architecture (v5: build-then-burn separation)
 
-**Raw single-disc mode (default):** `create` / `create -m raw` dispatches to `commands/create_raw.py` before dar dependency checks. `archive/raw.py` inventories regular files/directories, rejecting links, special files and line-break filenames; stat signatures detect source changes during creation. The source folder is grafted as `<source.name>/` at the disc root with UDF + ISO9660/Rock Ridge. README, `checksums.sha512`, `recovery.par2` and recovery volumes sit beside it at the root; `.bd-archive-raw-v2` identifies this layout. The source folder name must not collide with these metadata names (case-insensitive), but metadata-like names inside the source are ordinary payload. Checksums and PAR2 record disc-relative paths including the source folder name. `par2 create -B<source.parent> -R ... <source>/*` protects only the selected source tree, without staging payload copies; automatic sizing includes the folder prefix in PAR2 packet lengths. `verify_disc` detects v2 first, also supports legacy `.bd-archive/raw-v1` discs, and verifies only the disc recovery index with `-B<disc-root>` (payload `.par2` files are ordinary data). Without PAR2 it checks the complete payload against the corresponding SHA-512 manifest, excluding only layout-specific metadata. Empty files/directories are preserved but not PAR2-protected. The preview estimates redundancy; `mkisofs -print-size` after PAR2 and a post-build size check enforce a single-disc hard limit. The ISO is published to `images/disc_0001.iso` only after size and source-stability checks pass. Compression, incrementals, packing and deferral require `-m dar`. Capacity failures suggest `-m dar` to split across multiple discs. `-m/--mode raw|dar` replaces the old `--raw` flag. `extract` remains dar-specific; raw files open/copy directly, with manual repair on a writable copy documented in the on-disc README. `burn` permits unused space for any single-image set, while retaining the too-small check; the oversize-media guard still applies to multi-image sets.
+**Raw single-disc mode (default):** `create` / `create -m raw` dispatches to `commands/create_raw.py` before dar dependency checks (planning: see the workflow section above). `archive/raw.py` inventories regular files/directories, rejecting links, special files and line-break filenames; stat signatures detect source changes before staging, and a tree signature of the staged payload detects changes during hashing, PAR2 and measurement. **On-disc layout v3:** `<name>/` (the `-n` value, also the volume label) holds the selected units with source-relative paths; attachments sit beside it; `README.txt` stays visible at the root with a `FILES` list of the disc root (payload folder, attachments, the hidden `.bd-archive/` folder); `.bd-archive/` holds `checksums.sha512`, `recovery.par2`, recovery volumes and the `raw-v3` marker. Attachment names must not collide (case-insensitive) with `-n`, `README.txt`, `.bd-archive` or the legacy v2 root metadata names (`is_reserved_root_name`). Checksums and PAR2 record disc-relative paths; `par2.create_disc` runs with `-B<disc-root>` over `<name>/*` and each attachment that holds data. The README is written after PAR2 and is covered by neither. `verify_disc` detects v3 by its marker first (payload = everything outside `.bd-archive/` except the root README), then legacy v2 (root `recovery.par2`/`checksums.sha512`, root metadata names excluded) and legacy v1 (`.bd-archive/` metadata, root payload); it verifies only the disc recovery index (payload `.par2` files are ordinary data). Without PAR2 it checks the complete payload against the SHA-512 manifest. Empty files/directories are preserved but not PAR2-protected. `mkisofs -print-size` after PAR2 and a post-build size check enforce a single-disc hard limit; the folder manifest or `images/disc_0001.iso` is published only after these checks. Compression, incrementals, packing and fill-level deferral require `-m dar`. `-m/--mode raw|dar` replaces the old `--raw` flag. `extract` remains dar-specific; raw files open/copy directly, with manual repair on a writable copy documented in the wiki (READMEs contain no commands). `burn` permits unused space for any single-image set, while retaining the too-small check; the oversize-media guard still applies to multi-image sets.
 
 Four subcommands form a pipeline. `create` previews disc count + last-disc fill before prompting for confirmation, so users can dry-run sizing without committing.
 
@@ -223,7 +243,7 @@ No metadata file connects `create` to `burn`. `cmd_burn` derives disc count from
 
 ### Subprocess wrapper
 
-`shell/runner.py:run()` has three output modes. **Default** streams subprocess output line-by-line with a `[label]` prefix — fine for tools that emit `\n`-terminated lines. **`capture=True`** buffers stdout/stderr into the returned `CompletedProcess` so callers can parse it. **`passthrough=True`** lets the child inherit our stdout/stderr directly — needed for tools that paint progress via `\r` (par2 repair: "Scanning: X%" updates rewrite a single line, which the default streamer would buffer until the next `\n`). **`output_transform=`** streams `\r`- and `\n`-terminated records through a callable instead; `tools.par2.verify` uses `ui.par2_progress.Par2ScanProgress` to turn par2's per-file `Opening:`/`Target:`/`Could not read` output into one live scan line (progress, throughput, ETA, file being read) plus permanent `[WARN]` lines for damaged, missing and unreadable files, and calls its `finish()` after par2 exits. par2's exit codes are precise (0=OK, 1=REPAIRABLE, 2=BROKEN) so `tools.par2.verify` reads the result from the return code and doesn't need to capture stdout. `check=True` raises `CalledProcessError`; pass `check=False` when a non-zero exit is informational rather than fatal.
+`shell/runner.py:run()` has three output modes. **Default** streams subprocess output line-by-line with a `[label]` prefix — fine for tools that emit `\n`-terminated lines. **`capture=True`** buffers stdout/stderr into the returned `CompletedProcess` so callers can parse it. **`passthrough=True`** lets the child inherit our stdout/stderr directly — needed for tools that paint progress via `\r` (par2 repair: "Scanning: X%" updates rewrite a single line, which the default streamer would buffer until the next `\n`). **`output_transform=`** streams `\r`- and `\n`-terminated records through a callable instead; `tools.par2.verify` uses `ui.par2_progress.Par2ScanProgress` to turn par2's per-file `Opening:`/`Target:`/`Could not read` output into one live scan line (progress, throughput, ETA, file being read) plus permanent `[WARN]` lines for damaged, missing and unreadable files, and calls its `finish()` after par2 exits. `Par2CreateProgress` does the same for `par2 create` (`tools.par2.create_disc` and, via the `[par2]`-labelled hook output relayed inside DAR's output, `tools.dar.create_sliced`): one live line for Opening/Constructing/Processing, with throughput and ETA from block size × source block count; the default streaming mode flushes each line so relayed hook output arrives live. par2's exit codes are precise (0=OK, 1=REPAIRABLE, 2=BROKEN) so `tools.par2.verify` reads the result from the return code and doesn't need to capture stdout. `check=True` raises `CalledProcessError`; pass `check=False` when a non-zero exit is informational rather than fatal.
 
 SIGINT handling: children share the parent's process group, so a tty Ctrl+C reaches them too. The wrapper waits up to 5 s for the child to exit, then escalates `terminate()` → wait 5 s → `kill()`. `_check_sigint` converts `returncode == -SIGINT` into `KeyboardInterrupt` on the way out, so the top-level handler in `cli.py` emits a single uniform cancel banner (exit 130) instead of a noisy `CalledProcessError`. `tools/growisofs.py` and `tools/dar.py` opt out of this default in different ways: growisofs runs in `start_new_session=True` and installs its own two-press SIGINT handler so a single accidental Ctrl+C does not coaster a BD-R; dar shares our group so it gets the user's SIGINT directly and we just join + escalate.
 

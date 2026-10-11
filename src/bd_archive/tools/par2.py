@@ -3,7 +3,7 @@ from pathlib import Path
 
 from bd_archive.constants import PAR2_RECOVERY_RE
 from bd_archive.shell.runner import run
-from bd_archive.ui.par2_progress import Par2ScanProgress
+from bd_archive.ui.par2_progress import Par2CreateProgress, Par2ScanProgress
 
 
 class VerifyResult(Enum):
@@ -37,42 +37,41 @@ def create(
     run(["par2", "create", *sizing, "-n1", str(par2_base), str(target_file)], label="par2")
 
 
-def create_tree(
-    source: Path,
+def create_disc(
+    base_dir: Path,
     par2_index: Path,
-    redundancy: int | None = None,
+    roots: list[Path],
     *,
-    block_size: int | None = None,
-    recovery_blocks: int | None = None,
-    base_dir: Path | None = None,
+    block_size: int,
+    recovery_blocks: int,
 ):
-    """Protect only source, recording filenames relative to base_dir (default: source).
+    """Protect the given files and folder trees, recording filenames relative to base_dir.
 
-    Pass the wildcard literally: par2's own recursive expansion includes
-    dotfiles and avoids the OS argument-size limit for large file trees.
-    The output must live outside source.
+    Folders are passed as a literal wildcard: par2's own recursive expansion
+    includes dotfiles and avoids the OS argument-size limit for large trees.
+    The index must not live inside any protected folder.
     """
-    if recovery_blocks is not None:
-        if redundancy is not None or block_size is None or recovery_blocks < 1:
-            raise ValueError("Explicit recovery blocks require a block size and no percentage")
-        sizing = [f"-s{block_size}", f"-c{recovery_blocks}"]
-    else:
-        if redundancy is None:
-            raise ValueError("Specify redundancy or recovery blocks")
-        sizing = [f"-r{redundancy}"]
-    run(
-        [
-            "par2",
-            "create",
-            f"-B{base_dir if base_dir is not None else source}",
-            *sizing,
-            "-n1",
-            "-R",
-            str(par2_index),
-            str(source / "*"),
-        ],
-        label="par2",
-    )
+    if block_size < 4 or recovery_blocks < 1:
+        raise ValueError("PAR2 needs a block size and at least one recovery block")
+    progress = Par2CreateProgress()
+    try:
+        run(
+            [
+                "par2",
+                "create",
+                f"-B{base_dir}",
+                f"-s{block_size}",
+                f"-c{recovery_blocks}",
+                "-n1",
+                "-R",
+                str(par2_index),
+                *(str(root / "*") if root.is_dir() else str(root) for root in roots),
+            ],
+            output_transform=progress,
+        )
+    finally:
+        # End the live line before any later output or error message.
+        print(progress.finish(), end="", flush=True)
 
 
 def verify(par2_index: Path, *, base_dir: Path | None = None) -> VerifyResult:

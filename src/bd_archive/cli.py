@@ -9,12 +9,11 @@ import textwrap
 import argcomplete
 
 from bd_archive import __version__
-from bd_archive.archive.prepare import ORDERS, grouping
+from bd_archive.archive.plan import ORDERS, grouping
 from bd_archive.archive.share import parse_redundancy, parse_share
 from bd_archive.commands.burn import cmd_burn
 from bd_archive.commands.create import cmd_create
 from bd_archive.commands.extract import cmd_extract
-from bd_archive.commands.prepare import cmd_prepare
 from bd_archive.commands.verify import cmd_verify
 from bd_archive.constants import MiB
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT, MAX_WRITE_TIMEOUT, write_timeout
@@ -67,82 +66,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True, help="Available commands")
 
-    pr = sub.add_parser(
-        "prepare",
-        help="Plan and move files into disc-sized raw source folders",
-        description="Group a source across raw data discs, preview alternatives, then move "
-        "selected files after y/N confirmation. Units fill the discs in name, "
-        "modification-time or content-date order. No saved plan or processing history.",
-        formatter_class=_ListHelpFormatter,
-    )
-    pr.add_argument("-s", "--source", required=True, help="Prepared incoming files/directories")
-    pr.add_argument("-o", "--output", required=True, help="New or empty destination directory")
-    pr.add_argument("-n", "--name", default="Prepared", help="Name for suggested create commands")
-    pr.add_argument("-b", "--bytes", type=int, help="Disc capacity in bytes; no drive required")
-    pr.add_argument("-D", "--device", help="Drive for capacity detection (default: auto-detect)")
-    pr.add_argument(
-        "-r",
-        "--reserve",
-        type=_argtype(parse_share),
-        default="5",
-        metavar="PERCENT|SIZE",
-        help="Keep this much of every disc free, e.g. 5 (percent of the capacity), 50M or 1G "
-        "(default: 5). The create mode can use this free space to fill it with redundancy. "
-        "This can also be used to add some extra files manually or intentionally not "
-        "using some space on the physical disc.",
-    )
-    pr.add_argument(
-        "--group-by",
-        type=_argtype(grouping),
-        default="depth:1",
-        metavar="depth:N|depth:inf",
-        help="What stays together on one disc (default: depth:1). A unit is never split "
-        "across discs; relative paths are preserved.\n"
-        "depth:1    each direct subfolder of the source is one unit; files directly in "
-        "the source are one unit each\n"
-        "depth:2    each folder two levels below the source is one unit; files above "
-        "that level are one unit each\n"
-        "depth:inf  unlimited depth: each single file is one unit; folders are not "
-        "kept together",
-    )
-    pr.add_argument(
-        "--order-by",
-        choices=ORDERS,
-        default="name",
-        metavar="name|mtime|content-date",
-        help="Order in which units fill the discs (default: name). Folders take the "
-        "size-weighted median date of their files: a file holding more than half of "
-        "the folder's bytes decides alone.\n"
-        "name          by relative path, sorted case-sensitively\n"
-        "mtime         by file modification time, oldest first\n"
-        "content-date  by recording/release date from file metadata, read with "
-        "ExifTool; files without one use their modification time",
-    )
-    pr.add_argument(
-        "--max-free",
-        type=_argtype(parse_share),
-        metavar="PERCENT|SIZE",
-        help="Allow deferring the last units in fill order: maximum unused data budget on "
-        "every disc, e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include everything.",
-    )
-
     # ── create ──────────────────────────────────────────────────────────
     cr = sub.add_parser(
         "create",
         help="Prepare disc folders or ISO images without burning",
         description="Scan a source directory, preview its size and prepare size-checked discs.",
         add_help=False,
+        formatter_class=_ListHelpFormatter,
     )
     common = cr.add_argument_group("General Options")
     common.add_argument("-h", "--help", action="help", help="Show help")
     common.add_argument(
-        "-s", "--source", required=True, help="Source directory, including subfolders"
+        "-s",
+        "--source",
+        required=True,
+        help="Source directory, including subfolders. Raw mode archives whole units from it "
+        "on one disc; the rest stays for later runs.",
     )
     common.add_argument(
         "-n",
         "--name",
         required=True,
-        help="Archive name: up to 27 characters, using A-Z, a-z, 0-9, ._+-",
+        help="Archive name: up to 27 characters, using A-Z, a-z, 0-9, ._+-. Raw mode uses it "
+        "as the volume label and as the name of the folder holding the files on the disc.",
     )
     common.add_argument(
         "--description", default="", help="Optional archive description included in the README"
@@ -177,7 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PERCENT|SIZE|none",
         help="PAR2 recovery data per disc: a percentage of the data (5) or a fixed size "
-        "(500M, 2G); 0 or none skips PAR2 (default: raw fills free space; dar: 5)",
+        "(500M, 2G); 0 or none skips PAR2 (default: 5)",
+    )
+    common.add_argument(
+        "--fill-recovery",
+        action="store_true",
+        help="Also fill each disc's remaining free space with PAR2 recovery data; skipped "
+        "on a disc where it would add less than 0.5%% of its data. Combine with -r 0 to "
+        "use only the free space; not allowed with -r none.",
     )
     common.add_argument(
         "-D",
@@ -193,13 +146,62 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override disc capacity in bytes; allows building without a drive",
     )
     common.add_argument(
-        "-y", "--yes", action="store_true", help="Start after the preview without asking"
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Start after the preview without asking. Raw mode then selects the most "
+        "ordered plan and never removes archived units from the source.",
     )
 
-    cr.add_argument_group(
+    raw_options = cr.add_argument_group(
         "Mode: raw",
-        "Original files and PAR2 on one disc, without compression. No extra options; "
-        "use prepare to split whole files first, or -m dar for sliced archives.",
+        "Original files and PAR2 on one disc, without compression. Selects whole units for "
+        "one disc, builds it from links or verified copies, and finally offers to remove the "
+        "archived units from the source (default: no). The following options require -m raw.",
+    )
+    raw_options.add_argument(
+        "--group-by",
+        type=_argtype(grouping),
+        default=argparse.SUPPRESS,
+        metavar="depth:N|depth:inf",
+        help="What stays together on one disc (default: depth:1). A unit is never split "
+        "across discs; relative paths are preserved.\n"
+        "depth:1    each direct subfolder of the source is one unit; files directly in "
+        "the source are one unit each\n"
+        "depth:2    each folder two levels below the source is one unit; files above "
+        "that level are one unit each\n"
+        "depth:inf  unlimited depth: each single file is one unit; folders are not "
+        "kept together",
+    )
+    raw_options.add_argument(
+        "--order-by",
+        choices=ORDERS,
+        default=argparse.SUPPRESS,
+        metavar="name|mtime|content-date",
+        help="Order in which units fill the discs (default: name). Folders take the "
+        "size-weighted median date of their files: a file holding more than half of "
+        "the folder's bytes decides alone.\n"
+        "name          by relative path, sorted case-sensitively\n"
+        "mtime         by file modification time, oldest first\n"
+        "content-date  by recording/release date from file metadata, read with "
+        "ExifTool; files without one use their modification time",
+    )
+    raw_options.add_argument(
+        "--max-free",
+        type=_argtype(parse_share),
+        default=None,
+        metavar="PERCENT|SIZE",
+        help="Allow deferring the last units in fill order: maximum unused data budget on "
+        "every disc of a plan, e.g. 5 (percent), 500M (MB), 2G (GB). Omit to include "
+        "everything.",
+    )
+    raw_options.add_argument(
+        "--attach",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="Add this file or folder to the disc root, e.g. an info file. It is never "
+        "removed from its location and must be outside the source. Repeatable.",
     )
     dar_options = cr.add_argument_group(
         "Mode: dar",
@@ -382,8 +384,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dispatch(args):
     match args.command:
-        case "prepare":
-            cmd_prepare(args)
         case "create":
             cmd_create(args)
         case "burn":

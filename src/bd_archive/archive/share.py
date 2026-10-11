@@ -1,9 +1,11 @@
-"""Percent-or-size values shared by --redundancy, --reserve and --max-free."""
+"""Percent-or-size values shared by --redundancy and --max-free."""
 
 import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+
+from bd_archive.shell.format import human_bytes
 
 _UNITS = {"": 1, "M": 10**6, "G": 10**9}
 
@@ -57,9 +59,22 @@ def parse_redundancy(value: str) -> Share:
     return share
 
 
-def recovery_requested(share: Share | None) -> bool:
-    """Automatic recovery (None) or any nonzero share generates PAR2 data."""
-    return share is None or not share.disabled
+# --fill-recovery extends recovery data only when that adds at least this
+# share of the disc's data (0.5%); smaller additions are skipped.
+FILL_MIN_PERMILLE = 5
+
+
+def fill_worthwhile(extra: int, data: int) -> bool:
+    """Whether filling free space adds enough recovery data to be worth creating."""
+    return extra > 0 and extra * 1000 >= data * FILL_MIN_PERMILLE
+
+
+def fill_skipped_message(extra: int) -> str:
+    """The notice for a disc whose free space is not filled; same wording in both modes."""
+    return (
+        f"Filling free space would add only {human_bytes(extra)} recovery data "
+        f"(below {FILL_MIN_PERMILLE / 10}% of the disc's data); skipped."
+    )
 
 
 def fixed_recovery_layout(share: Share, file_size: int) -> tuple[int, int]:

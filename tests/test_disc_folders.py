@@ -6,6 +6,7 @@ import errno
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from unittest.mock import Mock, patch
 
 from bd_archive.archive.disc_folder import (
     MANIFEST,
+    SINGLE_DISC,
     check_output_available,
     load_disc_set,
     prepare_folder,
@@ -52,6 +54,55 @@ class DiscFolderTests(unittest.TestCase):
         args = ["create", "-s", ".", "-n", "Test", "-o", "out"]
         self.assertFalse(build_parser().parse_args(args).iso)
         self.assertTrue(build_parser().parse_args([*args, "--iso"]).iso)
+
+    def test_single_raw_disc_sits_directly_in_the_output_and_burn_finds_it(self):
+        output = self.root / "raw-output"
+        with patch("bd_archive.tools.mkisofs.estimate_size", return_value=100):
+            folder = prepare_folder(
+                output / SINGLE_DISC,
+                [("Media/file", self.payload)],
+                "Media",
+                "bd-archive test",
+                32768,
+            )
+            save_disc_set(output, [folder])
+        self.assertEqual({p.name for p in output.iterdir()}, {"disc", "manifest.json"})
+        loaded = load_disc_set(output)
+        self.assertEqual([f.root for f in loaded], [output / "disc"])
+        for leftover in ("disc", "manifest.json"):
+            with self.subTest(leftover=leftover), self.assertRaisesRegex(ValueError, "already"):
+                check_output_available(output)
+            target = output / leftover
+            shutil.rmtree(target) if target.is_dir() else target.unlink()
+        check_output_available(output)
+        # Several discs always use numbered folders.
+        with patch("bd_archive.tools.mkisofs.estimate_size", return_value=100):
+            first = prepare_folder(
+                self.discs / SINGLE_DISC, [("A/file", self.payload)], "A", "test", 32768
+            )
+            second = prepare_folder(
+                self.discs / "disc_0002", [("A/file", self.payload)], "A", "test", 32768
+            )
+        with self.assertRaisesRegex(ValueError, "numbered"):
+            save_disc_set(self.discs, [first, second])
+
+    def test_burn_finds_a_single_raw_disc_in_the_output(self):
+        output = self.root / "raw-output"
+        with patch("bd_archive.tools.mkisofs.estimate_size", return_value=100):
+            folder = prepare_folder(
+                output / SINGLE_DISC, [("Media/file", self.payload)], "Media", "test", 32768
+            )
+            save_disc_set(output, [folder])
+        args = argparse.Namespace(
+            input=str(output), start=1, device=None, no_verify=False, no_close_tray=False
+        )
+        with (
+            patch("bd_archive.commands.burn.check_deps"),
+            patch("bd_archive.commands.burn.resolve_device", side_effect=RuntimeError("found")),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "found"),
+        ):
+            cmd_burn(args)
 
     def test_generated_dar_files_are_moved_without_rewriting(self):
         inode = self.payload.stat().st_ino
@@ -266,7 +317,7 @@ class DiscFolderIntegrationTests(unittest.TestCase):
         )
         self.assertFalse(list(output.rglob("*.iso")))
         self.assertFalse((output / ".bd-archive-work").exists())
-        return load_disc_set(output / "discs")
+        return load_disc_set(output if mode == "raw" else output / "discs")
 
     def test_raw_and_multidisc_dar_sizes_match_actual_iso_and_restore(self):
         for mode in ("raw", "dar"):
@@ -291,7 +342,7 @@ class DiscFolderIntegrationTests(unittest.TestCase):
                     restored = self.root / "restored"
                     self.cli("extract", "--input", output, "-o", restored)
                 else:
-                    restored = folders[0].root / self.source.name
+                    restored = folders[0].root / "Test"
                 self.assertEqual(
                     (restored / "payload").read_bytes(), (self.source / "payload").read_bytes()
                 )
@@ -300,10 +351,28 @@ class DiscFolderIntegrationTests(unittest.TestCase):
 
     def test_raw_automatic_recovery_folder_fits_capacity(self):
         output = self.root / "auto"
-        folder = self.create("raw", output)[0]
+        folder = self.create("raw", output, "--fill-recovery")[0]
         self.assertGreater(folder.image_bytes, 8_900_000)
         self.assertLessEqual(folder.image_bytes, 10_000_000)
         self.cli("verify", folder.root)
+
+    def test_dar_fill_recovery_fills_free_space_and_still_fits(self):
+        for minimum in ("5", "0"):
+            output = self.root / f"dar-fill-{minimum}"
+            with self.subTest(minimum=minimum):
+                folders = self.create("dar", output, "-r", minimum, "--fill-recovery")
+                self.assertEqual(len(folders), 2)
+                for folder in folders:
+                    readme = (folder.root / "Test-gen1" / "README.txt").read_text()
+                    redundancy = float(re.search(r"Redundancy: ([\d.]+)%", readme)[1])
+                    self.assertGreater(redundancy, 5)
+                    self.assertLessEqual(folder.image_bytes, 10_000_000)
+                    self.cli("verify", folder.root)
+                restored = self.root / f"restored-fill-{minimum}"
+                self.cli("extract", "--input", output, "-o", restored)
+                self.assertEqual(
+                    (restored / "payload").read_bytes(), (self.source / "payload").read_bytes()
+                )
 
     def test_restore_workdir_cannot_change_input_folder(self):
         (self.source / "payload").write_bytes(b"small archive")

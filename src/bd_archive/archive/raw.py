@@ -2,7 +2,7 @@
 
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from bd_archive.archive.checksums import _hash_file_sha512
@@ -11,6 +11,7 @@ from bd_archive.archive.share import Share, recovery_blocks
 from bd_archive.constants import (
     MAX_PAR2_BLOCKS,
     PAR2_RECOVERY_RE,
+    RAW_METADATA_DIR,
     RAW_PAR2_INDEX,
     RAW_ROOT_MARKER,
 )
@@ -21,19 +22,16 @@ RAW_CHECKSUMS = "checksums.sha512"
 
 
 def is_raw_metadata_name(name: str) -> bool:
-    """Recognize reserved root names, including recovery volumes, ignoring case."""
+    """Recognize legacy v2 root metadata names, including recovery volumes, ignoring case."""
     name = name.casefold()
     return name in {"readme.txt", RAW_CHECKSUMS, RAW_PAR2_INDEX, RAW_ROOT_MARKER} or (
         name.startswith("recovery.vol") and PAR2_RECOVERY_RE.search(name) is not None
     )
 
 
-def validate_raw_source_name(source: Path) -> None:
-    """The source folder must fit beside the metadata at the disc root."""
-    if not source.name or "\n" in source.name or "\r" in source.name:
-        raise ValueError("Raw mode needs a source folder name without line breaks")
-    if is_raw_metadata_name(source.name):
-        raise ValueError(f"Source folder name is reserved for raw-disc metadata: {source.name}")
+def is_reserved_root_name(name: str) -> bool:
+    """Root names a v3 payload must not use: its metadata and anything v2 detection reads."""
+    return is_raw_metadata_name(name) or name.casefold() == RAW_METADATA_DIR
 
 
 def write_raw_checksums(
@@ -42,22 +40,28 @@ def write_raw_checksums(
     destination: Path,
     *,
     placeholder: bool = False,
-    path_prefix: str = "",
+    digests: dict[str, str] | None = None,
 ) -> None:
-    """Write disc-relative GNU hashes; placeholders have the same encoded size."""
+    """Write disc-relative GNU hashes; placeholders have the same encoded size.
+
+    ``digests`` supplies hex hashes already computed while copying, by path.
+    """
     files = [entry for entry in inventory if stat.S_ISREG(entry.mode)]
+    known = digests or {}
+    pending = 0 if placeholder else sum(e.size for e in files if e.path not in known)
     with (
         destination.open("w", encoding="utf-8", errors="surrogateescape", newline="\n") as out,
-        Progress("SHA-512", 0 if placeholder else sum(entry.size for entry in files)) as progress,
+        Progress("SHA-512", pending) as progress,
     ):
         for entry in files:
-            digest = (
-                "0" * 128
-                if placeholder
-                else _hash_file_sha512(source / entry.path, progress.advance)
-            )
+            if placeholder:
+                digest = "0" * 128
+            elif entry.path in known:
+                digest = known[entry.path]
+            else:
+                digest = _hash_file_sha512(source / entry.path, progress.advance)
             # GNU checksum tools prefix escaped records with a backslash.
-            disc_path = f"{path_prefix}/{entry.path}" if path_prefix else entry.path
+            disc_path = entry.path
             escaped = "\\" in disc_path
             name = disc_path.replace("\\", "\\\\")
             prefix = "\\" if escaped else ""
@@ -84,9 +88,7 @@ class RawPar2Sizing:
         )
 
 
-def raw_par2_sizing(
-    inventory: list["RawEntry"], capacity: int, free: int, *, path_prefix: str = ""
-) -> RawPar2Sizing:
+def raw_par2_sizing(inventory: list["RawEntry"], capacity: int, free: int) -> RawPar2Sizing:
     files = [entry for entry in inventory if stat.S_ISREG(entry.mode) and entry.size]
     if len(files) > MAX_PAR2_BLOCKS:
         raise ValueError("PAR2 supports at most 32768 non-empty files in one recovery set")
@@ -103,8 +105,7 @@ def raw_par2_sizing(
     # Main, File Description and Input File Slice Checksum packet lengths.
     critical = 76 + 16 * len(files)
     for entry in files:
-        disc_path = f"{path_prefix}/{entry.path}" if path_prefix else entry.path
-        name_bytes = len(os.fsencode(disc_path))
+        name_bytes = len(os.fsencode(entry.path))
         blocks = (entry.size + block_size - 1) // block_size
         critical += 120 + (name_bytes + 3) // 4 * 4 + 80 + 20 * blocks
     return RawPar2Sizing(block_size, critical)
@@ -115,13 +116,9 @@ def fixed_raw_recovery(
     capacity: int,
     payload_bytes: int,
     redundancy: Share,
-    *,
-    path_prefix: str = "",
 ) -> tuple[RawPar2Sizing, int]:
-    """Use explicit blocks so preparation and creation reserve identical recovery."""
-    sizing = raw_par2_sizing(
-        inventory, capacity, max(1, capacity - payload_bytes), path_prefix=path_prefix
-    )
+    """Use explicit blocks so planning and creation reserve identical recovery."""
+    sizing = raw_par2_sizing(inventory, capacity, max(1, capacity - payload_bytes))
     source_blocks = sum(
         (e.size + sizing.block_size - 1) // sizing.block_size
         for e in inventory
@@ -180,3 +177,18 @@ def scan_raw_source(source: Path) -> list[RawEntry]:
     visit(source)
     hardlinks.check()
     return sorted(entries, key=lambda entry: entry.path)
+
+
+def scan_attachment(path: Path) -> list[RawEntry]:
+    """Inventory one attached file or folder; paths start with its own name."""
+    st = path.lstat()
+    if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+        raise ValueError(f"--attach supports regular files and directories only: {path}")
+    if "\n" in path.name or "\r" in path.name:
+        raise ValueError(f"Raw mode does not support line breaks in filenames: {path.name!r}")
+    root = RawEntry(
+        path.name, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, st.st_dev
+    )
+    if not stat.S_ISDIR(st.st_mode):
+        return [root]
+    return [root] + [replace(e, path=f"{path.name}/{e.path}") for e in scan_raw_source(path)]

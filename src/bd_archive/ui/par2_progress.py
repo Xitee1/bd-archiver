@@ -19,6 +19,8 @@ _MIN_NAME_COLUMNS = 8
 _PAR2_SHORT_PART = 28
 _PAR2_SHORT_MARK = "..."
 
+# PAR2 calls files with recovery data "recoverable", which reads like damage.
+_FILE_COUNT_RE = re.compile(r"There are (\d+) recoverable files and (\d+) other files\.")
 _TOTAL_SIZE_RE = re.compile(r"The total size of the data files is (\d+) bytes\.")
 _SCAN_RE = re.compile(r"Scanning: (\d+(?:\.\d+)?)%")
 _OPENING_RE = re.compile(r'Opening: "(.*)"')
@@ -85,6 +87,11 @@ class Par2ScanProgress:
         elif record.startswith(("Scanning extra files:", "Verifying repaired files:")):
             self.start = None
 
+        if counts := _FILE_COUNT_RE.fullmatch(record):
+            return (
+                f"Recovery set: {counts[1]} files with recovery data, "
+                f"{counts[2]} files without recovery data.\n"
+            )
         if scan := _SCAN_RE.fullmatch(record):
             return self._scan(record, float(scan[1]))
         if opening := _OPENING_RE.fullmatch(record):
@@ -178,3 +185,108 @@ class Par2ScanProgress:
             return line
         # Print the report where the live line was, then redraw the live line below it.
         return CLEAR_LINE + line + self._live_line()
+
+
+_PAR2_LABEL_RE = re.compile(r"\s*\[par2\] (.*)", re.DOTALL)
+_BLOCK_SIZE_RE = re.compile(r"Block size: (\d+)")
+_SOURCE_FILES_RE = re.compile(r"Source file count: (\d+)")
+_SOURCE_BLOCKS_RE = re.compile(r"Source block count: (\d+)")
+_CREATE_PROGRESS_RE = re.compile(r"(Constructing|Processing): (\d+(?:\.\d+)?)%")
+_CREATE_OPENING_RE = re.compile(r"Opening: (.*)")
+_CREATE_PHASE_DONE = "Constructing: done."
+
+
+def rate_fields(total: int, pct: float, elapsed: float) -> str:
+    """Average throughput and remaining time, as shown on PAR2 live lines."""
+    if total <= 0 or not 0 < pct <= 100 or elapsed <= 0:
+        return ""
+    speed = total * pct / 100 / elapsed
+    remaining = max(0, int(elapsed * (100 - pct) / pct))
+    eta = f"ETA {remaining // 60}m{remaining % 60:02d}s"
+    return f"{_FIELD_SEPARATOR}{human_bytes(speed)}/s{_FIELD_SEPARATOR}{eta}"
+
+
+class Par2CreateProgress:
+    """Show PAR2 creation progress on one live line instead of one line per update.
+
+    Opening, Constructing and Processing records update the live line; Processing
+    adds the average throughput and remaining time, based on the source block
+    count and block size PAR2 reports. All other output passes through below the
+    final live state. Without a terminal, progress becomes throttled log lines.
+
+    Records may also arrive inside another tool's output with a ``[par2]`` label,
+    as from DAR's slice hook; the live line then keeps that label.
+    """
+
+    def __init__(self, prefix: str = "  [par2] "):
+        self.prefix = prefix
+        self.tty = sys.stdout.isatty()
+        self.live: str | None = None
+        self.name: str | None = None
+        self.block_size = 0
+        self.source_blocks = 0
+        self.source_files = 0
+        self.opened = 0
+        self.start: float | None = None
+        self.last_log: float | None = None
+
+    def __call__(self, line: str) -> str:
+        record = line.strip()
+        label = ""
+        if labelled := _PAR2_LABEL_RE.fullmatch(record):
+            # Keep the relayed label's spacing so live and other lines align.
+            record, label = labelled[1], "  [par2] "
+        if size := _BLOCK_SIZE_RE.fullmatch(record):
+            # Each PAR2 run starts with its block size; reset per-run state.
+            self.block_size, self.opened, self.start = int(size[1]), 0, None
+        elif files := _SOURCE_FILES_RE.fullmatch(record):
+            self.source_files = int(files[1])
+        elif blocks := _SOURCE_BLOCKS_RE.fullmatch(record):
+            self.source_blocks = int(blocks[1])
+
+        if progress := _CREATE_PROGRESS_RE.fullmatch(record):
+            phase, pct = progress[1], float(progress[2])
+            status = record
+            if phase == "Processing":
+                now = time.monotonic()
+                if self.start is None:
+                    self.start = now
+                total = self.block_size * self.source_blocks
+                status += rate_fields(total, pct, now - self.start)
+            return self._show(label + status, final=pct == 100)
+        if record == _CREATE_PHASE_DONE:
+            return self._show(label + record, final=True)
+        if opening := _CREATE_OPENING_RE.fullmatch(record):
+            self.opened += 1
+            files = f"/{self.source_files}" if self.source_files else ""
+            return self._show(f"{label}Opening: {self.opened}{files} files", name=opening[1])
+        if not record and self.live is not None:
+            return ""
+        # Any other output ends the live line: keep its final state, continue below it.
+        return self.finish() + self.prefix + line.rstrip("\r\n") + "\n"
+
+    def finish(self) -> str:
+        """End the live line, keeping its progress fields as a permanent line."""
+        if self.live is None:
+            return ""
+        final = CLEAR_LINE + self.prefix + self.live + "\n"
+        self.live = None
+        self.name = None
+        return final
+
+    def _show(self, status: str, *, name: str | None = None, final: bool = False) -> str:
+        if self.tty:
+            self.live, self.name = status, name
+            text = self.prefix + status
+            if name is not None:
+                # Leave the last column free so the cursor never wraps onto a new line.
+                columns = shutil.get_terminal_size().columns - 1 - len(text) - len(_FIELD_SEPARATOR)
+                if shown := fit_name(name, None, columns):
+                    text += _FIELD_SEPARATOR + shown
+            return CLEAR_LINE + text
+        # Keep redirected logs readable: at most one progress line every 5 seconds.
+        now = time.monotonic()
+        if not final and self.last_log is not None and now - self.last_log < 5:
+            return ""
+        self.last_log = now
+        return self.prefix + status + "\n"

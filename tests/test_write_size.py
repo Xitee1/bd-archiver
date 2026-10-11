@@ -9,12 +9,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from bd_archive.archive.disc_folder import DiscFolder, prepare_folder, tree_signature
+from bd_archive.archive.plan_sizing import fill_recovery_blocks
 from bd_archive.archive.raw import RawPar2Sizing
 from bd_archive.archive.sizing import disc_write_bytes
 from bd_archive.cli import build_parser
 from bd_archive.commands.burn import _burn_one_disc
 from bd_archive.commands.create import cmd_create
-from bd_archive.commands.create_raw import _plan_auto_recovery
 from bd_archive.constants import DISC_END_MARGIN
 from bd_archive.tools.burn_timeout import DEFAULT_WRITE_TIMEOUT
 from bd_archive.tools.growisofs import DEFAULT_RING_BUFFER
@@ -100,26 +100,30 @@ class WriteSizeTests(unittest.TestCase):
     def test_auto_recovery_accounts_for_padding_before_safety_margin(self):
         metadata = self.root / "metadata"
         metadata.mkdir()
-        # Include the write block reserved for the final README.
-        for available, succeeds in ((98303, False), (98304, True)):
+        # The caller passes the capacity without the README allowance.
+        for available, minimum, succeeds in (
+            (65535, 1, False),
+            (65536, 1, True),
+            (65536, 2**15 + 1, False),
+        ):
             with (
-                self.subTest(available=available),
+                self.subTest(available=available, minimum=minimum),
                 patch("bd_archive.tools.mkisofs.estimate_size", return_value=34816),
             ):
 
-                def plan(available=available):
-                    return _plan_auto_recovery(
+                def plan(available=available, minimum=minimum):
+                    return fill_recovery_blocks(
                         metadata,
                         [],
                         "Test",
                         "test",
                         RawPar2Sizing(4, 128),
                         available + DISC_END_MARGIN,
+                        minimum,
                     )
 
                 if succeeds:
-                    _, estimate = plan()
-                    self.assertEqual(estimate, 65536)
+                    self.assertEqual(plan(), 2**15)
                 else:
                     with self.assertRaisesRegex(ValueError, "Not enough free disc capacity"):
                         plan()

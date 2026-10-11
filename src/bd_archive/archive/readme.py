@@ -13,6 +13,7 @@ def write_readme(
     checksum_files: list[str],
     recovery: dict[str, str] | None,
     software: str,
+    notes: str = "",
 ) -> None:
     """Write once per disc after archive and recovery details are final.
 
@@ -36,4 +37,7 @@ def write_readme(
         if recovery
         else "RECOVERY:     None\n"
     )
-    path.write_text(f"{header}\n{checksums}\n{recovery_text}\n{software}", encoding="utf-8")
+    notes_text = f"{notes.rstrip()}\n\n" if notes else ""
+    path.write_text(
+        f"{header}\n{notes_text}{checksums}\n{recovery_text}\n{software}", encoding="utf-8"
+    )
