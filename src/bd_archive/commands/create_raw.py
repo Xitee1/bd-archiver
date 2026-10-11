@@ -450,7 +450,7 @@ def _create_raw(args):
     group = plan[0]
     selected = [units[i] for i in group]
     section("Disc layout")
-    field("Name", args.name)
+    field("Volume label", args.name)
     for line in _layout_lines(args.name, attachments, recovery_enabled):
         log.info(f"  {line}")
     log.blank()

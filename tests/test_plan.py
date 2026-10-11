@@ -397,7 +397,7 @@ class FilesystemTests(unittest.TestCase):
         self.assertNotIn("Remaining in source", text)
         self.assertRegex(
             text,
-            r"Disc layout\n.*Name\s+: Test\n.*├── Test/\n.*├── README.txt\n.*└── .bd-archive/\n",
+            r"Disc layout\n.*Volume label\s+: Test\n.*├── Test/\n.*├── README.txt\n.*└── .bd-archive/\n",
         )
         self.assertIn("Cancelled; nothing was created.", text)
         self.assertNotIn("\n[INFO]    a (", text)
