@@ -92,8 +92,10 @@ The error names the conflicting relative paths before archive/recovery creation.
   never moved or hard-linked. Restore staging and optional ISO output retain
   their existing paths.
 - `burn` reads folders plus the manifest, or legacy ISOs. Folder burns require
-  `mkisofs`, remeasure after the insertion prompt, reject changed file metadata,
-  and stream the filesystem through growisofs with the same options/backend.
+  `mkisofs`, remeasure after the insertion prompt, reject changed file metadata
+  (`--accept-folder-changes` instead takes each folder's contents at its insertion
+  prompt as the reference; changes during the burn still stop it; the manifest
+  is not updated), and stream the filesystem through growisofs with the same options/backend.
   Unknown capacity stops folder burns unless `--skip-fit-check` was explicit.
   ISO behavior, post-burn verification and two-press SIGINT handling remain.
 - After burning, `archive/disc.py:wait_for_burned_disc` finds the burned disc by its
@@ -138,7 +140,7 @@ pip install -e '.[dev]'
 
 ```bash
 bd-archive create   [-m raw|dar] -s <source> -n <name> -o <output> [-w <workdir>] [-D /dev/srN] [-b BYTES] [-r PERCENT|SIZE|none] [--fill-recovery] [-c zstd|lzma|...] [-l <level>] [--ratio <float> | --sample <path>] [--base <catalog.dar>] [--pack-with <disc.iso>] [--min-last-disc-fill PERCENT] [--group-by depth:N|depth:inf] [--order-by name|mtime|content-date] [--max-free PERCENT|SIZE] [--attach PATH]... [-y]
-bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--no-close-tray] [--skip-fit-check] [-S <speed>]
+bd-archive burn     -i <input> [-D /dev/srN] [--start N] [--no-verify] [--no-close-tray] [--skip-fit-check] [--accept-folder-changes] [-S <speed>]
 bd-archive verify   [<mountpoint|dir|/dev/srN|*.iso>]
 bd-archive extract  -o <output> [-D /dev/srN | -i <iso|dir>...] [-w <workdir>]
 ```

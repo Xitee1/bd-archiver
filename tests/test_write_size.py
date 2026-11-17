@@ -46,6 +46,7 @@ class WriteSizeTests(unittest.TestCase):
         args = argparse.Namespace(
             skip_fit_check=False,
             no_verify=True,
+            accept_folder_changes=False,
             speed=None,
             write_timeout=DEFAULT_WRITE_TIMEOUT,
             buffer=DEFAULT_RING_BUFFER,

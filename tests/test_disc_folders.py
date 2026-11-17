@@ -195,6 +195,7 @@ class DiscFolderTests(unittest.TestCase):
         args = argparse.Namespace(
             skip_fit_check=False,
             no_verify=True,
+            accept_folder_changes=False,
             speed="4",
             write_timeout=DEFAULT_WRITE_TIMEOUT,
             buffer=DEFAULT_RING_BUFFER,
@@ -222,6 +223,7 @@ class DiscFolderTests(unittest.TestCase):
         args = argparse.Namespace(
             skip_fit_check=True,
             no_verify=True,
+            accept_folder_changes=False,
             speed=None,
             write_timeout=DEFAULT_WRITE_TIMEOUT,
             buffer=DEFAULT_RING_BUFFER,
@@ -237,6 +239,85 @@ class DiscFolderTests(unittest.TestCase):
         ):
             _burn_one_disc(args, self.discs.parent, folder, 1, 1, drive, 100)
         drive.burn_folder.assert_not_called()
+
+    def test_accepted_changes_become_the_reference_for_the_burn(self):
+        folder = self.prepare()
+        (folder.root / "added").write_bytes(b"deliberate")
+        self.assertTrue(folder.accept_current())
+        self.assertFalse(folder.accept_current())
+        folder.check_unchanged()
+        (folder.root / "added").write_bytes(b"changed again")
+        with self.assertRaisesRegex(ValueError, "changed during the burn"):
+            folder.check_unchanged()
+
+    def burn_args(self):
+        return argparse.Namespace(
+            skip_fit_check=True,
+            no_verify=True,
+            accept_folder_changes=True,
+            speed=None,
+            write_timeout=DEFAULT_WRITE_TIMEOUT,
+            buffer=DEFAULT_RING_BUFFER,
+        )
+
+    def test_accepted_change_during_insertion_prompt_is_burned(self):
+        folder = self.prepare()
+        drive = Mock(device="/dev/test")
+        output = io.StringIO()
+        with (
+            patch(
+                "bd_archive.commands.burn.prompt_disc",
+                side_effect=lambda *a: (folder.root / "extra").write_bytes(b"x"),
+            ),
+            patch("bd_archive.tools.mkisofs.estimate_size", return_value=100),
+            contextlib.redirect_stdout(output),
+        ):
+            _burn_one_disc(self.burn_args(), self.discs.parent, folder, 1, 1, drive, 100)
+        drive.burn_folder.assert_called_once()
+        self.assertIn("Disc folder changed since the burn started", output.getvalue())
+        self.assertIn("burning its current contents", output.getvalue())
+
+    def test_accepted_changes_still_reject_a_change_during_the_burn(self):
+        folder = self.prepare()
+        drive = Mock(device="/dev/test")
+        drive.burn_folder.side_effect = lambda *a, **k: (folder.root / "late").touch()
+        with (
+            patch("bd_archive.commands.burn.prompt_disc"),
+            patch("bd_archive.tools.mkisofs.estimate_size", return_value=100),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "changed during the burn"),
+        ):
+            _burn_one_disc(self.burn_args(), self.discs.parent, folder, 1, 1, drive, 100)
+
+    def test_burn_accepts_folders_changed_after_creation_only_with_the_option(self):
+        save_disc_set(self.discs, [self.prepare()])
+        (self.discs / "disc_0001/added").write_bytes(b"deliberate")
+        parser = build_parser()
+        self.assertFalse(parser.parse_args(["burn", "-i", "out"]).accept_folder_changes)
+        for accept in (False, True):
+            args = parser.parse_args(["burn", "-i", str(self.discs.parent), "-D", "/dev/test"])
+            args.accept_folder_changes = accept
+            output = io.StringIO()
+            with (
+                self.subTest(accept=accept),
+                patch("bd_archive.commands.burn.check_deps"),
+                patch("bd_archive.commands.burn.resolve_device", return_value="/dev/test"),
+                patch("bd_archive.commands.burn.udev.is_available", return_value=True),
+                patch("bd_archive.commands.burn._burn_one_disc") as burn_one,
+                patch("bd_archive.tools.mkisofs.estimate_size", return_value=100),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(output),
+            ):
+                if accept:
+                    cmd_burn(args)
+                    burn_one.assert_called_once()
+                    self.assertIn("Disc folder changed since creation", output.getvalue())
+                    self.assertIn("burning its current contents", output.getvalue())
+                else:
+                    with self.assertRaises(SystemExit):
+                        cmd_burn(args)
+                    burn_one.assert_not_called()
+                    self.assertIn("recreate the set", output.getvalue())
 
     def test_incomplete_set_does_not_touch_drive(self):
         self.prepare()

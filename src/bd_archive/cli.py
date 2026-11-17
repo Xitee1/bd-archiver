@@ -323,6 +323,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip capacity checks, including too-small and oversized-media checks",
     )
+    bu.add_argument(
+        "--accept-folder-changes",
+        action="store_true",
+        help=(
+            "Burn disc folders with their current contents, even if files were added, "
+            "changed or removed after creation. Added files are not covered by the disc's "
+            "checksums or recovery data. Each disc's contents must remain unchanged from "
+            "its insertion prompt until its burn finishes"
+        ),
+    )
 
     # ── verify ──────────────────────────────────────────────────────────
     sub.add_parser(

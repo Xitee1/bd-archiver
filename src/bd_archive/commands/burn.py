@@ -75,6 +75,9 @@ def cmd_burn(args):
     # (full) discs before it. A single image may be intentionally partial
     # (especially in raw mode), so its size cannot identify a media class.
     try:
+        if args.accept_folder_changes:
+            for folder in folders:
+                _accept_folder_changes(folder, "since creation")
         max_iso_bytes = max(
             disc_write_bytes(
                 disc.measure() if isinstance(disc, DiscFolder) else disc.stat().st_size
@@ -132,6 +135,11 @@ def _same_device(a: str, b: str) -> bool:
     return os.path.realpath(a) == os.path.realpath(b)
 
 
+def _accept_folder_changes(folder: DiscFolder, reference: str) -> None:
+    if folder.accept_current():
+        log.warn(f"Disc folder changed {reference}: {folder.root}; burning its current contents")
+
+
 def _other_drives(burn_device: str) -> list[str]:
     """Drives besides the burner that can be watched for the burned disc."""
     if not udev.is_available():
@@ -157,6 +165,10 @@ def _burn_one_disc(
         log.info(f"ISO: {iso.name} ({human_bytes(iso.stat().st_size)})")
 
     prompt_disc(f"Insert blank disc {i}/{disc_count}", dio.device)
+    # With --accept-folder-changes, the contents at this point are burned and
+    # must remain unchanged until the burn finishes.
+    if folder is not None and args.accept_folder_changes:
+        _accept_folder_changes(folder, "since the burn started")
     # Measure after the potentially long insertion prompt. Folder burns use
     # the identical mkisofs options, without writing an intermediate ISO.
     iso_size = folder.measure() if folder is not None else iso.stat().st_size
