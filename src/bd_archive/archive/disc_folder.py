@@ -71,13 +71,27 @@ class DiscFolder:
     rock_ridge: bool
     image_bytes: int
     signature: dict[str, list[int]]
+    changes_accepted: bool = False
 
     @property
     def entries(self) -> list[tuple[str, Path]]:
         return [("", self.root)]
 
+    def accept_current(self) -> bool:
+        """Use the current contents as the reference; return whether they changed.
+
+        The contents must then remain unchanged until the burn finishes.
+        """
+        current = tree_signature(self.root)
+        changed = current != self.signature
+        self.signature = current
+        self.changes_accepted = True
+        return changed
+
     def check_unchanged(self) -> None:
         if tree_signature(self.root) != self.signature:
+            if self.changes_accepted:
+                raise ValueError(f"Disc folder changed during the burn: {self.root}")
             raise ValueError(f"Disc folder changed since creation: {self.root}; recreate the set")
 
     def measure(self) -> int:
